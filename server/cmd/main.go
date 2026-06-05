@@ -54,7 +54,7 @@ type args struct {
 }
 
 func (args) Version() string {
-	return "TorrServer " + version.Version
+	return "TorrServer-LT " + version.Version
 }
 
 var params args
@@ -77,7 +77,7 @@ func main() {
 	log.Init(params.LogPath, params.WebLogPath)
 
 	fmt.Println("=========== START ===========")
-	fmt.Println("TorrServer", version.Version+",", runtime.Version()+",", "CPU Num:", runtime.NumCPU())
+	fmt.Println("TorrServer-LT", version.Version+",", runtime.Version()+",", "CPU Num:", runtime.NumCPU())
 	if params.HttpAuth {
 		log.TLogln("Use HTTP Auth file", settings.Path+"/accs.db")
 	}

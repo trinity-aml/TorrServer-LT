@@ -1,39 +1,18 @@
-<p align="center" style="text-align: center">
-  <img src="https://github.com/YouROK/TorrServer/assets/144587546/53f7175a-cda4-4a06-86b6-2ac07582dcf1" width="33%"><br/>
-</p>
+# TorrServer-LT
 
-<p align="center">
-  Simple and powerful tool for streaming torrents.
-  <br/>
-  <br/>
-  <a href="https://github.com/YouROK/TorrServer/blob/master/LICENSE">
-    <img alt="GitHub" src="https://img.shields.io/github/license/YouROK/TorrServer"/>
-  </a>
-  <a href="https://goreportcard.com/report/github.com/YouROK/TorrServer">
-    <img src="https://goreportcard.com/badge/github.com/YouROK/TorrServer" />
-  </a>
-  <a href="https://pkg.go.dev/github.com/YouROK/TorrServer">
-    <img src="https://pkg.go.dev/badge/github.com/YouROK/TorrServer.svg" alt="Go Reference"/>
-  </a>
-  <a href="https://github.com/YouROK/TorrServer/issues">
-    <img src="https://img.shields.io/badge/contributions-welcome-brightgreen.svg?style=flat" alt="CodeFactor" />
-  </a>
-  <a href="https://github.com/YouROK/TorrServer/actions/workflows/docker_image.yml" rel="nofollow">
-    <img src="https://img.shields.io/github/actions/workflow/status/YouROK/TorrServer/docker_image.yml?logo=Github" alt="Build" />
-  </a>
-  <a href="https://github.com/YouROK/TorrServer/releases" rel="nofollow">
-    <img alt="GitHub release (latest SemVer)" src="https://img.shields.io/github/v/release/YouROK/TorrServer?label=version"/>
-  </a>
-  <a href="https://github.com/YouROK/TorrServer/tags" rel="nofollow">
-    <img alt="GitHub tag (latest SemVer pre-release)" src="https://img.shields.io/github/v/tag/YouROK/TorrServer?include_prereleases&label=pre-release"/>
-  </a>
-</p>
+> Fork of [YouROK/TorrServer](https://github.com/YouROK/TorrServer) with the BitTorrent core replaced by [libtorrent (arvidn)](https://www.libtorrent.org/).
+>
+> **Status:** work in progress. The HTTP API, on-disk databases (`config.db`, JSON, `accs.db`, viewed) and the `torrs://` token format remain compatible with upstream. The cache layout under `TorrentsSavePath/<hash>/<pieceID>` is preserved.
+>
+> **Platforms:** Linux only (`amd64`, `arm64`, `armv7`). Windows, macOS, Android, FreeBSD and exotic ARM targets from the upstream build matrix are intentionally dropped.
 
 ## Introduction
 
-TorrServer is a program that allows users to view torrents online without the need for preliminary file downloading.
-The core functionality of TorrServer includes caching torrents and subsequent data transfer via the HTTP protocol,
+TorrServer-LT is a program that allows users to view torrents online without the need for preliminary file downloading.
+The core functionality includes caching torrents and subsequent data transfer via the HTTP protocol,
 allowing the cache size to be adjusted according to the system parameters and the user's internet connection speed.
+
+The difference from upstream is the underlying torrent engine: `arvidn/libtorrent` (C++) is wired in via a thin CGo shim, replacing `anacrolix/torrent` (Go). This is expected to improve peer-protocol behaviour, throughput in real-world conditions, and bring in features absent from the Go-native engine.
 
 ## AI Documentation
 
