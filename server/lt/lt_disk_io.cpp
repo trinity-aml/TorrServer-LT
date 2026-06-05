@@ -96,6 +96,15 @@ inline std::string sha1_raw_from(lt::sha1_hash const& h) {
     return std::string(reinterpret_cast<char const*>(h.data()), 20);
 }
 
+// libtorrent's storage_index_t is aux::strong_typedef wrapping either
+// `int` (Ubuntu's 2.0.10 packaged headers) or `unsigned int` (upstream
+// RC_2_0 git). Use the public underlying_index_t meta-function so the
+// shim compiles against both.
+inline int64_t storage_id_of(lt::storage_index_t s) {
+    using U = typename lt::aux::underlying_index_t<lt::storage_index_t>::type;
+    return static_cast<int64_t>(static_cast<U>(s));
+}
+
 } // namespace
 
 // ============================================================================
@@ -148,7 +157,7 @@ public:
     }
 
     void remove_torrent(lt::storage_index_t s) override {
-        int64_t idx = static_cast<int>(s);
+        int64_t idx = storage_id_of(s);
         {
             std::unique_lock<std::shared_mutex> lk(map_mu_);
             storages_.erase(idx);
@@ -170,7 +179,7 @@ public:
             handler({}, make_io_error("read"));
             return;
         }
-        int got = cb_.read(static_cast<int>(s), static_cast<int>(r.piece),
+        int got = cb_.read(storage_id_of(s), static_cast<int>(r.piece),
                            r.start, reinterpret_cast<uint8_t*>(buf), r.length);
         lt::storage_error err;
         if (got != r.length) err = make_io_error("read");
@@ -185,7 +194,7 @@ public:
                      std::function<void(lt::storage_error const&)> handler,
                      lt::disk_job_flags_t /*flags*/ = {}) override
     {
-        int put = cb_.write(static_cast<int>(s), static_cast<int>(r.piece),
+        int put = cb_.write(storage_id_of(s), static_cast<int>(r.piece),
                             r.start, reinterpret_cast<uint8_t const*>(buf), r.length);
         lt::storage_error err;
         if (put != r.length) err = make_io_error("write");
@@ -202,7 +211,7 @@ public:
         int piece_actual = 0;
         {
             std::shared_lock<std::shared_mutex> lk(map_mu_);
-            auto it = storages_.find(static_cast<int>(s));
+            auto it = storages_.find(storage_id_of(s));
             if (it == storages_.end()) {
                 lk.unlock();
                 handler(piece, lt::sha1_hash{}, make_io_error("hash:no-storage"));
@@ -211,7 +220,7 @@ public:
             piece_actual = static_cast<int>(it->second.files->piece_size(piece));
         }
         std::vector<char> data(static_cast<size_t>(piece_actual));
-        int got = cb_.read(static_cast<int>(s), static_cast<int>(piece),
+        int got = cb_.read(storage_id_of(s), static_cast<int>(piece),
                            0, reinterpret_cast<uint8_t*>(data.data()), piece_actual);
         if (got != piece_actual) {
             handler(piece, lt::sha1_hash{}, make_io_error("hash:short-read"));
@@ -251,7 +260,7 @@ public:
                             lt::remove_flags_t,
                             std::function<void(lt::storage_error const&)> handler) override
     {
-        cb_.deleted(static_cast<int>(s));
+        cb_.deleted(storage_id_of(s));
         handler(lt::storage_error{});
     }
 
