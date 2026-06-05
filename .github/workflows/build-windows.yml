@@ -66,7 +66,8 @@ jobs:
           CXX: g++
         run: |
           cd server
-          go test -count=1 -timeout 180s ./lt/ ./torr/ ./torr/storage/torrstor/ ./dlna/
+          # -v so a crash points at the offending test by name.
+          go test -v -count=1 -timeout 180s ./lt/ ./torr/ ./torr/storage/torrstor/ ./dlna/
 
       - name: Build TorrServer-LT.exe
         env:
