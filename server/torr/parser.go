@@ -15,25 +15,50 @@ import (
 	"server/torrshash"
 )
 
+// httpFetchTimeout is the deadline for a single .torrent download.
+var httpFetchTimeout = 60 * time.Second
+
+// httpMaxBodyBytes caps an HTTP fetched .torrent at 64 MiB; legitimate
+// metainfo files are always smaller, and the cap keeps malicious URLs
+// from filling memory.
+const httpMaxBodyBytes = 64 << 20
+
+// errRedirectedToMagnet is returned from the CheckRedirect hook in
+// parseHTTP when the server redirected us to a magnet: URI. The
+// outer Do() detects this and forwards the URL to ParseMagnetURI.
+var errRedirectedToMagnet = errors.New("torr: redirected to magnet")
+
 // ParseLink dispatches by URL scheme: magnet:, http(s)://, file://,
-// hex-hash, or bare info hash.
+// torrs:// (or bare base62 token), or a bare 40-char hex info hash.
+//
+// Order of recognition (most specific first):
+//  1. torrs:// prefix or bare base62 token of length > 45
+//  2. magnet: prefix
+//  3. http(s):// or file://
+//  4. exactly 40 hex chars — treated as an info hash (synthetic magnet)
 func ParseLink(link string) (*TorrentSpec, error) {
 	link = strings.TrimSpace(link)
 	if link == "" {
 		return nil, errors.New("torr.ParseLink: empty link")
 	}
-	if strings.HasPrefix(link, "torrs://") || (len(link) > 45 && torrshash.IsBase62(link)) {
+
+	lower := strings.ToLower(link)
+
+	// 1. torrs:// or bare base62 token
+	if strings.HasPrefix(lower, "torrs://") ||
+		(len(link) > 45 && torrshash.IsBase62(link)) {
 		spec, _, err := ParseTorrsHash(link)
 		return spec, err
 	}
-	u, err := url.Parse(link)
-	if err != nil {
-		// fall through to hash interpretation below
+
+	// 2. magnet:
+	if strings.HasPrefix(lower, "magnet:") {
+		return ParseMagnetURI(link)
 	}
-	if u != nil {
+
+	// 3. http(s):// or file://
+	if u, err := url.Parse(link); err == nil && u.Scheme != "" {
 		switch strings.ToLower(u.Scheme) {
-		case "magnet":
-			return ParseMagnetURI(u.String())
 		case "http", "https":
 			return parseHTTP(u.String())
 		case "file":
@@ -44,9 +69,12 @@ func ParseLink(link string) (*TorrentSpec, error) {
 			return ParseTorrentFilePath(path)
 		}
 	}
+
+	// 4. bare 40-hex info hash
 	if len(link) == 40 && isHex(link) {
 		return ParseMagnetURI("magnet:?xt=urn:btih:" + strings.ToLower(link))
 	}
+
 	return nil, fmt.Errorf("torr.ParseLink: unknown scheme/format: %q", link)
 }
 
@@ -68,14 +96,15 @@ func ParseBytes(buf []byte) (*TorrentSpec, error) {
 	if err != nil {
 		return nil, fmt.Errorf("torr.ParseBytes: %w", err)
 	}
-	// keep the raw .torrent bytes so the user's TorrentDB survives restarts
-	// without having to refetch metadata
+	// Stash the raw .torrent bytes so the user's TorrentDB survives
+	// restarts without having to refetch metadata.
 	return specFromParsed(pt, buf), nil
 }
 
-// ParseReader reads an io.Reader to EOF and calls ParseBytes.
+// ParseReader reads an io.Reader up to httpMaxBodyBytes and calls
+// ParseBytes.
 func ParseReader(r io.Reader) (*TorrentSpec, error) {
-	buf, err := io.ReadAll(io.LimitReader(r, 64*1024*1024))
+	buf, err := io.ReadAll(io.LimitReader(r, httpMaxBodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("torr.ParseReader: %w", err)
 	}
@@ -112,17 +141,46 @@ func ParseTorrsHash(token string) (*TorrentSpec, *torrshash.TorrsHash, error) {
 	return spec, th, nil
 }
 
+// parseHTTP fetches u and feeds the body into ParseBytes. Servers that
+// 30x to a magnet: URI are special-cased: we intercept the redirect via
+// CheckRedirect, abort the body fetch and re-dispatch to ParseMagnetURI.
 func parseHTTP(u string) (*TorrentSpec, error) {
-	req, err := http.NewRequest("GET", u, nil)
+	var (
+		magnetURL string
+		hopCount  int
+	)
+	client := &http.Client{
+		Timeout: httpFetchTimeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			hopCount++
+			if hopCount > 10 {
+				return errors.New("torr.parseHTTP: too many redirects")
+			}
+			if strings.HasPrefix(strings.ToLower(req.URL.Scheme), "magnet") ||
+				strings.HasPrefix(strings.ToLower(req.URL.String()), "magnet:") {
+				magnetURL = req.URL.String()
+				return errRedirectedToMagnet
+			}
+			return nil
+		},
+	}
+
+	req, err := http.NewRequest(http.MethodGet, u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("torr.parseHTTP: %w", err)
 	}
 	req.Header.Set("User-Agent", "TorrServer-LT/1.0 (+libtorrent)")
-	client := &http.Client{Timeout: 60 * time.Second}
+
 	resp, err := client.Do(req)
-	// some servers redirect to magnet:; net/http surfaces that as *url.Error
-	if uerr, ok := err.(*url.Error); ok && strings.HasPrefix(uerr.URL, "magnet:") {
-		return ParseMagnetURI(uerr.URL)
+	if uerr, ok := err.(*url.Error); ok {
+		// Our CheckRedirect intercept (or a server that responded with a
+		// magnet: location url.Parse can't otherwise represent).
+		if magnetURL != "" {
+			return ParseMagnetURI(magnetURL)
+		}
+		if strings.HasPrefix(strings.ToLower(uerr.URL), "magnet:") {
+			return ParseMagnetURI(uerr.URL)
+		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("torr.parseHTTP: %w", err)
@@ -148,6 +206,9 @@ func specFromParsed(pt *lt.ParsedTorrent, info []byte) *TorrentSpec {
 }
 
 func isHex(s string) bool {
+	if s == "" {
+		return false
+	}
 	for _, c := range strings.ToLower(s) {
 		switch {
 		case c >= '0' && c <= '9':
