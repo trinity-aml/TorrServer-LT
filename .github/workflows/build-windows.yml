@@ -86,9 +86,10 @@ jobs:
           du -h /d/a/out/TorrServer-LT-windows-amd64.exe
 
       - name: Probe --version
-        shell: pwsh
-        run: |
-          & D:/a/out/TorrServer-LT-windows-amd64.exe --version
+        # Use the msys2 shell so the mingw64 PATH carries the runtime
+        # DLLs (libtorrent-rasterbar, libstdc++, libwinpthread, etc.)
+        # the exe was dynamically linked against.
+        run: /d/a/out/TorrServer-LT-windows-amd64.exe --version
 
       - uses: actions/upload-artifact@v4
         with:
