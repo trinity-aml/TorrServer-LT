@@ -108,9 +108,17 @@ func TestParseLink_FileScheme(t *testing.T) {
 	if err := os.WriteFile(path, minimalTorrent(), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	spec, err := ParseLink("file://" + path)
+	// Build a portable file:// URI — Windows TempDir contains
+	// backslashes which aren't valid in URLs; use forward slashes and
+	// the 3-slash form ("file:///C:/path/...") so url.Parse can decode
+	// it on any OS.
+	uri := "file://" + filepath.ToSlash(path)
+	if !strings.HasPrefix(uri, "file:///") {
+		uri = "file:///" + strings.TrimPrefix(uri, "file://")
+	}
+	spec, err := ParseLink(uri)
 	if err != nil {
-		t.Fatalf("ParseLink file: %v", err)
+		t.Fatalf("ParseLink file (%q): %v", uri, err)
 	}
 	if spec.DisplayName != "test" {
 		t.Fatalf("dn: %q", spec.DisplayName)
