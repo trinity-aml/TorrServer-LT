@@ -44,9 +44,26 @@ jobs:
           cache: true
           cache-dependency-path: server/go.sum
 
+      - name: Resolve brew prefix
+        id: brew
+        run: |
+          set -euo pipefail
+          PREFIX="$(brew --prefix)"
+          BOOST_PREFIX="$(brew --prefix boost)"
+          OPENSSL_PREFIX="$(brew --prefix openssl@3 2>/dev/null || brew --prefix openssl)"
+          echo "prefix=$PREFIX"          | tee -a "$GITHUB_OUTPUT"
+          echo "boost=$BOOST_PREFIX"     | tee -a "$GITHUB_OUTPUT"
+          echo "openssl=$OPENSSL_PREFIX" | tee -a "$GITHUB_OUTPUT"
+
       - name: Run unit tests
         env:
           CGO_ENABLED: '1'
+          # The Homebrew libtorrent pkg-config doesn't carry the Boost
+          # include path; on Apple Silicon Boost lives under a separate
+          # /opt/homebrew/Cellar/boost prefix. Wire it through CGO_*
+          # so cgo's underlying clang invocation finds boost/config.hpp.
+          CGO_CXXFLAGS: "-I${{ steps.brew.outputs.boost }}/include -I${{ steps.brew.outputs.openssl }}/include"
+          CGO_LDFLAGS: "-L${{ steps.brew.outputs.boost }}/lib -L${{ steps.brew.outputs.openssl }}/lib"
         run: |
           cd server
           go test -count=1 -timeout 180s ./lt/ ./torr/ ./torr/storage/torrstor/ ./dlna/
@@ -54,6 +71,8 @@ jobs:
       - name: Build TorrServer-LT
         env:
           CGO_ENABLED: '1'
+          CGO_CXXFLAGS: "-I${{ steps.brew.outputs.boost }}/include -I${{ steps.brew.outputs.openssl }}/include"
+          CGO_LDFLAGS: "-L${{ steps.brew.outputs.boost }}/lib -L${{ steps.brew.outputs.openssl }}/lib"
         run: |
           set -euo pipefail
           cd server
