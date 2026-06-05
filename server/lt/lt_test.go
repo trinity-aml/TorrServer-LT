@@ -28,12 +28,17 @@ func newSession(t *testing.T) *Session {
 	t.Helper()
 	s, err := NewSession(SessionConfig{
 		// Keep libtorrent quiet during tests.
-		"alert_mask":           int(0),
-		"enable_dht":           false,
-		"enable_lsd":           false,
-		"enable_natpmp":        false,
-		"enable_upnp":          false,
+		"alert_mask":               int(0),
+		"enable_dht":               false,
+		"enable_lsd":               false,
+		"enable_natpmp":            false,
+		"enable_upnp":              false,
 		"announce_to_all_trackers": false,
+		// Random ephemeral port — otherwise on Windows multiple tests
+		// in series can race on libtorrent's default 6881 binding /
+		// TIME_WAIT cleanup and the run segfaults around the 7th-9th
+		// session creation. Linux SO_REUSEADDR masks the issue.
+		"listen_interfaces": "0.0.0.0:0",
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
