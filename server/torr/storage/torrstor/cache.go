@@ -136,6 +136,27 @@ func (c *Cache) wipe() {
 	c.mu.Unlock()
 }
 
+// scanLocalPieces materialises Piece entries for any piece file already
+// present on disk (UseDisk mode). After this Have() / Reader will see
+// resume-restored pieces without going through readPiece's lazy
+// reconstruction. No-op when UseDisk is off.
+func (c *Cache) scanLocalPieces() {
+	if !useDisk() {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := 0; i < c.NumPieces; i++ {
+		if _, ok := c.pieces[i]; ok {
+			continue
+		}
+		candidate := newPiece(c, i)
+		if candidate.SizeBytes() > 0 {
+			c.pieces[i] = candidate
+		}
+	}
+}
+
 // readPiece serves a libtorrent disk read. Lazily reconstructs the
 // Piece from disk when we're in UseDisk mode and the file is present —
 // this is the resume read-path for pieces our scan flagged as "have".

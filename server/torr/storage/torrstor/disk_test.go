@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"server/settings"
 )
@@ -161,16 +162,14 @@ func TestCache_LRUEvictsOldestWhenOverCapacity(t *testing.T) {
 		}
 	}
 
-	// Eviction runs in a goroutine; loop briefly until it converges.
+	// Eviction runs in a goroutine; wait up to 2s for convergence.
 	c := s.CacheByHash(h)
-	deadlineLoops := 100
-	for i := 0; i < deadlineLoops; i++ {
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
 		if c.Filled() <= 2*pieceLen {
 			break
 		}
-		// give the eviction goroutine a chance
-		// (poll instead of sleep to keep the test snappy)
-		_ = c.Filled()
+		time.Sleep(10 * time.Millisecond)
 	}
 	if c.Filled() > 2*pieceLen {
 		t.Fatalf("LRU eviction did not converge: filled=%d, capacity=%d",

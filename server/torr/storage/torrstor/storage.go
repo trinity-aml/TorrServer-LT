@@ -79,6 +79,10 @@ func (s *Storage) callbackOpen(storage int64, hash [20]byte, numPieces int, piec
 	s.caches[storage] = c
 	s.byHash[hash] = c
 	s.mu.Unlock()
+	// In UseDisk mode, eagerly materialise any pre-existing piece
+	// files so Have()/Reader hit them without going through the lazy
+	// reconstruction path in readPiece.
+	c.scanLocalPieces()
 }
 
 func (s *Storage) callbackClose(storage int64) {
