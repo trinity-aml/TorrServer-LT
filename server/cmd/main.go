@@ -20,6 +20,7 @@ import (
 	"server"
 	"server/docs"
 	"server/log"
+	"server/lt"
 	"server/settings"
 	"server/torr"
 	"server/version"
@@ -54,7 +55,7 @@ type args struct {
 }
 
 func (args) Version() string {
-	return "TorrServer-LT " + version.Version
+	return "TorrServer-LT " + version.Version + " (libtorrent " + lt.Version() + ")"
 }
 
 var params args
@@ -77,7 +78,7 @@ func main() {
 	log.Init(params.LogPath, params.WebLogPath)
 
 	fmt.Println("=========== START ===========")
-	fmt.Println("TorrServer-LT", version.Version+",", runtime.Version()+",", "CPU Num:", runtime.NumCPU())
+	fmt.Println("TorrServer-LT", version.Version+",", "libtorrent", lt.Version()+",", runtime.Version()+",", "CPU Num:", runtime.NumCPU())
 	if params.HttpAuth {
 		log.TLogln("Use HTTP Auth file", settings.Path+"/accs.db")
 	}
