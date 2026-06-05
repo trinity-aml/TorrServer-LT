@@ -70,6 +70,12 @@ ARG TS_VERSION=MatriX.LT-001
 # CGO_ENABLED=1 + fully-static via -extldflags '-static'.
 # pkg-config in lt.go resolves CXXFLAGS/LDFLAGS for libtorrent-rasterbar.
 ENV CGO_ENABLED=1
+
+# Gate the static binary build on the lt package's TDD suite so a broken
+# shim never ships. libtorrent is static (.a only under /opt/lt/lib) so
+# the test binary is fully self-contained.
+RUN go test -count=1 -timeout 120s ./lt/
+
 RUN go build \
       -tags 'osusergo netgo' \
       -ldflags "-s -w -X server/version.Version=${TS_VERSION} -linkmode external -extldflags '-static'" \

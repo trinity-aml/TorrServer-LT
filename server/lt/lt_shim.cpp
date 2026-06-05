@@ -344,7 +344,10 @@ json alert_to_json(lt::alert const* a) {
     j["category"] = static_cast<uint64_t>(static_cast<std::uint32_t>(a->category()));
     j["message"]  = a->message();
 
-    if (auto const* ta = lt::alert_cast<lt::torrent_alert>(a)) {
+    // torrent_alert is an abstract base — its `alert_type` constant is
+    // deprecated and may be absent (libtorrent built with
+    // -Ddeprecated-functions=OFF). Walk the hierarchy via RTTI instead.
+    if (auto const* ta = dynamic_cast<lt::torrent_alert const*>(a)) {
         int64_t id = lookup_torrent_id(ta->handle);
         if (id != 0) j["torrent"] = id;
         if (ta->handle.is_valid()) {
