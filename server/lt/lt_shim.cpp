@@ -10,11 +10,6 @@
 
 #include "third_party/nlohmann/json.hpp"
 
-// Forward declaration from lt_disk_io.cpp — installs custom disk_io on
-// the given session_params if Go has registered storage callbacks.
-namespace libtorrent { struct session_params; }
-extern void tsl_install_disk_io_on(libtorrent::session_params& params);
-
 #include <libtorrent/add_torrent_params.hpp>
 #include <libtorrent/alert.hpp>
 #include <libtorrent/alert_types.hpp>
@@ -30,6 +25,10 @@ extern void tsl_install_disk_io_on(libtorrent::session_params& params);
 #include <libtorrent/torrent_info.hpp>
 #include <libtorrent/torrent_status.hpp>
 #include <libtorrent/version.hpp>
+
+// Implemented in lt_disk_io.cpp; declared here after all libtorrent
+// headers have been seen so the session_params type is unambiguous.
+extern void tsl_install_disk_io_on(libtorrent::session_params& params);
 
 #include <atomic>
 #include <chrono>
