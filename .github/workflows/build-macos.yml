@@ -1,0 +1,75 @@
+name: build-macos
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  macos:
+    name: macos/${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macos-latest is Apple Silicon (arm64) since 2024.
+          - arch: arm64
+            runner: macos-latest
+            artifact: TorrServer-LT-darwin-arm64
+          # macos-13 is the last Intel runner before GitHub deprecates.
+          - arch: amd64
+            runner: macos-13
+            artifact: TorrServer-LT-darwin-amd64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps via brew
+        run: |
+          set -euo pipefail
+          brew update >/dev/null
+          # libtorrent-rasterbar pulls in boost + openssl as deps.
+          brew install pkg-config libtorrent-rasterbar
+          pkg-config --modversion libtorrent-rasterbar
+          pkg-config --cflags libtorrent-rasterbar | head -1
+          pkg-config --libs libtorrent-rasterbar | head -1
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+          cache-dependency-path: server/go.sum
+
+      - name: Run unit tests
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          cd server
+          go test -count=1 -timeout 180s ./lt/ ./torr/ ./torr/storage/torrstor/ ./dlna/
+
+      - name: Build TorrServer-LT
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          set -euo pipefail
+          cd server
+          mkdir -p ../out
+          go build \
+            -ldflags "-s -w -X server/version.Version=MatriX.LT-001" \
+            -o "../out/${{ matrix.artifact }}" \
+            ./cmd
+          file "../out/${{ matrix.artifact }}"
+          du -h "../out/${{ matrix.artifact }}"
+
+      - name: Probe --version
+        run: ./out/${{ matrix.artifact }} --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: out/${{ matrix.artifact }}
+          if-no-files-found: error

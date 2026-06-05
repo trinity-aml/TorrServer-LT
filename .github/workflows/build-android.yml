@@ -1,0 +1,173 @@
+name: build-android
+
+# Android NDK build of libtorrent + Boost + the TorrServer-LT cgo
+# binary. Heavy: a cold build of Boost-for-Android can take ~30 min per
+# ABI, then libtorrent another 10-15 min. Cache aggressively.
+#
+# Skipped for the time being on push/PR — the toolchain is fragile and
+# the binaries primarily target Termux users on ARM Android devices.
+# Trigger manually via the Actions UI or by tagging a release.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+      - "MatriX.LT-*"
+
+jobs:
+  android:
+    name: android/${{ matrix.abi }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            goarch: arm64
+            host: aarch64-linux-android
+            api: '24'
+            artifact: TorrServer-LT-android-arm64
+          - abi: armeabi-v7a
+            goarch: arm
+            goarm: '7'
+            host: armv7a-linux-androideabi
+            api: '24'
+            artifact: TorrServer-LT-android-arm7
+    env:
+      ANDROID_NDK_HOME: ${{ github.workspace }}/ndk
+      BOOST_VERSION: 1.85.0
+      LT_TAG: v2.0.10
+      INSTALL_PREFIX: ${{ github.workspace }}/install/${{ matrix.abi }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential cmake ninja-build unzip wget
+
+      - name: Cache Android NDK
+        id: cache-ndk
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.ANDROID_NDK_HOME }}
+          key: ndk-r26d
+
+      - name: Install Android NDK r26d
+        if: steps.cache-ndk.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+          unzip -q android-ndk-r26d-linux.zip -d "${{ github.workspace }}"
+          mv "${{ github.workspace }}/android-ndk-r26d" "$ANDROID_NDK_HOME"
+
+      - name: Cache Boost + libtorrent install tree
+        id: cache-deps
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.INSTALL_PREFIX }}
+          key: android-deps-${{ matrix.abi }}-boost-${{ env.BOOST_VERSION }}-lt-${{ env.LT_TAG }}-v1
+
+      - name: Build Boost for Android
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p deps && cd deps
+          BV_UNDERSCORE=$(echo "$BOOST_VERSION" | tr . _)
+          wget -q "https://archives.boost.io/release/${BOOST_VERSION}/source/boost_${BV_UNDERSCORE}.tar.bz2"
+          tar xjf "boost_${BV_UNDERSCORE}.tar.bz2"
+          cd "boost_${BV_UNDERSCORE}"
+
+          TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+          API='${{ matrix.api }}'
+          HOST='${{ matrix.host }}'
+
+          ./bootstrap.sh
+
+          cat > user-config.jam <<EOF
+          using clang : android
+            : $TOOLCHAIN/bin/${HOST}${API}-clang++
+            : <archiver>$TOOLCHAIN/bin/llvm-ar
+              <ranlib>$TOOLCHAIN/bin/llvm-ranlib ;
+          EOF
+
+          ./b2 \
+            --user-config=user-config.jam \
+            --prefix="$INSTALL_PREFIX" \
+            --with-system --with-date_time --with-chrono --with-random \
+            toolset=clang-android \
+            link=static \
+            runtime-link=static \
+            threading=multi \
+            -j"$(nproc)" \
+            install
+
+      - name: Build libtorrent for Android
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          cd deps
+          git clone --branch "$LT_TAG" --depth 1 --recurse-submodules \
+            https://github.com/arvidn/libtorrent.git
+          cd libtorrent
+          mkdir build && cd build
+
+          cmake .. \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=${{ matrix.abi }} \
+            -DANDROID_PLATFORM=android-${{ matrix.api }} \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -Dstatic_runtime=ON \
+            -Ddeprecated-functions=OFF \
+            -Dbuild_examples=OFF \
+            -Dbuild_tests=OFF \
+            -Dpython-bindings=OFF \
+            -DBoost_USE_STATIC_LIBS=ON \
+            -DBOOST_ROOT="$INSTALL_PREFIX" \
+            -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX"
+
+          ninja -j"$(nproc)" install
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+          cache-dependency-path: server/go.sum
+
+      - name: Build TorrServer-LT (${{ matrix.abi }})
+        env:
+          CGO_ENABLED: '1'
+          GOOS: android
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          PKG_CONFIG_PATH: ${{ env.INSTALL_PREFIX }}/lib/pkgconfig
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+          export CC="$TOOLCHAIN/bin/${{ matrix.host }}${{ matrix.api }}-clang"
+          export CXX="$TOOLCHAIN/bin/${{ matrix.host }}${{ matrix.api }}-clang++"
+          # On 32-bit ARM the Go clang wrapper expects armv7a- as host.
+          if [ "${{ matrix.abi }}" = "armeabi-v7a" ]; then
+            export CC="$TOOLCHAIN/bin/armv7a-linux-androideabi${{ matrix.api }}-clang"
+            export CXX="$TOOLCHAIN/bin/armv7a-linux-androideabi${{ matrix.api }}-clang++"
+          fi
+          cd server
+          mkdir -p ../out
+          go build \
+            -tags 'osusergo netgo' \
+            -ldflags "-s -w -X server/version.Version=MatriX.LT-001 -extldflags '-static-libstdc++ -static-libgcc'" \
+            -o "../out/${{ matrix.artifact }}" \
+            ./cmd
+          file "../out/${{ matrix.artifact }}"
+          du -h "../out/${{ matrix.artifact }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: out/${{ matrix.artifact }}
+          if-no-files-found: error

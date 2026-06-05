@@ -3,8 +3,13 @@
     "Version": "MatriX.LT-001",
     "BuildDate": "",
     "Links": {
-        "linux-amd64": "https://github.com/trinity-aml/TorrServer-LT/releases/download/MatriX.LT-001/TorrServer-LT-linux-amd64",
-        "linux-arm64": "https://github.com/trinity-aml/TorrServer-LT/releases/download/MatriX.LT-001/TorrServer-LT-linux-arm64",
-        "linux-arm7":  "https://github.com/trinity-aml/TorrServer-LT/releases/download/MatriX.LT-001/TorrServer-LT-linux-arm7"
+        "linux-amd64":       "https://github.com/trinity-aml/TorrServer-LT/releases/download/MatriX.LT-001/TorrServer-LT-linux-amd64",
+        "linux-arm64":       "https://github.com/trinity-aml/TorrServer-LT/releases/download/MatriX.LT-001/TorrServer-LT-linux-arm64",
+        "linux-armv7":       "https://github.com/trinity-aml/TorrServer-LT/releases/download/MatriX.LT-001/TorrServer-LT-linux-armv7",
+        "windows-amd64.exe": "https://github.com/trinity-aml/TorrServer-LT/releases/download/MatriX.LT-001/TorrServer-LT-windows-amd64.exe",
+        "darwin-amd64":      "https://github.com/trinity-aml/TorrServer-LT/releases/download/MatriX.LT-001/TorrServer-LT-darwin-amd64",
+        "darwin-arm64":      "https://github.com/trinity-aml/TorrServer-LT/releases/download/MatriX.LT-001/TorrServer-LT-darwin-arm64",
+        "android-arm64":     "https://github.com/trinity-aml/TorrServer-LT/releases/download/MatriX.LT-001/TorrServer-LT-android-arm64",
+        "android-arm7":      "https://github.com/trinity-aml/TorrServer-LT/releases/download/MatriX.LT-001/TorrServer-LT-android-arm7"
     }
 }

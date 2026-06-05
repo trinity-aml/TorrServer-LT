@@ -4,7 +4,13 @@
 >
 > **Status:** work in progress. The HTTP API, on-disk databases (`config.db`, JSON, `accs.db`, viewed) and the `torrs://` token format remain compatible with upstream. The cache layout under `TorrentsSavePath/<hash>/<pieceID>` is preserved.
 >
-> **Platforms:** Linux only (`amd64`, `arm64`, `armv7`). Windows, macOS, Android, FreeBSD and exotic ARM targets from the upstream build matrix are intentionally dropped.
+> **Platforms:**
+> - Linux: `amd64`, `arm64`, `armv7`
+> - Windows: `amd64` (MSYS2 / MinGW64 runtime)
+> - macOS: `amd64` (Intel), `arm64` (Apple Silicon)
+> - Android: `arm64-v8a`, `armeabi-v7a` (Termux or similar shell)
+>
+> Each platform's binary statically (or near-statically) links libtorrent + Boost; see the per-platform CI workflow under `.github/workflows/` for the exact toolchain.
 
 ## Introduction
 
