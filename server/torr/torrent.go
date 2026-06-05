@@ -44,6 +44,10 @@ type Torrent struct {
 	BytesReadUsefulData int64
 	BytesWrittenData    int64
 
+	// counters driven by the alert pump (atomic-friendly under mu)
+	piecesDirtiedGood int64
+	piecesDirtiedBad  int64
+
 	PreloadSize    int64
 	PreloadedBytes int64
 
@@ -407,6 +411,17 @@ func (t *Torrent) Status() *state.TorrentStatus {
 	st.BytesReadUsefulData = lst.TotalPayloadDownload
 	st.PreloadedBytes = t.PreloadedBytes
 	st.PreloadSize = t.PreloadSize
+
+	// libtorrent doesn't surface chunk counters directly via
+	// torrent_status; approximate by dividing payload bytes by the
+	// 16 KiB BitTorrent block size. Good enough for /cache + UI.
+	const chunkSize = int64(16 * 1024)
+	st.ChunksRead = lst.TotalPayloadDownload / chunkSize
+	st.ChunksReadUseful = st.ChunksRead
+	st.ChunksReadWasted = (lst.TotalDownload - lst.TotalPayloadDownload) / chunkSize
+	st.ChunksWritten = lst.TotalPayloadUpload / chunkSize
+	st.PiecesDirtiedGood = t.piecesDirtiedGood
+	st.PiecesDirtiedBad = t.piecesDirtiedBad
 
 	if lst.HasMetadata {
 		st.TorrentSize = lst.TotalSize

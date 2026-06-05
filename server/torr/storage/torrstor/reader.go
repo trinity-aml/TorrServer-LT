@@ -223,14 +223,16 @@ func (r *Reader) scheduleWindow() {
 	for i := first; i <= last; i++ {
 		var deadlineMs int
 		switch {
-		case i == first:
+		case i == first: // NOW
 			deadlineMs = 0
-		case i == first+1:
+		case i == first+1: // Next
 			deadlineMs = 100
-		case i <= first+3:
+		case i <= first+3: // Readahead
 			deadlineMs = 500
-		default:
+		case i <= first+8: // High
 			deadlineMs = 1500
+		default: // Normal (5th tier — keeps the buffer growing past readahead)
+			deadlineMs = 3000
 		}
 		_ = r.handle.SetPieceDeadline(i, deadlineMs, false)
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -256,18 +257,141 @@ func buildSessionConfig() (lt.SessionConfig, error) {
 		cfg["allowed_enc_level"] = 3 // rc4 only
 	}
 
-	// Listen port — libtorrent expects an interface CSV
+	// Listen port — libtorrent expects an interface CSV. We always
+	// include the v4 wildcard; v6 only when explicitly enabled to
+	// match the BTsets toggle.
 	listenAddr := settings.TorAddr
 	if listenAddr == "" {
 		port := s.PeersListenPort
-		if port <= 0 {
+		if port < 0 {
 			port = 0 // libtorrent auto-selects
 		}
-		listenAddr = fmt.Sprintf("0.0.0.0:%d,[::]:%d", port, port)
+		listenAddr = fmt.Sprintf("0.0.0.0:%d", port)
+		if s.EnableIPv6 {
+			listenAddr += fmt.Sprintf(",[::]:%d", port)
+		}
 	}
 	cfg["listen_interfaces"] = listenAddr
 
+	// Proxy (if CLI --proxy-url is set, plumb it through). Honours the
+	// --proxy-mode flag (tracker / peers / full).
+	applyProxyConfig(cfg)
+
 	return cfg, nil
+}
+
+// applyProxyConfig translates settings.Args.ProxyURL + ProxyMode into
+// libtorrent's settings_pack proxy_* keys. No-op when ProxyURL is empty.
+//
+// Schemes recognised:
+//   http / https → http proxy (libtorrent's proxy_type=5, with auth = 6)
+//   socks4 / socks4a → SOCKS4
+//   socks5 / socks5h → SOCKS5 (5_pw when user/password present)
+func applyProxyConfig(cfg lt.SessionConfig) {
+	if settings.Args == nil || settings.Args.ProxyURL == "" {
+		return
+	}
+	u, err := url.Parse(settings.Args.ProxyURL)
+	if err != nil || u.Host == "" {
+		log.Println("torr: cannot parse proxy URL:", err)
+		return
+	}
+
+	scheme := strings.ToLower(u.Scheme)
+	username := ""
+	password := ""
+	if u.User != nil {
+		username = u.User.Username()
+		password, _ = u.User.Password()
+	}
+	hasAuth := username != ""
+
+	// proxy_type enum values mirror libtorrent's settings_pack::proxy_type_t.
+	const (
+		ptNone     = 0
+		ptSOCKS4   = 1
+		ptSOCKS5   = 2
+		ptSOCKS5pw = 3
+		ptHTTP     = 4
+		ptHTTPpw   = 5
+		ptI2P      = 6
+	)
+
+	var proxyType int
+	resolveViaProxy := false
+	switch scheme {
+	case "http", "https":
+		if hasAuth {
+			proxyType = ptHTTPpw
+		} else {
+			proxyType = ptHTTP
+		}
+	case "socks4", "socks4a":
+		proxyType = ptSOCKS4
+		resolveViaProxy = scheme == "socks4a"
+	case "socks5":
+		if hasAuth {
+			proxyType = ptSOCKS5pw
+		} else {
+			proxyType = ptSOCKS5
+		}
+	case "socks5h":
+		if hasAuth {
+			proxyType = ptSOCKS5pw
+		} else {
+			proxyType = ptSOCKS5
+		}
+		resolveViaProxy = true
+	default:
+		log.Println("torr: unsupported proxy scheme:", scheme)
+		return
+	}
+
+	host := u.Hostname()
+	port := 0
+	if p := u.Port(); p != "" {
+		fmt.Sscanf(p, "%d", &port)
+	}
+
+	cfg["proxy_type"] = proxyType
+	cfg["proxy_hostname"] = host
+	cfg["proxy_port"] = port
+	cfg["proxy_username"] = username
+	cfg["proxy_password"] = password
+	cfg["proxy_hostnames"] = resolveViaProxy
+
+	// ProxyMode decides which connections go through the proxy.
+	tracker, peer := false, false
+	switch settings.Args.ProxyMode {
+	case "tracker", "":
+		tracker = true
+	case "peers":
+		peer = true
+	case "full":
+		tracker = true
+		peer = true
+	default:
+		log.Println("torr: unknown proxy mode, defaulting to tracker:", settings.Args.ProxyMode)
+		tracker = true
+	}
+	cfg["proxy_tracker_connections"] = tracker
+	cfg["proxy_peer_connections"] = peer
+}
+
+// ReloadIPFilter re-reads bip.txt/wip.txt from disk and pushes the new
+// filter into the live session. Safe no-op when no session is running.
+func (bt *BTServer) ReloadIPFilter() error {
+	bt.mu.Lock()
+	s := bt.session
+	bt.mu.Unlock()
+	if s == nil {
+		return nil
+	}
+	text, err := utils.ReadBlockedIPText()
+	if err != nil {
+		return err
+	}
+	return s.SetIPFilter(text)
 }
 
 // publicIPs is exposed for legacy callers; libtorrent itself learns its
