@@ -1,6 +1,7 @@
 package torrstor
 
 import (
+	"context"
 	"sort"
 	"sync"
 	"time"
@@ -20,6 +21,16 @@ type Cache struct {
 
 	mu     sync.RWMutex
 	pieces map[int]*Piece
+
+	// per-piece wait channels, closed by SignalPieceComplete when
+	// libtorrent's piece_finished_alert arrives.
+	waitMu  sync.Mutex
+	waiters map[int]chan struct{}
+
+	// active Readers; LRU eviction may inspect this to avoid kicking
+	// out pieces in someone's read range (Etap 6 refinement).
+	readersMu sync.Mutex
+	readers   map[*Reader]struct{}
 }
 
 func newCache(s *Storage, sid int64, hash [20]byte, numPieces int, pieceLength int64) *Cache {
@@ -30,7 +41,76 @@ func newCache(s *Storage, sid int64, hash [20]byte, numPieces int, pieceLength i
 		NumPieces:   numPieces,
 		PieceLength: pieceLength,
 		pieces:      map[int]*Piece{},
+		waiters:     map[int]chan struct{}{},
+		readers:     map[*Reader]struct{}{},
 	}
+}
+
+// SignalPieceComplete is invoked from BTServer's alert pump when
+// libtorrent reports `piece_finished_alert` for this torrent. Wakes
+// any Reader blocked on the piece and marks the in-memory state
+// as complete.
+func (c *Cache) SignalPieceComplete(piece int) {
+	c.mu.RLock()
+	p := c.pieces[piece]
+	c.mu.RUnlock()
+	if p != nil {
+		p.setComplete(true)
+	}
+	c.waitMu.Lock()
+	if ch, ok := c.waiters[piece]; ok {
+		close(ch)
+		delete(c.waiters, piece)
+	}
+	c.waitMu.Unlock()
+}
+
+// WaitForPiece blocks until SignalPieceComplete(piece) is called or
+// ctx fires. Returns true on completion, false on timeout/cancel.
+func (c *Cache) WaitForPiece(ctx context.Context, piece int) bool {
+	if c.Have(piece) {
+		return true
+	}
+	c.waitMu.Lock()
+	ch, ok := c.waiters[piece]
+	if !ok {
+		ch = make(chan struct{})
+		c.waiters[piece] = ch
+	}
+	c.waitMu.Unlock()
+	// Recheck after subscribing — Have may have flipped while we were
+	// taking the lock.
+	if c.Have(piece) {
+		return true
+	}
+	select {
+	case <-ch:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// registerReader / unregisterReader track active streaming clients so
+// later LRU heuristics can preserve their working set.
+func (c *Cache) registerReader(r *Reader) {
+	c.readersMu.Lock()
+	c.readers[r] = struct{}{}
+	c.readersMu.Unlock()
+}
+
+func (c *Cache) unregisterReader(r *Reader) {
+	c.readersMu.Lock()
+	delete(c.readers, r)
+	c.readersMu.Unlock()
+}
+
+// ActiveReaders returns the current number of subscribed Readers.
+// Exposed for diagnostics and the torrent expiry logic in BTServer.
+func (c *Cache) ActiveReaders() int {
+	c.readersMu.Lock()
+	defer c.readersMu.Unlock()
+	return len(c.readers)
 }
 
 // close drops the in-memory state for every piece but leaves on-disk

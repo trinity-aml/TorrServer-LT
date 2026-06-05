@@ -437,14 +437,35 @@ func (t *Torrent) Status() *state.TorrentStatus {
 	return st
 }
 
-// ----- streaming / reader (stubbed until Etap 5) -----
+// ----- streaming / reader -----
 
+// NewReader hands out an io.ReadSeekCloser over the requested file,
+// backed by the Cache registered for this torrent. Returns nil if the
+// cache hasn't been opened yet (metadata still in flight) or file is
+// nil.
 func (t *Torrent) NewReader(file *File) Reader {
-	log.TLogln("torr.NewReader: not implemented in this milestone")
-	return nil
+	if t == nil || t.lh == nil || file == nil {
+		return nil
+	}
+	cache := torrstor.Global().CacheByHash([20]byte(t.Hash()))
+	if cache == nil {
+		log.TLogln("torr.NewReader: no cache for", t.Hash().HexString())
+		return nil
+	}
+	return torrstor.NewReader(cache, t.lh, torrstor.FileInfo{
+		Index:  file.Index,
+		Path:   file.Path,
+		Offset: file.Offset,
+		Length: file.Length,
+	})
 }
 
+// CloseReader releases a previously handed-out reader and pushes the
+// torrent's auto-drop deadline forward.
 func (t *Torrent) CloseReader(r Reader) {
+	if r != nil {
+		_ = r.Close()
+	}
 	t.AddExpiredTime(torrentExpireTimeout())
 }
 
