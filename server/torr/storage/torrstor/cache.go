@@ -1,0 +1,169 @@
+package torrstor
+
+import (
+	"sync"
+	"time"
+
+	"server/torr/storage/state"
+)
+
+// Cache holds every Piece for a single torrent.
+type Cache struct {
+	storage *Storage
+
+	StorageID   int64
+	InfoHash    [20]byte
+	NumPieces   int
+	PieceLength int64
+
+	mu     sync.RWMutex
+	pieces map[int]*Piece
+}
+
+func newCache(s *Storage, sid int64, hash [20]byte, numPieces int, pieceLength int64) *Cache {
+	return &Cache{
+		storage:     s,
+		StorageID:   sid,
+		InfoHash:    hash,
+		NumPieces:   numPieces,
+		PieceLength: pieceLength,
+		pieces:      map[int]*Piece{},
+	}
+}
+
+func (c *Cache) close() {
+	c.mu.Lock()
+	for _, p := range c.pieces {
+		p.release()
+	}
+	c.pieces = nil
+	c.mu.Unlock()
+}
+
+func (c *Cache) wipe() {
+	c.mu.Lock()
+	for _, p := range c.pieces {
+		p.release()
+	}
+	c.pieces = map[int]*Piece{}
+	c.mu.Unlock()
+}
+
+// readPiece serves a libtorrent disk read.
+func (c *Cache) readPiece(piece int, offset int64, dst []byte) (int, error) {
+	c.mu.RLock()
+	p := c.pieces[piece]
+	c.mu.RUnlock()
+	if p == nil {
+		return 0, errOutOfPiece
+	}
+	return p.ReadAt(dst, offset)
+}
+
+// writePiece is the libtorrent disk write path. Always allocates a Piece
+// on first hit.
+func (c *Cache) writePiece(piece int, offset int64, src []byte) (int, error) {
+	if piece < 0 || piece >= c.NumPieces {
+		return 0, errOutOfPiece
+	}
+	c.mu.Lock()
+	p := c.pieces[piece]
+	if p == nil {
+		p = newPiece(c, piece)
+		c.pieces[piece] = p
+	}
+	c.mu.Unlock()
+	return p.WriteAt(src, offset)
+}
+
+// Have reports whether the piece has been fully written to the cache.
+func (c *Cache) Have(piece int) bool {
+	c.mu.RLock()
+	p := c.pieces[piece]
+	c.mu.RUnlock()
+	return p != nil && p.Complete()
+}
+
+// MarkComplete is invoked when libtorrent emits a piece_finished_alert
+// for this storage; the BTServer alert-pump wires the call. Currently
+// the Piece auto-flips Complete once enough bytes are written, but the
+// explicit signal lets us tighten the criterion in Etap 6 (e.g. after a
+// successful hash check).
+func (c *Cache) MarkComplete(piece int) {
+	c.mu.RLock()
+	p := c.pieces[piece]
+	c.mu.RUnlock()
+	if p != nil {
+		p.setComplete(true)
+	}
+}
+
+// PiecesSnapshot returns a copy of the per-piece state map for diagnostic
+// endpoints (/cache, tgbot snake).
+func (c *Cache) PiecesSnapshot() map[int]state.ItemState {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make(map[int]state.ItemState, len(c.pieces))
+	for id, p := range c.pieces {
+		out[id] = state.ItemState{
+			Id:        id,
+			Length:    c.PieceLength,
+			Size:      p.SizeBytes(),
+			Completed: p.Complete(),
+			Priority:  0,
+		}
+	}
+	return out
+}
+
+// Filled returns the total bytes resident in the cache.
+func (c *Cache) Filled() int64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var sum int64
+	for _, p := range c.pieces {
+		sum += p.SizeBytes()
+	}
+	return sum
+}
+
+// LastWrite returns the most recent piece-write timestamp (unix seconds).
+// Zero when the cache is empty. Used by the LRU/Reader logic in later
+// milestones.
+func (c *Cache) LastWrite() int64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var ts int64
+	for _, p := range c.pieces {
+		if a := p.Accessed(); a > ts {
+			ts = a
+		}
+	}
+	return ts
+}
+
+// State emits a CacheState DTO for the /cache HTTP endpoint.
+func (c *Cache) State() *state.CacheState {
+	return &state.CacheState{
+		Hash:         hashHex(c.InfoHash),
+		Capacity:     0, // Etap 4.2 plugs settings.BTsets.CacheSize here
+		Filled:       c.Filled(),
+		PiecesLength: c.PieceLength,
+		PiecesCount:  c.NumPieces,
+		Pieces:       c.PiecesSnapshot(),
+		Readers:      nil,
+	}
+}
+
+func hashHex(h [20]byte) string {
+	const hex = "0123456789abcdef"
+	out := make([]byte, 40)
+	for i, b := range h {
+		out[i*2] = hex[b>>4]
+		out[i*2+1] = hex[b&0x0f]
+	}
+	return string(out)
+}
+
+// touch is a placeholder for the LRU bookkeeping that lands in 4.2.
+func (c *Cache) touch(_ int) { _ = time.Now() }

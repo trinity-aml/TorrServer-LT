@@ -2,11 +2,18 @@
 // See lt_shim.h for the contract.
 //
 // libtorrent (arvidn) 2.x API only — v1 SHA-1 torrents.
-// Storage callbacks are stubbed; the real custom_storage hookup lands in Etap 4.
+// Custom disk_io (Etap 4.1) lives in lt_disk_io.cpp and is wired in when
+// Go has installed storage callbacks via lt_install_storage_callbacks_full.
 
 #include "lt_shim.h"
+#include "lt_disk_io.h"
 
 #include "third_party/nlohmann/json.hpp"
+
+// Forward declaration from lt_disk_io.cpp — installs custom disk_io on
+// the given session_params if Go has registered storage callbacks.
+namespace libtorrent { struct session_params; }
+extern void tsl_install_disk_io_on(libtorrent::session_params& params);
 
 #include <libtorrent/add_torrent_params.hpp>
 #include <libtorrent/alert.hpp>
@@ -382,17 +389,6 @@ json alert_to_json(lt::alert const* a) {
 } // namespace
 
 // ============================================================================
-// storage callback registry (Etap 4 wires this into a real disk_interface)
-// ============================================================================
-namespace {
-
-std::atomic<lt_storage_read_fn>  g_storage_read{nullptr};
-std::atomic<lt_storage_write_fn> g_storage_write{nullptr};
-std::atomic<lt_storage_have_fn>  g_storage_have{nullptr};
-
-} // namespace
-
-// ============================================================================
 // public C ABI
 // ============================================================================
 
@@ -448,6 +444,10 @@ lt_session lt_session_new(const char* settings_json) {
                 return 0;
             }
         }
+
+        // If Go has registered storage callbacks, swap in our custom
+        // disk_io constructor before the session boots.
+        tsl_install_disk_io_on(params);
 
         auto slot = std::make_shared<session_slot>();
         slot->s = std::make_unique<lt::session>(std::move(params));
@@ -905,19 +905,9 @@ char* lt_session_pop_alerts_json_alloc(lt_session sid, size_t* out_len) {
     }
 }
 
-// ----- storage callbacks (stub) -----
-
-int lt_register_storage_callbacks(
-    lt_storage_read_fn  r,
-    lt_storage_write_fn w,
-    lt_storage_have_fn  h)
-{
-    g_storage_read.store(r);
-    g_storage_write.store(w);
-    g_storage_have.store(h);
-    // The real custom_storage hookup lands in Etap 4.
-    return LT_OK;
-}
+// Storage callbacks are now installed via lt_install_storage_callbacks_full
+// (declared in lt_disk_io.h, implemented in lt_disk_io.cpp). The old
+// 3-pointer API was removed in Etap 4.
 
 // ----- parsers (utility) -----
 

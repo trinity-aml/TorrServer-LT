@@ -18,12 +18,17 @@
 package lt
 
 /*
+#cgo CFLAGS: -I${SRCDIR}
 #cgo CXXFLAGS: -std=c++17 -I${SRCDIR} -I${SRCDIR}/third_party
 #cgo pkg-config: libtorrent-rasterbar
 #cgo LDFLAGS: -lstdc++
 
 #include <stdlib.h>
 #include "lt_shim.h"
+#include "lt_disk_io.h"
+
+int tsl_install_go_storage_callbacks(void);
+int tsl_uninstall_go_storage_callbacks(void);
 */
 import "C"
 
@@ -608,15 +613,33 @@ func decodeParsed(raw []byte) (*ParsedTorrent, error) {
 	return &pt, nil
 }
 
-// ----- storage callbacks (stub) -----
+// ----- storage callbacks (custom disk_io) -----
 
 // StorageCallbacks holds Go-side handlers that, once registered, libtorrent
-// will call from its disk thread pool. Etap 4 wires them into a real
-// disk_interface; for now registration is recorded but no calls flow back.
+// calls from its disk thread pool. Etap 4.1 ships an in-memory backing
+// store implementation; Etap 4.2 adds on-disk pieces and resume.
+//
+// All handlers must be safe to call from any goroutine and may execute on
+// libtorrent's disk-io threads. Returning an error from Read/Write surfaces
+// as a storage_error on the libtorrent side.
 type StorageCallbacks struct {
-	Read  func(torrent int64, piece int, offset int64, dst []byte) (int, error)
-	Write func(torrent int64, piece int, offset int64, src []byte) (int, error)
-	Have  func(torrent int64, piece int) bool
+	// Open is fired when libtorrent creates a new storage for a torrent.
+	Open func(storage int64, infoHash [20]byte, numPieces int, pieceLength int64)
+	// Close is fired when libtorrent destroys a storage.
+	Close func(storage int64)
+	// Deleted is fired when libtorrent requests deletion of the on-disk
+	// files for a storage (e.g. RemTorrent with delete=true).
+	Deleted func(storage int64)
+	// Read populates dst with `len(dst)` bytes from the (piece, offset)
+	// range; returns the bytes actually copied (must equal len(dst) on
+	// success).
+	Read func(storage int64, piece int, offset int64, dst []byte) (int, error)
+	// Write persists src bytes into the (piece, offset) range; returns
+	// the bytes actually persisted.
+	Write func(storage int64, piece int, offset int64, src []byte) (int, error)
+	// Have reports whether the piece is locally complete (used in Etap 4.2
+	// resume scan).
+	Have func(storage int64, piece int) bool
 }
 
 var (
@@ -624,13 +647,109 @@ var (
 	storage   StorageCallbacks
 )
 
+func storageSnapshot() StorageCallbacks {
+	storageMu.RLock()
+	defer storageMu.RUnlock()
+	return storage
+}
+
 // RegisterStorageCallbacks installs the Go-side handlers for the custom
-// piece storage. Currently a no-op at the libtorrent level — see Etap 4.
+// piece storage. Pass a zero StorageCallbacks{} to uninstall — the next
+// NewSession will then fall back to libtorrent's default disk_io.
+//
+// IMPORTANT: storage_callback installation is process-global; the next
+// call to NewSession picks up the current setting. Already-running
+// sessions keep whichever disk_io they were started with.
 func RegisterStorageCallbacks(cb StorageCallbacks) error {
+	empty := cb.Open == nil && cb.Close == nil && cb.Deleted == nil &&
+		cb.Read == nil && cb.Write == nil && cb.Have == nil
 	storageMu.Lock()
 	storage = cb
 	storageMu.Unlock()
-	// Pass nil pointers — actual trampoline install lands in Etap 4.
-	rc := C.lt_register_storage_callbacks(nil, nil, nil)
-	return codeToErr(rc)
+	if empty {
+		return codeToErr(C.tsl_uninstall_go_storage_callbacks())
+	}
+	return codeToErr(C.tsl_install_go_storage_callbacks())
+}
+
+// ----- //export trampolines invoked by lt_disk_io_trampolines.c -----
+//
+// Signatures match the `extern` decls in the trampoline file (`long long`
+// is int64_t on every supported Linux platform; cgo emits the matching C
+// type when we use C.longlong / C.int / C.uchar). Each one looks up the
+// current Go-side StorageCallbacks under a read lock; if the relevant
+// handler is nil the call is treated as "absent" (error / false).
+
+//export tsl_storage_open_go
+func tsl_storage_open_go(storage C.longlong, infoHash *C.uchar, numPieces C.int, pieceLength C.longlong) {
+	cb := storageSnapshot()
+	if cb.Open == nil {
+		return
+	}
+	var h [20]byte
+	src := unsafe.Slice((*byte)(unsafe.Pointer(infoHash)), 20)
+	copy(h[:], src)
+	cb.Open(int64(storage), h, int(numPieces), int64(pieceLength))
+}
+
+//export tsl_storage_close_go
+func tsl_storage_close_go(storage C.longlong) {
+	cb := storageSnapshot()
+	if cb.Close != nil {
+		cb.Close(int64(storage))
+	}
+}
+
+//export tsl_storage_deleted_go
+func tsl_storage_deleted_go(storage C.longlong) {
+	cb := storageSnapshot()
+	if cb.Deleted != nil {
+		cb.Deleted(int64(storage))
+	}
+}
+
+//export tsl_storage_read_go
+func tsl_storage_read_go(storage C.longlong, piece C.int, offset C.longlong, buf *C.uchar, length C.int) C.int {
+	if length <= 0 {
+		return 0
+	}
+	cb := storageSnapshot()
+	if cb.Read == nil {
+		return -1
+	}
+	dst := unsafe.Slice((*byte)(unsafe.Pointer(buf)), int(length))
+	n, err := cb.Read(int64(storage), int(piece), int64(offset), dst)
+	if err != nil {
+		return -1
+	}
+	return C.int(n)
+}
+
+//export tsl_storage_write_go
+func tsl_storage_write_go(storage C.longlong, piece C.int, offset C.longlong, buf *C.uchar, length C.int) C.int {
+	if length <= 0 {
+		return 0
+	}
+	cb := storageSnapshot()
+	if cb.Write == nil {
+		return -1
+	}
+	src := unsafe.Slice((*byte)(unsafe.Pointer(buf)), int(length))
+	n, err := cb.Write(int64(storage), int(piece), int64(offset), src)
+	if err != nil {
+		return -1
+	}
+	return C.int(n)
+}
+
+//export tsl_storage_have_go
+func tsl_storage_have_go(storage C.longlong, piece C.int) C.int {
+	cb := storageSnapshot()
+	if cb.Have == nil {
+		return 0
+	}
+	if cb.Have(int64(storage), int(piece)) {
+		return 1
+	}
+	return 0
 }

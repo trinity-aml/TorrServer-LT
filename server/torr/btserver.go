@@ -15,6 +15,7 @@ import (
 
 	"server/lt"
 	"server/settings"
+	"server/torr/storage/torrstor"
 	"server/torr/utils"
 	"server/version"
 )
@@ -49,8 +50,17 @@ func (bt *BTServer) Connect() error {
 	if err != nil {
 		return fmt.Errorf("torr.BTServer.Connect: %w", err)
 	}
+
+	// Activate the custom Go-backed disk_io before booting the session.
+	// Already-running sessions (none in our model) would keep their
+	// original disk_io; new sessions pick this up at session_new.
+	if err := torrstor.Global().Install(); err != nil {
+		return fmt.Errorf("torr.BTServer.Connect: install storage: %w", err)
+	}
+
 	s, err := lt.NewSession(cfg)
 	if err != nil {
+		_ = torrstor.Global().Uninstall()
 		return fmt.Errorf("torr.BTServer.Connect: %w", err)
 	}
 	bt.session = s
@@ -88,6 +98,9 @@ func (bt *BTServer) Disconnect() {
 	bt.torrents = map[Hash]*Torrent{}
 	_ = bt.session.Close()
 	bt.session = nil
+	// Drop the disk callbacks so subsequent NewSession calls (in tests
+	// for instance) fall back to the default libtorrent disk_io.
+	_ = torrstor.Global().Uninstall()
 }
 
 // Session is exposed so the rest of the package can call lt-level

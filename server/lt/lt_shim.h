@@ -186,19 +186,13 @@ int    lt_session_wait_alert(lt_session s, int timeout_ms);
  * Empty array "[]" is a valid result. */
 char*  lt_session_pop_alerts_json_alloc(lt_session s, size_t* out_len);
 
-/* ----- storage callbacks (registered once, process-global) -----
- * Wired up in Etap 4. For now lt_register_storage_callbacks is a stub
- * that records the pointers but the actual custom_storage hookup into
- * libtorrent's disk_interface is not active.
+/* Storage callbacks live in lt_disk_io.h:
+ *   struct tsl_storage_callbacks { open/close/deleted/read/write/have }
+ *   int  lt_install_storage_callbacks_full(struct tsl_storage_callbacks const* cb);
+ *
+ * Once Go installs a full callback set, the next call to lt_session_new
+ * picks up a custom disk_interface that delegates piece I/O back into Go.
  */
-typedef int (*lt_storage_read_fn) (lt_torrent t, int piece, int64_t off, uint8_t* buf, int len);
-typedef int (*lt_storage_write_fn)(lt_torrent t, int piece, int64_t off, const uint8_t* buf, int len);
-typedef int (*lt_storage_have_fn) (lt_torrent t, int piece);
-
-int lt_register_storage_callbacks(
-    lt_storage_read_fn  read_cb,
-    lt_storage_write_fn write_cb,
-    lt_storage_have_fn  have_cb);
 
 /* ----- parsers (utility) -----
  * All return JSON-alloc:

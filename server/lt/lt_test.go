@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -528,15 +529,101 @@ func TestRequestSessionStats(t *testing.T) {
 	}
 }
 
-// ---------- storage callbacks (stub) ----------
+// ---------- storage callbacks ----------
 
 func TestRegisterStorageCallbacks_Stub(t *testing.T) {
 	if err := RegisterStorageCallbacks(StorageCallbacks{
-		Read:  func(int64, int, int64, []byte) (int, error) { return 0, nil },
-		Write: func(int64, int, int64, []byte) (int, error) { return 0, nil },
-		Have:  func(int64, int) bool { return false },
+		Open:    func(int64, [20]byte, int, int64) {},
+		Close:   func(int64) {},
+		Deleted: func(int64) {},
+		Read:    func(int64, int, int64, []byte) (int, error) { return 0, nil },
+		Write:   func(int64, int, int64, []byte) (int, error) { return 0, nil },
+		Have:    func(int64, int) bool { return false },
 	}); err != nil {
 		t.Fatalf("RegisterStorageCallbacks: %v", err)
+	}
+}
+
+// TestStorage_CallbackTriggeredByAddTorrent is the end-to-end smoke
+// test for Etap 4.1: register Go-side storage callbacks, create a
+// session, add a torrent with embedded metadata, and verify that the
+// Open callback fires from inside libtorrent's disk thread with the
+// expected info hash. This proves the C++ disk_io / cgo / Go pipeline
+// is wired correctly.
+func TestStorage_CallbackTriggeredByAddTorrent(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		openedID int64
+		openedH  [20]byte
+		openedN  int
+		openedPL int64
+	)
+
+	cb := StorageCallbacks{
+		Open: func(sid int64, h [20]byte, num int, pl int64) {
+			mu.Lock()
+			openedID, openedH, openedN, openedPL = sid, h, num, pl
+			mu.Unlock()
+		},
+		Close:   func(int64) {},
+		Deleted: func(int64) {},
+		Read: func(_ int64, _ int, _ int64, dst []byte) (int, error) {
+			// Pretend we have nothing — libtorrent treats it as missing.
+			return 0, nil
+		},
+		Write: func(_ int64, _ int, _ int64, src []byte) (int, error) {
+			return len(src), nil
+		},
+		Have: func(int64, int) bool { return false },
+	}
+	if err := RegisterStorageCallbacks(cb); err != nil {
+		t.Fatalf("RegisterStorageCallbacks: %v", err)
+	}
+	t.Cleanup(func() { _ = RegisterStorageCallbacks(StorageCallbacks{}) })
+
+	s, err := NewSession(SessionConfig{
+		"enable_dht": false, "enable_lsd": false,
+		"enable_natpmp": false, "enable_upnp": false,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	if _, err := s.AddTorrent(AddTorrentParams{
+		InfoBytes: minimalTorrent(),
+		SavePath:  t.TempDir(),
+		Paused:    true,
+	}); err != nil {
+		t.Fatalf("AddTorrent: %v", err)
+	}
+
+	// Open fires synchronously inside the disk thread during add_torrent;
+	// give it a beat.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		got := openedID
+		mu.Unlock()
+		if got != 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if openedID == 0 {
+		t.Fatal("Open callback never fired")
+	}
+	if openedN != 1 {
+		t.Errorf("Open NumPieces: got %d, want 1", openedN)
+	}
+	if openedPL != 16384 {
+		t.Errorf("Open PieceLength: got %d, want 16384", openedPL)
+	}
+	if openedH == ([20]byte{}) {
+		t.Error("Open info hash is zero")
 	}
 }
 
