@@ -75,7 +75,7 @@ ENV CGO_ENABLED=1
 # broken shim or piece-cache never ships. libtorrent is static
 # (.a only under /opt/lt/lib) so the test binaries are fully
 # self-contained.
-RUN go test -count=1 -timeout 180s ./lt/ ./torr/ ./torr/storage/torrstor/
+RUN go test -count=1 -timeout 180s ./lt/ ./torr/ ./torr/storage/torrstor/ ./dlna/
 
 RUN go build \
       -tags 'osusergo netgo' \
