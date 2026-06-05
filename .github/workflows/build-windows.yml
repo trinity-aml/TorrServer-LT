@@ -29,6 +29,9 @@ jobs:
         with:
           msystem: MINGW64
           update: true
+          # Inherit the Windows PATH so the Go installed by setup-go is
+          # visible inside the msys2 shell.
+          path-type: inherit
           install: >-
             git
             base-devel
