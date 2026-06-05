@@ -266,6 +266,14 @@ type AddTorrentParams struct {
 	SavePath string
 	// Paused starts the torrent paused.
 	Paused bool
+	// HavePieces is a packed bitmap (LSB-first) indicating pieces that
+	// are already present locally. PieceCount must be set to the number
+	// of valid bits (typically the torrent's piece count). When non-empty,
+	// libtorrent skips the post-add hash verification and treats the
+	// listed pieces as known-complete (matches the "trust file-sizes"
+	// resume policy).
+	HavePieces []byte
+	PieceCount int
 }
 
 // AddTorrent adds a torrent to the session and returns a handle.
@@ -307,7 +315,15 @@ func (s *Session) AddTorrent(p AddTorrentParams) (*Torrent, error) {
 	if p.Paused {
 		paused = 1
 	}
-	id := C.lt_session_add_torrent(s.id, cLink, cInfo, cInfoLen, cTrackers, cSave, paused)
+	var (
+		cHaveBuf  *C.uint8_t
+		cHaveBits C.int
+	)
+	if len(p.HavePieces) > 0 && p.PieceCount > 0 {
+		cHaveBuf = (*C.uint8_t)(unsafe.Pointer(&p.HavePieces[0]))
+		cHaveBits = C.int(p.PieceCount)
+	}
+	id := C.lt_session_add_torrent(s.id, cLink, cInfo, cInfoLen, cTrackers, cSave, paused, cHaveBuf, cHaveBits)
 	if id == 0 {
 		return nil, lastError()
 	}
@@ -558,6 +574,9 @@ type ParsedTorrent struct {
 	Trackers     []string `json:"trackers"`
 	HasMetadata  bool     `json:"has_metadata"`
 	MetadataSize int      `json:"metadata_size"`
+	NumPieces    int      `json:"num_pieces,omitempty"`
+	PieceLength  int64    `json:"piece_length,omitempty"`
+	TotalSize    int64    `json:"total_size,omitempty"`
 }
 
 // ParseMagnet parses a magnet URI and returns its info hash, display name and

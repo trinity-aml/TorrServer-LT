@@ -12,6 +12,7 @@ import (
 	"server/settings"
 	"server/torr/state"
 	storageState "server/torr/storage/state"
+	"server/torr/storage/torrstor"
 	"server/torr/utils"
 	utils2 "server/utils"
 	"server/torrshash"
@@ -92,12 +93,29 @@ func NewTorrent(spec *TorrentSpec, bt *BTServer) (*Torrent, error) {
 	}
 	bt.mu.Unlock()
 
+	// If metadata is known at add time (InfoBytes present), scan the
+	// per-piece cache dir for resume bits. Without metadata we don't
+	// know the piece geometry yet; libtorrent will start downloading
+	// and we'll discover have-state on subsequent restarts.
+	var (
+		havePieces []byte
+		pieceCount int
+	)
+	if len(spec.InfoBytes) > 0 {
+		if pt, err := lt.ParseTorrentBytes(spec.InfoBytes); err == nil && pt.HasMetadata && pt.NumPieces > 0 {
+			pieceCount = pt.NumPieces
+			havePieces = torrstor.ScanHavePieces(spec.InfoHash, pt.NumPieces, pt.PieceLength)
+		}
+	}
+
 	lh, err := bt.session.AddTorrent(lt.AddTorrentParams{
-		Link:      magnetFromSpec(spec),
-		InfoBytes: spec.InfoBytes,
-		Trackers:  spec.FlatTrackers(),
-		SavePath:  legacySavePath(spec.InfoHash),
-		Paused:    false,
+		Link:       magnetFromSpec(spec),
+		InfoBytes:  spec.InfoBytes,
+		Trackers:   spec.FlatTrackers(),
+		SavePath:   legacySavePath(spec.InfoHash),
+		Paused:     false,
+		HavePieces: havePieces,
+		PieceCount: pieceCount,
 	})
 	if err != nil {
 		return nil, err

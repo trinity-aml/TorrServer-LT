@@ -557,7 +557,8 @@ lt_torrent lt_session_add_torrent(
     const uint8_t* info_bytes, size_t info_len,
     const char* trackers_csv,
     const char* save_path,
-    int paused)
+    int paused,
+    const uint8_t* have_pieces_bitmap, int have_pieces_count)
 {
     set_err(LT_OK, "");
     try {
@@ -608,6 +609,20 @@ lt_torrent lt_session_add_torrent(
         } else {
             atp.flags &= ~lt::torrent_flags::paused;
             atp.flags |= lt::torrent_flags::auto_managed;
+        }
+
+        if (have_pieces_bitmap && have_pieces_count > 0) {
+            atp.have_pieces.resize(have_pieces_count, false);
+            for (int i = 0; i < have_pieces_count; ++i) {
+                uint8_t byte = have_pieces_bitmap[i / 8];
+                if ((byte >> (i % 8)) & 1u) {
+                    atp.have_pieces.set_bit(lt::piece_index_t{i});
+                }
+            }
+            // Tell libtorrent to trust our bitmap; skips the post-add hash
+            // verification. Matches the "trust file-sizes" resume policy
+            // we agreed on in Etap 2.
+            atp.flags |= lt::torrent_flags::no_verify_files;
         }
 
         lt::error_code ec;
@@ -939,11 +954,17 @@ static char* parse_atp_to_json(lt::add_torrent_params const& atp, size_t* out_le
     j["trackers"] = std::move(tr);
     if (atp.ti) {
         auto const& info = atp.ti->info_section();
-        j["has_metadata"] = true;
+        j["has_metadata"]  = true;
         j["metadata_size"] = static_cast<int>(info.size());
+        j["num_pieces"]    = atp.ti->num_pieces();
+        j["piece_length"]  = atp.ti->piece_length();
+        j["total_size"]    = atp.ti->total_size();
     } else {
-        j["has_metadata"] = false;
+        j["has_metadata"]  = false;
         j["metadata_size"] = 0;
+        j["num_pieces"]    = 0;
+        j["piece_length"]  = 0;
+        j["total_size"]    = 0;
     }
     std::string s = j.dump();
     return alloc_string(s, out_len);

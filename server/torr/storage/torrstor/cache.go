@@ -1,9 +1,11 @@
 package torrstor
 
 import (
+	"sort"
 	"sync"
 	"time"
 
+	"server/settings"
 	"server/torr/storage/state"
 )
 
@@ -31,6 +33,8 @@ func newCache(s *Storage, sid int64, hash [20]byte, numPieces int, pieceLength i
 	}
 }
 
+// close drops the in-memory state for every piece but leaves on-disk
+// files in place — they're the source of truth for the next resume.
 func (c *Cache) close() {
 	c.mu.Lock()
 	for _, p := range c.pieces {
@@ -40,22 +44,41 @@ func (c *Cache) close() {
 	c.mu.Unlock()
 }
 
+// wipe removes every piece's in-memory buffer AND the corresponding
+// on-disk file (if any). Triggered when libtorrent asks us to delete
+// the storage (e.g. RemTorrent with delete=true).
 func (c *Cache) wipe() {
 	c.mu.Lock()
 	for _, p := range c.pieces {
-		p.release()
+		p.wipe()
 	}
 	c.pieces = map[int]*Piece{}
 	c.mu.Unlock()
 }
 
-// readPiece serves a libtorrent disk read.
+// readPiece serves a libtorrent disk read. Lazily reconstructs the
+// Piece from disk when we're in UseDisk mode and the file is present —
+// this is the resume read-path for pieces our scan flagged as "have".
 func (c *Cache) readPiece(piece int, offset int64, dst []byte) (int, error) {
 	c.mu.RLock()
 	p := c.pieces[piece]
 	c.mu.RUnlock()
 	if p == nil {
-		return 0, errOutOfPiece
+		if !useDisk() {
+			return 0, errOutOfPiece
+		}
+		c.mu.Lock()
+		if p = c.pieces[piece]; p == nil {
+			candidate := newPiece(c, piece)
+			if candidate.SizeBytes() > 0 {
+				c.pieces[piece] = candidate
+				p = candidate
+			}
+		}
+		c.mu.Unlock()
+		if p == nil {
+			return 0, errOutOfPiece
+		}
 	}
 	return p.ReadAt(dst, offset)
 }
@@ -73,7 +96,56 @@ func (c *Cache) writePiece(piece int, offset int64, src []byte) (int, error) {
 		c.pieces[piece] = p
 	}
 	c.mu.Unlock()
-	return p.WriteAt(src, offset)
+	n, err := p.WriteAt(src, offset)
+	if n > 0 {
+		go c.evictIfOverCapacity()
+	}
+	return n, err
+}
+
+// evictIfOverCapacity drops the oldest complete pieces until Filled <=
+// capacity. The reader's active range is preserved in Etap 5 (this
+// implementation evicts purely by access timestamp).
+func (c *Cache) evictIfOverCapacity() {
+	cap := capacity()
+	if cap <= 0 {
+		return
+	}
+	if c.Filled() <= cap {
+		return
+	}
+	c.mu.Lock()
+	pieces := make([]*Piece, 0, len(c.pieces))
+	for _, p := range c.pieces {
+		pieces = append(pieces, p)
+	}
+	c.mu.Unlock()
+	sort.Slice(pieces, func(i, j int) bool {
+		return pieces[i].Accessed() < pieces[j].Accessed()
+	})
+	needFree := c.Filled() - cap
+	for _, p := range pieces {
+		if needFree <= 0 {
+			return
+		}
+		sz := p.SizeBytes()
+		if sz <= 0 {
+			continue
+		}
+		// Eviction needs to free disk space too, not just memory.
+		p.wipe()
+		c.mu.Lock()
+		delete(c.pieces, p.Id)
+		c.mu.Unlock()
+		needFree -= sz
+	}
+}
+
+func capacity() int64 {
+	if settings.BTsets == nil {
+		return 0
+	}
+	return settings.BTsets.CacheSize
 }
 
 // Have reports whether the piece has been fully written to the cache.

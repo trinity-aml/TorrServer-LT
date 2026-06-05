@@ -115,13 +115,20 @@ int        lt_session_destroy(lt_session s);
  *
  * Returns torrent handle on success, 0 on error (see lt_last_error).
  */
+/* have_pieces_bitmap (optional, may be NULL) is a packed bit array
+ * indicating locally-present pieces; bit `i` set means "we have piece i".
+ * have_pieces_count is the number of bits to consider (i.e. the torrent's
+ * piece count). When this bitmap is non-empty the shim also sets
+ * torrent_flags::no_verify_files so libtorrent skips re-hashing on add.
+ */
 lt_torrent lt_session_add_torrent(
     lt_session s,
     const char* link,
     const uint8_t* info_bytes, size_t info_len,
     const char* trackers_csv,
     const char* save_path,
-    int paused);
+    int paused,
+    const uint8_t* have_pieces_bitmap, int have_pieces_count);
 
 int lt_torrent_remove(lt_session s, lt_torrent t, int delete_files);
 int lt_torrent_pause(lt_torrent t);
