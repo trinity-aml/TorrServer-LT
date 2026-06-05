@@ -48,20 +48,33 @@ namespace lt = libtorrent;
 using json = nlohmann::json;
 
 // ============================================================================
-// thread-local last error
+// global last error
+//
+// The shim previously stored this state thread-locally, which is incorrect
+// when the caller is Go: a goroutine can migrate between OS threads
+// between two cgo calls, so the lt_last_error() call would read state on
+// a different thread than the one that produced it.
+//
+// We instead keep one process-wide pair under a mutex. lt_last_error()
+// returns a pointer into a thread-local snapshot string, so the returned
+// pointer remains valid until the next lt_last_error() call from the same
+// thread (which is the contract documented in lt_shim.h).
 // ============================================================================
 namespace {
 
-thread_local std::string g_last_error;
-thread_local int         g_last_error_code = LT_OK;
+std::mutex     g_err_mu;
+std::string    g_last_error;
+int            g_last_error_code = LT_OK;
 
 inline int set_err(int code, std::string msg) {
+    std::lock_guard<std::mutex> lk(g_err_mu);
     g_last_error = std::move(msg);
     g_last_error_code = code;
     return code;
 }
 
 inline int set_err_ec(int code, lt::error_code const& ec) {
+    std::lock_guard<std::mutex> lk(g_err_mu);
     g_last_error = ec.message();
     g_last_error_code = code;
     return code;
@@ -403,10 +416,17 @@ extern "C" {
 // ----- error reporting / memory / version -----
 
 const char* lt_last_error(void) {
-    return g_last_error.c_str();
+    // Copy under lock into a thread-local string so the returned pointer
+    // is valid for as long as the contract promises ("until the next
+    // lt_* call from this thread") regardless of concurrent set_err()s.
+    static thread_local std::string snapshot;
+    std::lock_guard<std::mutex> lk(g_err_mu);
+    snapshot = g_last_error;
+    return snapshot.c_str();
 }
 
 int lt_last_error_code(void) {
+    std::lock_guard<std::mutex> lk(g_err_mu);
     return g_last_error_code;
 }
 
@@ -427,7 +447,7 @@ size_t lt_engine_version(char* buf, size_t cap) {
 // ----- session lifecycle -----
 
 lt_session lt_session_new(const char* settings_json) {
-    g_last_error.clear(); g_last_error_code = LT_OK;
+    set_err(LT_OK, "");
     try {
         lt::session_params params;
         params.settings.set_int(lt::settings_pack::alert_mask, LT_ALERT_DEFAULT);
@@ -539,7 +559,7 @@ lt_torrent lt_session_add_torrent(
     const char* save_path,
     int paused)
 {
-    g_last_error.clear(); g_last_error_code = LT_OK;
+    set_err(LT_OK, "");
     try {
         auto slot = get_session(sid);
         if (!slot) { set_err(LT_ERR_NOT_FOUND, "session not found"); return 0; }
@@ -654,7 +674,7 @@ int lt_torrent_have_metadata(lt_torrent tid) {
 }
 
 char* lt_torrent_metadata_alloc(lt_torrent tid, size_t* out_len) {
-    g_last_error.clear(); g_last_error_code = LT_OK;
+    set_err(LT_OK, "");
     try {
         auto h = get_torrent(tid);
         if (!h.is_valid()) { set_err(LT_ERR_NOT_FOUND, "torrent not found"); return nullptr; }
@@ -680,7 +700,7 @@ int lt_torrent_num_files(lt_torrent tid) {
 }
 
 size_t lt_torrent_file_path(lt_torrent tid, int idx, char* buf, size_t cap) {
-    g_last_error.clear(); g_last_error_code = LT_OK;
+    set_err(LT_OK, "");
     try {
         auto h = get_torrent(tid);
         if (!h.is_valid()) { set_err(LT_ERR_NOT_FOUND, "torrent not found"); return 0; }
@@ -697,7 +717,7 @@ size_t lt_torrent_file_path(lt_torrent tid, int idx, char* buf, size_t cap) {
 }
 
 int64_t lt_torrent_file_size(lt_torrent tid, int idx) {
-    g_last_error.clear(); g_last_error_code = LT_OK;
+    set_err(LT_OK, "");
     try {
         auto h = get_torrent(tid);
         if (!h.is_valid()) { set_err(LT_ERR_NOT_FOUND, "torrent not found"); return -1; }
@@ -713,7 +733,7 @@ int64_t lt_torrent_file_size(lt_torrent tid, int idx) {
 }
 
 int64_t lt_torrent_file_offset(lt_torrent tid, int idx) {
-    g_last_error.clear(); g_last_error_code = LT_OK;
+    set_err(LT_OK, "");
     try {
         auto h = get_torrent(tid);
         if (!h.is_valid()) { set_err(LT_ERR_NOT_FOUND, "torrent not found"); return -1; }
@@ -739,7 +759,7 @@ int lt_torrent_num_pieces(lt_torrent tid) {
 }
 
 int64_t lt_torrent_piece_length(lt_torrent tid) {
-    g_last_error.clear(); g_last_error_code = LT_OK;
+    set_err(LT_OK, "");
     try {
         auto h = get_torrent(tid);
         if (!h.is_valid()) { set_err(LT_ERR_NOT_FOUND, "torrent not found"); return -1; }
@@ -753,7 +773,7 @@ int64_t lt_torrent_piece_length(lt_torrent tid) {
 }
 
 int64_t lt_torrent_total_size(lt_torrent tid) {
-    g_last_error.clear(); g_last_error_code = LT_OK;
+    set_err(LT_OK, "");
     try {
         auto h = get_torrent(tid);
         if (!h.is_valid()) { set_err(LT_ERR_NOT_FOUND, "torrent not found"); return -1; }
@@ -767,7 +787,7 @@ int64_t lt_torrent_total_size(lt_torrent tid) {
 }
 
 size_t lt_torrent_display_name(lt_torrent tid, char* buf, size_t cap) {
-    g_last_error.clear(); g_last_error_code = LT_OK;
+    set_err(LT_OK, "");
     try {
         auto h = get_torrent(tid);
         if (!h.is_valid()) { set_err(LT_ERR_NOT_FOUND, "torrent not found"); return 0; }
@@ -780,7 +800,7 @@ size_t lt_torrent_display_name(lt_torrent tid, char* buf, size_t cap) {
 }
 
 size_t lt_torrent_info_hash_hex(lt_torrent tid, char* buf, size_t cap) {
-    g_last_error.clear(); g_last_error_code = LT_OK;
+    set_err(LT_OK, "");
     try {
         auto h = get_torrent(tid);
         if (!h.is_valid()) { set_err(LT_ERR_NOT_FOUND, "torrent not found"); return 0; }
@@ -839,7 +859,7 @@ int lt_torrent_set_file_priority(lt_torrent tid, int file_idx, int prio) {
 // ----- status & stats -----
 
 size_t lt_torrent_status_json(lt_torrent tid, char* buf, size_t cap) {
-    g_last_error.clear(); g_last_error_code = LT_OK;
+    set_err(LT_OK, "");
     try {
         auto h = get_torrent(tid);
         if (!h.is_valid()) { set_err(LT_ERR_NOT_FOUND, "torrent not found"); return 0; }
@@ -852,7 +872,7 @@ size_t lt_torrent_status_json(lt_torrent tid, char* buf, size_t cap) {
 }
 
 char* lt_session_stats_json_alloc(lt_session sid, size_t* out_len) {
-    g_last_error.clear(); g_last_error_code = LT_OK;
+    set_err(LT_OK, "");
     try {
         auto slot = get_session(sid);
         if (!slot) { set_err(LT_ERR_NOT_FOUND, "session not found"); return nullptr; }
@@ -881,7 +901,7 @@ int lt_session_wait_alert(lt_session sid, int timeout_ms) {
 }
 
 char* lt_session_pop_alerts_json_alloc(lt_session sid, size_t* out_len) {
-    g_last_error.clear(); g_last_error_code = LT_OK;
+    set_err(LT_OK, "");
     try {
         auto slot = get_session(sid);
         if (!slot) { set_err(LT_ERR_NOT_FOUND, "session not found"); return nullptr; }
@@ -930,7 +950,7 @@ static char* parse_atp_to_json(lt::add_torrent_params const& atp, size_t* out_le
 }
 
 char* lt_parse_magnet_alloc(const char* uri, size_t* out_len) {
-    g_last_error.clear(); g_last_error_code = LT_OK;
+    set_err(LT_OK, "");
     try {
         if (!uri || !*uri) { set_err(LT_ERR_INVALID, "empty uri"); return nullptr; }
         lt::add_torrent_params atp;
@@ -945,7 +965,7 @@ char* lt_parse_magnet_alloc(const char* uri, size_t* out_len) {
 }
 
 char* lt_parse_torrent_bytes_alloc(const uint8_t* buf, size_t len, size_t* out_len) {
-    g_last_error.clear(); g_last_error_code = LT_OK;
+    set_err(LT_OK, "");
     try {
         if (!buf || len == 0) { set_err(LT_ERR_INVALID, "empty bytes"); return nullptr; }
         lt::error_code ec;
@@ -967,7 +987,7 @@ char* lt_parse_torrent_bytes_alloc(const uint8_t* buf, size_t len, size_t* out_l
 }
 
 char* lt_parse_torrent_file_alloc(const char* path, size_t* out_len) {
-    g_last_error.clear(); g_last_error_code = LT_OK;
+    set_err(LT_OK, "");
     try {
         if (!path || !*path) { set_err(LT_ERR_INVALID, "empty path"); return nullptr; }
         std::ifstream f(path, std::ios::binary);
