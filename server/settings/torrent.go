@@ -4,13 +4,21 @@ import (
 	"encoding/json"
 	"sort"
 	"sync"
-
-	"github.com/anacrolix/torrent"
-	"github.com/anacrolix/torrent/metainfo"
 )
 
+// TorrentSpec is the persistence-layer subset of the engine spec. Field
+// names and JSON shape are kept compatible with the anacrolix-era
+// metainfo encoding so pre-existing config.db files load unchanged.
+type TorrentSpec struct {
+	InfoHash    string     `json:"InfoHash"` // 40-hex lowercase
+	InfoBytes   []byte     `json:"InfoBytes,omitempty"`
+	Trackers    [][]string `json:"Trackers,omitempty"`
+	DisplayName string     `json:"DisplayName,omitempty"`
+}
+
+// TorrentDB is the row persisted in the `Torrents` bucket.
 type TorrentDB struct {
-	*torrent.TorrentSpec
+	*TorrentSpec
 
 	Title    string `json:"title,omitempty"`
 	Category string `json:"category,omitempty"`
@@ -21,6 +29,7 @@ type TorrentDB struct {
 	Size      int64 `json:"size,omitempty"`
 }
 
+// File is kept for callers that historically marshalled it inside Data.
 type File struct {
 	Name string `json:"name,omitempty"`
 	Id   int    `json:"id,omitempty"`
@@ -29,12 +38,17 @@ type File struct {
 
 var mu sync.Mutex
 
+// AddTorrent upserts a torrent record by info hash.
 func AddTorrent(torr *TorrentDB) {
+	if torr == nil || torr.TorrentSpec == nil {
+		return
+	}
 	list := ListTorrent()
 	mu.Lock()
+	defer mu.Unlock()
 	find := -1
 	for i, db := range list {
-		if db.InfoHash.HexString() == torr.InfoHash.HexString() {
+		if db.TorrentSpec != nil && db.TorrentSpec.InfoHash == torr.TorrentSpec.InfoHash {
 			find = i
 			break
 		}
@@ -45,42 +59,41 @@ func AddTorrent(torr *TorrentDB) {
 		list = append(list, torr)
 	}
 	for _, db := range list {
-		buf, err := json.Marshal(db)
-		if err == nil {
-			tdb.Set("Torrents", db.InfoHash.HexString(), buf)
+		if db == nil || db.TorrentSpec == nil {
+			continue
+		}
+		if buf, err := json.Marshal(db); err == nil {
+			tdb.Set("Torrents", db.TorrentSpec.InfoHash, buf)
 		}
 	}
-	mu.Unlock()
 }
 
+// ListTorrent returns every persisted torrent record.
 func ListTorrent() []*TorrentDB {
-	// Use read lock to prevent migration during read
 	dbMigrationLock.RLock()
 	defer dbMigrationLock.RUnlock()
-
 	mu.Lock()
 	defer mu.Unlock()
 
 	var list []*TorrentDB
-	keys := tdb.List("Torrents")
-	for _, key := range keys {
+	for _, key := range tdb.List("Torrents") {
 		buf := tdb.Get("Torrents", key)
-		if len(buf) > 0 {
-			var torr *TorrentDB
-			err := json.Unmarshal(buf, &torr)
-			if err == nil {
-				list = append(list, torr)
-			}
+		if len(buf) == 0 {
+			continue
 		}
+		var t *TorrentDB
+		if err := json.Unmarshal(buf, &t); err != nil || t == nil {
+			continue
+		}
+		list = append(list, t)
 	}
-	sort.Slice(list, func(i, j int) bool {
-		return list[i].Timestamp > list[j].Timestamp
-	})
+	sort.Slice(list, func(i, j int) bool { return list[i].Timestamp > list[j].Timestamp })
 	return list
 }
 
-func RemTorrent(hash metainfo.Hash) {
+// RemTorrent removes a torrent record by 40-hex info hash.
+func RemTorrent(hashHex string) {
 	mu.Lock()
-	tdb.Rem("Torrents", hash.HexString())
-	mu.Unlock()
+	defer mu.Unlock()
+	tdb.Rem("Torrents", hashHex)
 }

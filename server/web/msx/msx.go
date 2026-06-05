@@ -75,7 +75,7 @@ func SetupRoute(r gin.IRouter) {
 		r := false
 		if h := c.Query("hash"); h != "" {
 			for _, t := range settings.ListTorrent() {
-				if r = (t != nil && t.InfoHash.HexString() == h); r {
+				if r = (t != nil && t.TorrentSpec != nil && t.TorrentSpec.InfoHash == h); r {
 					break
 				}
 			}

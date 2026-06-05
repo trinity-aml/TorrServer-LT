@@ -1,19 +1,15 @@
 package utils
 
 import (
+	"crypto/rand"
 	"encoding/base32"
 	"io"
-	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"server/settings"
-
-	"github.com/anacrolix/torrent"
-	"github.com/anacrolix/torrent/metainfo"
-	"golang.org/x/time/rate"
 )
 
 var defTrackers = []string{
@@ -35,22 +31,24 @@ var defTrackers = []string{
 
 var loadedTrackers []string
 
+// GetTrackerFromFile loads optional trackers.txt from data dir.
 func GetTrackerFromFile() []string {
 	name := filepath.Join(settings.Path, "trackers.txt")
 	buf, err := os.ReadFile(name)
-	if err == nil {
-		list := strings.Split(string(buf), "\n")
-		var ret []string
-		for _, l := range list {
-			if strings.HasPrefix(l, "udp") || strings.HasPrefix(l, "http") {
-				ret = append(ret, l)
-			}
-		}
-		return ret
+	if err != nil {
+		return nil
 	}
-	return nil
+	var ret []string
+	for _, l := range strings.Split(string(buf), "\n") {
+		if strings.HasPrefix(l, "udp") || strings.HasPrefix(l, "http") {
+			ret = append(ret, l)
+		}
+	}
+	return ret
 }
 
+// GetDefTrackers returns the default tracker list, refreshing it once
+// from ngosang/trackerslist if possible.
 func GetDefTrackers() []string {
 	loadNewTracker()
 	if len(loadedTrackers) == 0 {
@@ -64,60 +62,31 @@ func loadNewTracker() {
 		return
 	}
 	resp, err := http.Get("https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_best_ip.txt")
-	if err == nil {
-		defer resp.Body.Close()
-		buf, err := io.ReadAll(resp.Body)
-		if err == nil {
-			arr := strings.Split(string(buf), "\n")
-			var ret []string
-			for _, s := range arr {
-				s = strings.TrimSpace(s)
-				if len(s) > 0 {
-					ret = append(ret, s)
-				}
-			}
-			loadedTrackers = append(ret, defTrackers...)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	buf, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return
+	}
+	var fresh []string
+	for _, s := range strings.Split(string(buf), "\n") {
+		if s = strings.TrimSpace(s); s != "" {
+			fresh = append(fresh, s)
 		}
 	}
+	loadedTrackers = append(fresh, defTrackers...)
 }
 
-func PeerIDRandom(peer string) string {
+// PeerIDRandom builds a peer id with the given prefix padded to 20 chars
+// of random base32. Kept for parity with the legacy code; libtorrent now
+// generates its own peer fingerprint via the `peer_fingerprint` setting.
+func PeerIDRandom(prefix string) string {
 	randomBytes := make([]byte, 32)
 	_, err := rand.Read(randomBytes)
 	if err != nil {
 		panic(err)
 	}
-	return peer + base32.StdEncoding.EncodeToString(randomBytes)[:20-len(peer)]
-}
-
-func Limit(i int) *rate.Limiter {
-	l := rate.NewLimiter(rate.Inf, 0)
-	if i > 0 {
-		b := i
-		if b < 16*1024 {
-			b = 16 * 1024
-		}
-		l = rate.NewLimiter(rate.Limit(i), b)
-	}
-	return l
-}
-
-func OpenTorrentFile(path string) (*torrent.TorrentSpec, error) {
-	minfo, err := metainfo.LoadFromFile(path)
-	if err != nil {
-		return nil, err
-	}
-	info, err := minfo.UnmarshalInfo()
-	if err != nil {
-		return nil, err
-	}
-
-	// mag := minfo.Magnet(info.Name, minfo.HashInfoBytes())
-	mag := minfo.Magnet(nil, &info)
-	return &torrent.TorrentSpec{
-		InfoBytes:   minfo.InfoBytes,
-		Trackers:    [][]string{mag.Trackers},
-		DisplayName: info.Name,
-		InfoHash:    minfo.HashInfoBytes(),
-	}, nil
+	return prefix + base32.StdEncoding.EncodeToString(randomBytes)[:20-len(prefix)]
 }

@@ -49,7 +49,7 @@ func getTorrents() (ret []interface{}) {
 	for _, t := range torrs {
 		vol++
 		obj := upnpav.Object{
-			ID:          "%2F" + t.TorrentSpec.InfoHash.HexString(),
+			ID:          "%2F" + t.Hash().HexString(),
 			ParentID:    "%2FTR",
 			Restricted:  1,
 			Title:       strings.ReplaceAll(t.Title, "/", "|"),
@@ -81,7 +81,7 @@ func getTorrent(path, host string) (ret []interface{}) {
 	torrs := torr.ListTorrent()
 	var torr *torr.Torrent
 	for _, t := range torrs {
-		if strings.Contains(path, t.TorrentSpec.InfoHash.HexString()) {
+		if strings.Contains(path, t.Hash().HexString()) {
 			torr = t
 			break
 		}
@@ -91,7 +91,7 @@ func getTorrent(path, host string) (ret []interface{}) {
 	}
 
 	// get content from torrent
-	parent := "%2F" + torr.TorrentSpec.InfoHash.HexString()
+	parent := "%2F" + torr.Hash().HexString()
 	// if torrent not loaded, get button for load
 	if torr.Files() == nil {
 		obj := upnpav.Object{
@@ -146,7 +146,7 @@ func getTorrentMeta(path, host string) (ret interface{}) {
 		torrs := torr.ListTorrent()
 		var torr *torr.Torrent
 		for _, t := range torrs {
-			if strings.Contains(path, t.TorrentSpec.InfoHash.HexString()) {
+			if strings.Contains(path, t.Hash().HexString()) {
 				torr = t
 				break
 			}
@@ -156,7 +156,7 @@ func getTorrentMeta(path, host string) (ret interface{}) {
 		}
 		// hash object meta
 		obj := upnpav.Object{
-			ID:         "%2F" + torr.TorrentSpec.InfoHash.HexString(),
+			ID:         "%2F" + torr.Hash().HexString(),
 			ParentID:   "%2FTR",
 			Restricted: 1,
 			Title:      torr.Title,
@@ -223,7 +223,7 @@ func loadTorrent(path, host string) (ret []interface{}) {
 			}
 		}
 	}
-	parent := "%2F" + tor.TorrentSpec.InfoHash.HexString()
+	parent := "%2F" + tor.Hash().HexString()
 	files := tor.Status().FileStats
 	for _, f := range files {
 		obj := getObjFromTorrent(path, parent, host, tor, f)
@@ -274,8 +274,8 @@ func getObjFromTorrent(path, parent, host string, torr *torr.Torrent, file *stat
 		Object: obj,
 		Res:    make([]upnpav.Resource, 0, 1),
 	}
-	// pathPlay := "stream/" + url.PathEscape(file.Path) + "?link=" + torr.TorrentSpec.InfoHash.HexString() + "&play&index=" + strconv.Itoa(file.Id)
-	pathPlay := "play/" + torr.TorrentSpec.InfoHash.HexString() + "/" + strconv.Itoa(file.Id)
+	// pathPlay := "stream/" + url.PathEscape(file.Path) + "?link=" + torr.Hash().HexString() + "&play&index=" + strconv.Itoa(file.Id)
+	pathPlay := "play/" + torr.Hash().HexString() + "/" + strconv.Itoa(file.Id)
 	item.Res = append(item.Res, upnpav.Resource{
 		URL: getLink(host, pathPlay),
 		ProtocolInfo: fmt.Sprintf("http-get:*:%s:%s", mime, dlna.ContentFeatures{

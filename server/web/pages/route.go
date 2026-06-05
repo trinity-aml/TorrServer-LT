@@ -2,9 +2,9 @@ package pages
 
 import (
 	"net/http"
+	"net/url"
 	"server/proxy"
 
-	"github.com/anacrolix/torrent/metainfo"
 	"github.com/gin-gonic/gin"
 
 	"server/settings"
@@ -60,18 +60,27 @@ func statPage(c *gin.Context) {
 //	@Router			/magnets [get]
 func getTorrents(c *gin.Context) {
 	list := settings.ListTorrent()
-	http := "<div>"
+	html := "<div>"
 	for _, db := range list {
 		ts := db.TorrentSpec
-		mi := metainfo.MetaInfo{
-			AnnounceList: ts.Trackers,
+		if ts == nil {
+			continue
 		}
-		// mag := mi.Magnet(ts.DisplayName, ts.InfoHash)
-		mag := mi.Magnet(&ts.InfoHash, &metainfo.Info{Name: ts.DisplayName})
-		http += "<p><a href='" + mag.String() + "'>magnet:?xt=urn:btih:" + mag.InfoHash.HexString() + "</a></p>"
+		v := url.Values{}
+		v.Set("xt", "urn:btih:"+ts.InfoHash)
+		if ts.DisplayName != "" {
+			v.Set("dn", ts.DisplayName)
+		}
+		for _, tier := range ts.Trackers {
+			for _, tr := range tier {
+				v.Add("tr", tr)
+			}
+		}
+		mag := "magnet:?" + v.Encode()
+		html += "<p><a href='" + mag + "'>magnet:?xt=urn:btih:" + ts.InfoHash + "</a></p>"
 	}
-	http += "</div>"
-	c.Data(200, "text/html; charset=utf-8", []byte(http))
+	html += "</div>"
+	c.Data(200, "text/html; charset=utf-8", []byte(html))
 }
 
 func proxyUrl(c *gin.Context) {

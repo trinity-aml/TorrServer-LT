@@ -100,7 +100,7 @@ func cleanCache() {
 		if !settings.BTsets.RemoveCacheOnDrop {
 			keep[d.Name()] = true
 			for _, t := range torrs {
-				if d.IsDir() && d.Name() == t.InfoHash.HexString() {
+				if d.IsDir() && t.TorrentSpec != nil && d.Name() == t.TorrentSpec.InfoHash {
 					keep[d.Name()] = false
 					break
 				}

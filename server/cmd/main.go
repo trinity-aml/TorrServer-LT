@@ -12,8 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"server/torr/utils"
-
 	"github.com/alexflint/go-arg"
 	"github.com/pkg/browser"
 
@@ -204,7 +202,7 @@ func watchTDir(dir string) {
 			for _, file := range files {
 				filename := filepath.Join(path, file.Name())
 				if strings.ToLower(filepath.Ext(file.Name())) == ".torrent" {
-					sp, err := utils.OpenTorrentFile(filename)
+					sp, err := torr.ParseTorrentFilePath(filename)
 					if err == nil {
 						tor, err := torr.AddTorrent(sp, "", "", "", "")
 						if err == nil {
@@ -213,7 +211,7 @@ func watchTDir(dir string) {
 									tor.Title = tor.Name()
 								}
 								torr.SaveTorrentToDB(tor)
-								tor.Drop()
+								tor.Close()
 								os.Remove(filename)
 								time.Sleep(time.Second)
 							} else {

@@ -1,39 +1,25 @@
 package utils
 
 import (
-	"bufio"
 	"os"
 	"path/filepath"
-	"strings"
-
-	"server/log"
 
 	"server/settings"
-
-	"github.com/anacrolix/torrent/iplist"
 )
 
-func ReadBlockedIP() (ranger iplist.Ranger, err error) {
-	buf, err := os.ReadFile(filepath.Join(settings.Path, "blocklist"))
+// ReadBlockedIPText loads the data-dir's `blocklist` file if it exists
+// and returns its raw contents. The format is the P2P-style text accepted
+// by libtorrent's ip_filter (one rule per line: "Description:from-to" or
+// "Description:single-ip"). Returns "" with nil error if the file is
+// absent, or "" with an error on I/O failure.
+func ReadBlockedIPText() (string, error) {
+	path := filepath.Join(settings.Path, "blocklist")
+	buf, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
-	}
-	log.TLogln("Read block list...")
-	scanner := bufio.NewScanner(strings.NewReader(string(buf)))
-	var ranges []iplist.Range
-	for scanner.Scan() {
-		r, ok, err := iplist.ParseBlocklistP2PLine(scanner.Bytes())
-		if err != nil {
-			return nil, err
+		if os.IsNotExist(err) {
+			return "", nil
 		}
-		if ok {
-			ranges = append(ranges, r)
-		}
+		return "", err
 	}
-	err = scanner.Err()
-	if len(ranges) > 0 {
-		ranger = iplist.New(ranges)
-		log.TLogln("Readed ranges:", len(ranges))
-	}
-	return
+	return string(buf), nil
 }

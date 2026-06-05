@@ -1,9 +1,15 @@
+// Package state holds the engine-agnostic DTOs for the piece cache.
+// Until Etap 4 wires the real custom storage these structs are still
+// emitted by torr.Torrent.CacheState() so that downstream consumers
+// (/cache HTTP endpoint, tgbot snake command) keep their typed schema.
 package state
 
 import (
 	"server/torr/state"
 )
 
+// CacheState is the snapshot served by /cache and friends. Field set is
+// preserved from the pre-libtorrent code so JSON callers don't break.
 type CacheState struct {
 	Hash         string
 	Capacity     int64

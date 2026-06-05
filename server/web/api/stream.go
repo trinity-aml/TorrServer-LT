@@ -13,7 +13,6 @@ import (
 	utils2 "server/utils"
 	"server/web/api/utils"
 
-	"github.com/anacrolix/torrent"
 	"github.com/gin-gonic/gin"
 	"github.com/pkg/errors"
 )
@@ -99,7 +98,7 @@ func stream(c *gin.Context) {
 	poster, _ = url.QueryUnescape(poster)
 	category, _ = url.QueryUnescape(category)
 
-	var spec *torrent.TorrentSpec
+	var spec *torr.TorrentSpec
 	var torrsHash *torrshash.TorrsHash
 	var err error
 
@@ -220,7 +219,7 @@ func streamNoAuth(c *gin.Context) {
 	poster, _ = url.QueryUnescape(poster)
 	category, _ = url.QueryUnescape(category)
 
-	var spec *torrent.TorrentSpec
+	var spec *torr.TorrentSpec
 	var torrsHash *torrshash.TorrsHash
 	var err error
 

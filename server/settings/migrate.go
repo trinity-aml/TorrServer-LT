@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"server/log"
-	"server/web/api/utils"
+	"server/lt"
 
 	bolt "go.etcd.io/bbolt"
 )
@@ -83,21 +83,29 @@ func MigrateTorrents() {
 	db.Close()
 	if err == nil && len(torrs) > 0 {
 		for _, torr := range torrs {
-			spec, err := utils.ParseLink(torr.Magnet)
+			pt, err := lt.ParseMagnet(torr.Magnet)
 			if err != nil {
 				continue
 			}
 
 			title := torr.Name
-			if len(spec.DisplayName) > len(title) {
-				title = spec.DisplayName
+			if len(pt.DisplayName) > len(title) {
+				title = pt.DisplayName
 			}
 			log.TLogln("Migrate torrent", torr.Name, torr.Hash, torr.Size)
+			var trackers [][]string
+			if len(pt.Trackers) > 0 {
+				trackers = [][]string{append([]string(nil), pt.Trackers...)}
+			}
 			AddTorrent(&TorrentDB{
-				TorrentSpec: spec,
-				Title:       title,
-				Timestamp:   torr.Timestamp,
-				Size:        torr.Size,
+				TorrentSpec: &TorrentSpec{
+					InfoHash:    pt.InfoHash,
+					Trackers:    trackers,
+					DisplayName: pt.DisplayName,
+				},
+				Title:     title,
+				Timestamp: torr.Timestamp,
+				Size:      torr.Size,
 			})
 		}
 	}

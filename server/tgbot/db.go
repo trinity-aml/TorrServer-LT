@@ -40,7 +40,10 @@ func sendDbPage(c tele.Context, page int) error {
 	var sb strings.Builder
 	sb.WriteString("📁 <b>" + tr(uid, "db_title") + "</b> (" + strconv.Itoa(len(dbList)) + ")\n\n")
 	for i, t := range pageList {
-		hash := t.InfoHash.HexString()
+		hash := ""
+		if t.TorrentSpec != nil {
+			hash = t.TorrentSpec.InfoHash
+		}
 		sb.WriteString(strconv.Itoa(start+i+1) + ". <b>" + escapeHtml(t.Title) + "</b>")
 		if t.Size > 0 {
 			sb.WriteString(" <i>" + humanize.IBytes(uint64(t.Size)) + "</i>")

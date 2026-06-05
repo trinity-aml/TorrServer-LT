@@ -7,296 +7,284 @@ import (
 	"sort"
 	"time"
 
-	"github.com/anacrolix/torrent"
-	"github.com/anacrolix/torrent/metainfo"
-
 	"server/log"
 	sets "server/settings"
 )
 
+// bts is the package-level engine handle initialised by BTServer.Connect.
 var bts *BTServer
 
-func InitApiHelper(bt *BTServer) {
-	bts = bt
-}
+// InitApiHelper is called by BTServer.Connect to publish the engine
+// instance to the rest of this package.
+func InitApiHelper(bt *BTServer) { bts = bt }
 
+// LoadTorrent re-adds a DB-only torrent into the running session.
 func LoadTorrent(tor *Torrent) *Torrent {
-	if tor.TorrentSpec == nil {
+	if tor == nil || tor.TorrentSpec == nil {
 		return nil
 	}
-	tr, err := NewTorrent(tor.TorrentSpec, bts)
+	out, err := NewTorrent(tor.TorrentSpec, bts)
 	if err != nil {
+		log.TLogln("torr.LoadTorrent:", err)
 		return nil
 	}
-	if !tr.WaitInfo() {
+	if !out.WaitInfo() {
 		return nil
 	}
-	tr.Title = tor.Title
-	tr.Poster = tor.Poster
-	tr.Data = tor.Data
-	return tr
+	out.Title = tor.Title
+	out.Poster = tor.Poster
+	out.Data = tor.Data
+	out.Category = tor.Category
+	return out
 }
 
-func AddTorrent(spec *torrent.TorrentSpec, title, poster string, data string, category string) (*Torrent, error) {
-	torr, err := NewTorrent(spec, bts)
+// AddTorrent installs a torrent (creating or re-using the in-memory
+// handle), backfilling user metadata from the DB if needed.
+func AddTorrent(spec *TorrentSpec, title, poster, data, category string) (*Torrent, error) {
+	t, err := NewTorrent(spec, bts)
 	if err != nil {
-		log.TLogln("error add torrent:", err)
+		log.TLogln("torr.AddTorrent:", err)
 		return nil, err
 	}
 
-	torDB := GetTorrentDB(spec.InfoHash)
+	dbt := GetTorrentDB(spec.InfoHash)
 
-	if torr.Title == "" {
-		torr.Title = title
-		if title == "" && torDB != nil {
-			torr.Title = torDB.Title
+	if t.Title == "" {
+		t.Title = title
+		if title == "" && dbt != nil {
+			t.Title = dbt.Title
 		}
-		if torr.Title == "" && torr.Torrent != nil && torr.Torrent.Info() != nil {
-			torr.Title = torr.Info().Name
-		}
-	}
-
-	if torr.Category == "" {
-		torr.Category = category
-		if torr.Category == "" && torDB != nil {
-			torr.Category = torDB.Category
+		if t.Title == "" && t.lh != nil {
+			t.Title = t.Name()
 		}
 	}
-
-	if torr.Poster == "" {
-		torr.Poster = poster
-		if torr.Poster == "" && torDB != nil {
-			torr.Poster = torDB.Poster
+	if t.Category == "" {
+		t.Category = category
+		if t.Category == "" && dbt != nil {
+			t.Category = dbt.Category
 		}
 	}
-
-	if torr.Data == "" {
-		torr.Data = data
-		if torr.Data == "" && torDB != nil {
-			torr.Data = torDB.Data
+	if t.Poster == "" {
+		t.Poster = poster
+		if t.Poster == "" && dbt != nil {
+			t.Poster = dbt.Poster
 		}
 	}
-
-	return torr, nil
+	if t.Data == "" {
+		t.Data = data
+		if t.Data == "" && dbt != nil {
+			t.Data = dbt.Data
+		}
+	}
+	return t, nil
 }
 
+// SaveTorrentToDB persists a torrent record into config.db / json.
 func SaveTorrentToDB(torr *Torrent) {
-	log.TLogln("save to db:", torr.Hash())
+	if torr == nil {
+		return
+	}
+	log.TLogln("torr.SaveTorrentToDB:", torr.Hash().HexString())
 	AddTorrentDB(torr)
 }
 
+// GetTorrent returns the in-memory torrent if present, or revives a
+// DB-only one (asynchronously promoted to a live session torrent).
 func GetTorrent(hashHex string) *Torrent {
-	hash := metainfo.NewHashFromHex(hashHex)
-	timeout := time.Second * time.Duration(sets.BTsets.TorrentDisconnectTimeout)
-	if timeout > time.Minute {
-		timeout = time.Minute
-	}
+	hash := NewHashFromHex(hashHex)
+	timeout := torrentExpireTimeout()
+
 	tor := bts.GetTorrent(hash)
 	if tor != nil {
 		tor.AddExpiredTime(timeout)
 		return tor
 	}
-
-	tr := GetTorrentDB(hash)
-	if tr != nil {
-		tor = tr
-		go func() {
-			log.TLogln("New torrent", tor.Hash())
-			tr, _ := NewTorrent(tor.TorrentSpec, bts)
-			if tr != nil {
-				tr.Title = tor.Title
-				tr.Poster = tor.Poster
-				tr.Data = tor.Data
-				tr.Size = tor.Size
-				tr.Timestamp = tor.Timestamp
-				tr.Category = tor.Category
-				tr.GotInfo()
-			}
-		}()
+	dbt := GetTorrentDB(hash)
+	if dbt == nil {
+		return nil
 	}
+	tor = dbt
+	go func() {
+		log.TLogln("torr.GetTorrent: promoting DB torrent", tor.Hash().HexString())
+		fresh, err := NewTorrent(tor.TorrentSpec, bts)
+		if err != nil || fresh == nil {
+			return
+		}
+		fresh.Title = tor.Title
+		fresh.Poster = tor.Poster
+		fresh.Data = tor.Data
+		fresh.Size = tor.Size
+		fresh.Timestamp = tor.Timestamp
+		fresh.Category = tor.Category
+		fresh.GotInfo()
+	}()
 	return tor
 }
 
-func SetTorrent(hashHex, title, poster, category string, data string) *Torrent {
-	hash := metainfo.NewHashFromHex(hashHex)
-	torr := bts.GetTorrent(hash)
-	torrDb := GetTorrentDB(hash)
+// SetTorrent updates the in-memory and DB-side metadata of a torrent.
+func SetTorrent(hashHex, title, poster, category, data string) *Torrent {
+	hash := NewHashFromHex(hashHex)
+	tor := bts.GetTorrent(hash)
+	dbt := GetTorrentDB(hash)
 
-	if title == "" && torr == nil && torrDb != nil {
-		torr = GetTorrent(hashHex)
-		torr.GotInfo()
-		if torr.Torrent != nil && torr.Torrent.Info() != nil {
-			title = torr.Info().Name
+	if title == "" && tor == nil && dbt != nil {
+		tor = GetTorrent(hashHex)
+		if tor != nil {
+			tor.GotInfo()
+			if tor.lh != nil {
+				title = tor.Name()
+			}
 		}
 	}
 
-	if torr != nil {
-		if title == "" && torr.Torrent != nil && torr.Torrent.Info() != nil {
-			title = torr.Info().Name
+	if tor != nil {
+		if title == "" && tor.lh != nil {
+			title = tor.Name()
 		}
-		torr.Title = title
-		torr.Poster = poster
-		torr.Category = category
+		tor.Title = title
+		tor.Poster = poster
+		tor.Category = category
 		if data != "" {
-			torr.Data = data
+			tor.Data = data
 		}
 	}
-	// update torrent data in DB
-	if torrDb != nil {
-		torrDb.Title = title
-		torrDb.Poster = poster
-		torrDb.Category = category
+	if dbt != nil {
+		dbt.Title = title
+		dbt.Poster = poster
+		dbt.Category = category
 		if data != "" {
-			torrDb.Data = data
+			dbt.Data = data
 		}
-		AddTorrentDB(torrDb)
+		AddTorrentDB(dbt)
 	}
-	if torr != nil {
-		return torr
-	} else {
-		return torrDb
+	if tor != nil {
+		return tor
 	}
+	return dbt
 }
 
-
+// RemTorrent removes a torrent from memory, the DB and (when configured)
+// the on-disk cache directory.
 func RemTorrent(hashHex string) {
 	if sets.ReadOnly {
-		log.TLogln("API RemTorrent: Read-only DB mode!", hashHex)
+		log.TLogln("torr.RemTorrent: read-only DB mode:", hashHex)
 		return
 	}
-	hash := metainfo.NewHashFromHex(hashHex)
-	
-	// Download the torrent before deleting it to get the "closed" status
-	torr := bts.GetTorrent(hash)
-	if torr == nil {
-		// If the torrent isn't in memory, just delete it from the database and the files
+	hash := NewHashFromHex(hashHex)
+
+	tor := bts.GetTorrent(hash)
+	if tor == nil {
 		RemTorrentDB(hash)
 		if sets.BTsets.UseDisk && hashHex != "" && hashHex != "/" {
-			name := filepath.Join(sets.BTsets.TorrentsSavePath, hashHex)
-			os.RemoveAll(name)
+			os.RemoveAll(filepath.Join(sets.BTsets.TorrentsSavePath, hashHex))
 		}
 		return
 	}
-	
-	closedChan := torr.closed
-	
-	// Clear from memory
+
+	closeCh := tor.closeCh
 	if bts.RemoveTorrent(hash) {
-		// Waiting for confirmation from the library via the closed channel
 		select {
-		case <-closedChan:
-			// The library has confirmed the closure
-			log.TLogln("Torrent closed by library:", hashHex)
+		case <-closeCh:
 		case <-time.After(5 * time.Second):
-			log.TLogln("Warning: timeout waiting for torrent close:", hashHex)
+			log.TLogln("torr.RemTorrent: timeout waiting for close:", hashHex)
 		}
-		
-		// Now we can safely delete the files from the disk
 		if sets.BTsets.UseDisk && hashHex != "" && hashHex != "/" {
 			name := filepath.Join(sets.BTsets.TorrentsSavePath, hashHex)
 			if _, err := os.Stat(name); err == nil {
-				log.TLogln("Removing cache files for:", hashHex)
+				log.TLogln("torr.RemTorrent: removing cache files for", hashHex)
 				os.RemoveAll(name)
 			}
 		}
 	}
-	
-	// Delete from the database
 	RemTorrentDB(hash)
 }
 
+// ListTorrent merges in-memory torrents with DB-only records.
 func ListTorrent() []*Torrent {
-	btlist := bts.ListTorrents()
-	dblist := ListTorrentsDB()
-
-	for hash, t := range dblist {
-		if _, ok := btlist[hash]; !ok {
-			btlist[hash] = t
+	live := bts.ListTorrents()
+	dbm := ListTorrentsDB()
+	for h, t := range dbm {
+		if _, ok := live[h]; !ok {
+			live[h] = t
 		}
 	}
-	var ret []*Torrent
-
-	for _, t := range btlist {
-		ret = append(ret, t)
+	out := make([]*Torrent, 0, len(live))
+	for _, t := range live {
+		out = append(out, t)
 	}
-
-	sort.Slice(ret, func(i, j int) bool {
-		if ret[i].Timestamp != ret[j].Timestamp {
-			return ret[i].Timestamp > ret[j].Timestamp
-		} else {
-			return ret[i].Title > ret[j].Title
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Timestamp != out[j].Timestamp {
+			return out[i].Timestamp > out[j].Timestamp
 		}
+		return out[i].Title > out[j].Title
 	})
-
-	return ret
+	return out
 }
 
+// DropTorrent removes from the running session without touching the DB.
 func DropTorrent(hashHex string) {
-	hash := metainfo.NewHashFromHex(hashHex)
-	bts.RemoveTorrent(hash)
+	bts.RemoveTorrent(NewHashFromHex(hashHex))
 }
 
+// SetSettings applies a new settings_pack and bounces the session.
 func SetSettings(set *sets.BTSets) {
 	if sets.ReadOnly {
-		log.TLogln("API SetSettings: Read-only DB mode!")
+		log.TLogln("torr.SetSettings: read-only DB mode")
 		return
 	}
 	sets.SetBTSets(set)
-	log.TLogln("drop all torrents")
+	log.TLogln("torr.SetSettings: dropping all torrents")
 	dropAllTorrent()
-	time.Sleep(time.Second * 1)
-	log.TLogln("disconect")
+	time.Sleep(time.Second)
+	log.TLogln("torr.SetSettings: disconnect")
 	bts.Disconnect()
-	log.TLogln("connect")
-	bts.Connect()
-	time.Sleep(time.Second * 1)
-	log.TLogln("end set settings")
+	log.TLogln("torr.SetSettings: reconnect")
+	if err := bts.Connect(); err != nil {
+		log.TLogln("torr.SetSettings: connect:", err)
+	}
 }
 
+// SetDefSettings resets settings to defaults and bounces the session.
 func SetDefSettings() {
 	if sets.ReadOnly {
-		log.TLogln("API SetDefSettings: Read-only DB mode!")
+		log.TLogln("torr.SetDefSettings: read-only DB mode")
 		return
 	}
 	sets.SetDefaultConfig()
-	log.TLogln("drop all torrents")
+	log.TLogln("torr.SetDefSettings: dropping all torrents")
 	dropAllTorrent()
-	time.Sleep(time.Second * 1)
-	log.TLogln("disconect")
+	time.Sleep(time.Second)
 	bts.Disconnect()
-	log.TLogln("connect")
-	bts.Connect()
-	time.Sleep(time.Second * 1)
-	log.TLogln("end set default settings")
+	if err := bts.Connect(); err != nil {
+		log.TLogln("torr.SetDefSettings: connect:", err)
+	}
 }
 
 func dropAllTorrent() {
-	for _, torr := range bts.torrents {
-		torr.drop()
-		<-torr.closed
+	for _, t := range bts.ListTorrents() {
+		t.markClosed()
+		if t.lh != nil {
+			_ = t.lh.Remove(false)
+		}
 	}
 }
 
+// Shutdown closes the engine and the DB, then exits the process.
 func Shutdown() {
 	bts.Disconnect()
 	sets.CloseDB()
-	log.TLogln("Received shutdown. Quit")
+	log.TLogln("torr.Shutdown: received shutdown — quit")
 	os.Exit(0)
 }
 
+// WriteStatus dumps libtorrent's stats to an io.Writer. With the new
+// engine this is a one-shot per call (session_stats arrives via the
+// alert pump and is not yet exposed); we emit a minimal placeholder so
+// /stat still responds with HTTP 200.
 func WriteStatus(w io.Writer) {
-	bts.client.WriteStatus(w)
-}
-
-func Preload(torr *Torrent, index int) {
-	cache := float32(sets.BTsets.CacheSize)
-	preload := float32(sets.BTsets.PreloadCache)
-	size := int64((cache / 100.0) * preload)
-	if size <= 0 {
+	if bts == nil || bts.session == nil {
+		w.Write([]byte("session not running\n"))
 		return
 	}
-	if size > sets.BTsets.CacheSize {
-		size = sets.BTsets.CacheSize
-	}
-	torr.Preload(index, size)
+	w.Write([]byte("libtorrent session stats: see /cache and /torrents for per-torrent details.\n"))
 }

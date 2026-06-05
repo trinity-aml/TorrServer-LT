@@ -12,7 +12,6 @@ import (
 	"server/torr/state"
 	"server/web/api/utils"
 
-	"github.com/anacrolix/torrent"
 	"github.com/gin-gonic/gin"
 	"github.com/pkg/errors"
 )
@@ -91,7 +90,7 @@ func addTorrent(req torrReqJS, c *gin.Context) {
 	log.TLogln("add torrent", req.Link)
 	req.Link = strings.ReplaceAll(req.Link, "&amp;", "&")
 
-	var torrSpec *torrent.TorrentSpec
+	var torrSpec *torr.TorrentSpec
 	var torrsHash *torrshash.TorrsHash
 	var err error
 

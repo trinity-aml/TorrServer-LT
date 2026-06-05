@@ -6,7 +6,6 @@ import (
 	"io"
 	"strings"
 
-	"github.com/anacrolix/torrent"
 	tele "gopkg.in/telebot.v4"
 	"server/log"
 	set "server/settings"
@@ -14,7 +13,7 @@ import (
 	"server/web/api/utils"
 )
 
-func addTorrentFromSpec(c tele.Context, torrSpec *torrent.TorrentSpec, displayLabel string) error {
+func addTorrentFromSpec(c tele.Context, torrSpec *torr.TorrentSpec, displayLabel string) error {
 	msg, err := c.Bot().Send(c.Sender(), tr(c.Sender().ID, "connecting"))
 	if err != nil {
 		return err
@@ -70,7 +69,7 @@ func addTorrentFromSpec(c tele.Context, torrSpec *torrent.TorrentSpec, displayLa
 func addTorrent(c tele.Context, link string) error {
 	log.TLogln("tg add torrent", logHashOrTruncate(link))
 	link = strings.ReplaceAll(link, "&amp;", "&")
-	var torrSpec *torrent.TorrentSpec
+	var torrSpec *torr.TorrentSpec
 	var err error
 	if strings.HasPrefix(strings.ToLower(link), "torrs://") {
 		torrSpec, _, err = utils.ParseTorrsHash(link)
