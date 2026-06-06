@@ -118,6 +118,13 @@ func (t *Torrent) Preload(index int, size int64) {
 		}
 	}
 
+	// libtorrent hack (cf. elementum): pause+resume kicks the piece picker so it
+	// re-evaluates and starts requesting the freshly-prioritised buffer pieces
+	// immediately, instead of waiting for its next tick. Only done here, at
+	// buffer startup — never per scheduleWindow (that would churn peers).
+	_ = t.lh.Pause()
+	_ = t.lh.Resume()
+
 	// Cancel the wait if the torrent is closed; cap the total at 2 minutes.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
