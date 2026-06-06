@@ -36,3 +36,8 @@ toolchains/
 /toolchain/
 /server/web/pages/template/pages/msx
 
+# Local cross-build infrastructure (Etap 11.5).
+# Sources/deps/artifacts of the per-target cross-compile scripts.
+/_src/
+/_deps/
+/_out/
