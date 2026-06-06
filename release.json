@@ -10,6 +10,6 @@
         "darwin-amd64":      "https://github.com/trinity-aml/TorrServer-LT/releases/download/MatriX.LT-001/TorrServer-LT-darwin-amd64",
         "darwin-arm64":      "https://github.com/trinity-aml/TorrServer-LT/releases/download/MatriX.LT-001/TorrServer-LT-darwin-arm64",
         "android-arm64":     "https://github.com/trinity-aml/TorrServer-LT/releases/download/MatriX.LT-001/TorrServer-LT-android-arm64",
-        "android-arm7":      "https://github.com/trinity-aml/TorrServer-LT/releases/download/MatriX.LT-001/TorrServer-LT-android-arm7"
+        "android-armv7":     "https://github.com/trinity-aml/TorrServer-LT/releases/download/MatriX.LT-001/TorrServer-LT-android-armv7"
     }
 }

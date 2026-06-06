@@ -7,10 +7,15 @@ name: build
 on:
   push:
     branches: [master]
-    tags: ['v*', 'MatriX.LT-*']
   pull_request:
     branches: [master]
   workflow_dispatch:
+  # Reused by ts_release.yml on a tag; `version` stamps the binaries.
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        default: ''
 
 jobs:
   # Fetch Boost + libtorrent once and cache _src, so the matrix below doesn't
@@ -79,6 +84,10 @@ jobs:
           esac
 
       - name: Build
+        env:
+          # Empty for branch/PR builds (scripts default to MatriX.LT-001);
+          # set to the tag when called from ts_release.yml.
+          TS_VERSION: ${{ inputs.version }}
         run: bash build/${{ matrix.target }}.sh
 
       # Only linux-amd64 runs on the x86 host; use it as the test + smoke gate.

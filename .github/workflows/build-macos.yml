@@ -12,6 +12,12 @@ on:
   pull_request:
     branches: [master]
   workflow_dispatch:
+  # Reused by ts_release.yml on a tag; `version` stamps the binaries.
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        default: ''
 
 jobs:
   macos:
@@ -115,7 +121,7 @@ jobs:
           cd server
           mkdir -p ../out
           go build \
-            -ldflags "-s -w -X server/version.Version=MatriX.LT-001" \
+            -ldflags "-s -w -X server/version.Version=${{ inputs.version || 'MatriX.LT-001' }}" \
             -o "../out/${{ matrix.artifact }}" \
             ./cmd
           file "../out/${{ matrix.artifact }}"
