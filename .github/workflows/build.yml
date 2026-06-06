@@ -1,65 +1,103 @@
 name: build
 
+# Cross-compiles every non-macOS target on a single fast x86 ubuntu runner via
+# the build/<target>.sh scripts — no Docker, no QEMU emulation, no MSYS2.
+# macOS is built natively on macos runners in build-macos.yml.
+
 on:
   push:
     branches: [master]
+    tags: ['v*', 'MatriX.LT-*']
   pull_request:
     branches: [master]
   workflow_dispatch:
 
 jobs:
-  linux:
-    name: ${{ matrix.platform }}
+  # Fetch Boost + libtorrent once and cache _src, so the matrix below doesn't
+  # download Boost (~120 MB) and clone libtorrent six times in parallel.
+  sources:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: _src
+          key: src-boost1.85.0-lt2.0.10-v1
+      - name: Fetch Boost + libtorrent
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: bash build/_fetch_sources.sh
+
+  cross:
+    needs: sources
+    name: ${{ matrix.target }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: linux/amd64
-            artifact: TorrServer-LT-linux-amd64
-          - platform: linux/arm64
-            artifact: TorrServer-LT-linux-arm64
-          - platform: linux/arm/v7
-            artifact: TorrServer-LT-linux-armv7
+        target:
+          - linux-amd64
+          - linux-arm64
+          - linux-armv7
+          - windows-amd64
+          - android-arm64
+          - android-armv7
     steps:
       - uses: actions/checkout@v4
 
-      # QEMU is only used for the non-native platforms; on amd64 the
-      # action is a no-op but the setup-buildx step expects it to be
-      # already configured before it can target multi-arch.
-      - name: Set up QEMU
-        if: matrix.platform != 'linux/amd64'
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build TorrServer-LT (${{ matrix.platform }})
-        uses: docker/build-push-action@v6
+      - name: Restore Boost + libtorrent sources
+        uses: actions/cache@v4
         with:
-          context: .
-          file: Dockerfile.builder
-          platforms: ${{ matrix.platform }}
-          push: false
-          load: true
-          tags: torrserver-lt:ci
-          cache-from: type=gha,scope=${{ matrix.platform }}
-          cache-to: type=gha,scope=${{ matrix.platform }},mode=max
+          path: _src
+          key: src-boost1.85.0-lt2.0.10-v1
+
+      # Cache the per-target install tree (lib + headers + .pc). With it present
+      # build_libtorrent short-circuits and only the Go binary is relinked.
+      - name: Cache libtorrent install tree
+        uses: actions/cache@v4
+        with:
+          path: _deps/${{ matrix.target }}
+          key: deps-${{ matrix.target }}-boost1.85.0-lt2.0.10-v1
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache: true
+          cache-dependency-path: server/go.sum
+
+      - name: Install toolchain
+        run: |
+          set -euo pipefail
+          case "${{ matrix.target }}" in
+            linux-amd64)   : ;;  # host gcc/g++ already present
+            linux-arm64)   sudo apt-get update -qq && sudo apt-get install -y g++-aarch64-linux-gnu ;;
+            linux-armv7)   sudo apt-get update -qq && sudo apt-get install -y g++-arm-linux-gnueabihf ;;
+            windows-amd64) sudo apt-get update -qq && sudo apt-get install -y g++-mingw-w64-x86-64 ;;
+            android-*)     echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV" ;;
+          esac
+
+      - name: Build
+        run: bash build/${{ matrix.target }}.sh
+
+      # Only linux-amd64 runs on the x86 host; use it as the test + smoke gate.
+      - name: Unit tests
+        if: matrix.target == 'linux-amd64'
+        working-directory: server
+        env:
+          CGO_ENABLED: '1'
+          PKG_CONFIG_PATH: ${{ github.workspace }}/_deps/linux-amd64/lib/pkgconfig
+          PKG_CONFIG_LIBDIR: ${{ github.workspace }}/_deps/linux-amd64/lib/pkgconfig
+          CGO_LDFLAGS: -L${{ github.workspace }}/_deps/linux-amd64/lib
+        run: go test -count=1 -timeout 180s ./lt/ ./torr/ ./torr/storage/torrstor/ ./dlna/
 
       - name: Probe --version
-        run: docker run --rm --platform ${{ matrix.platform }} torrserver-lt:ci --version
-
-      - name: Export binary as artifact
-        run: |
-          id=$(docker create --platform ${{ matrix.platform }} torrserver-lt:ci)
-          docker cp "$id":/usr/local/bin/TorrServer-LT ./${{ matrix.artifact }}
-          docker rm "$id"
-          file ./${{ matrix.artifact }}
-          du -h ./${{ matrix.artifact }}
+        if: matrix.target == 'linux-amd64'
+        run: _out/TorrServer-LT-linux-amd64 --version
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}
+          name: TorrServer-LT-${{ matrix.target }}
+          path: _out/TorrServer-LT-${{ matrix.target }}*
           if-no-files-found: error
