@@ -176,15 +176,25 @@ public:
     {
         char* buf = static_cast<char*>(std::malloc(static_cast<size_t>(r.length)));
         if (!buf) {
-            handler({}, make_io_error("read"));
+            auto err = make_io_error("read");
+            lt::post(io_, [h = std::move(handler), err]() mutable {
+                h(lt::disk_buffer_holder{}, err);
+            });
             return;
         }
         int got = cb_.read(storage_id_of(s), static_cast<int>(r.piece),
                            r.start, reinterpret_cast<uint8_t*>(buf), r.length);
         lt::storage_error err;
         if (got != r.length) err = make_io_error("read");
+        // Do the I/O inline (like posix_disk_io) but deliver the completion
+        // handler via the session's io_context. libtorrent requires disk
+        // handlers to be posted, not invoked re-entrantly — calling them
+        // synchronously breaks its piece-completion bookkeeping (it never
+        // schedules async_hash, so pieces never finish).
         lt::disk_buffer_holder holder(*this, buf, r.length);
-        handler(std::move(holder), err);
+        lt::post(io_, [h = std::move(handler), holder = std::move(holder), err]() mutable {
+            h(std::move(holder), err);
+        });
     }
 
     bool async_write(lt::storage_index_t s,
@@ -194,11 +204,13 @@ public:
                      std::function<void(lt::storage_error const&)> handler,
                      lt::disk_job_flags_t /*flags*/ = {}) override
     {
+        // cb_.write copies the block into the cache synchronously, so `buf`
+        // need not outlive this call; only the completion handler is deferred.
         int put = cb_.write(storage_id_of(s), static_cast<int>(r.piece),
                             r.start, reinterpret_cast<uint8_t const*>(buf), r.length);
         lt::storage_error err;
         if (put != r.length) err = make_io_error("write");
-        handler(err);
+        lt::post(io_, [h = std::move(handler), err]() mutable { h(err); });
         return false;
     }
 
@@ -214,7 +226,10 @@ public:
             auto it = storages_.find(storage_id_of(s));
             if (it == storages_.end()) {
                 lk.unlock();
-                handler(piece, lt::sha1_hash{}, make_io_error("hash:no-storage"));
+                auto err = make_io_error("hash:no-storage");
+                lt::post(io_, [h = std::move(handler), piece, err]() mutable {
+                    h(piece, lt::sha1_hash{}, err);
+                });
                 return;
             }
             piece_actual = static_cast<int>(it->second.files->piece_size(piece));
@@ -223,12 +238,18 @@ public:
         int got = cb_.read(storage_id_of(s), static_cast<int>(piece),
                            0, reinterpret_cast<uint8_t*>(data.data()), piece_actual);
         if (got != piece_actual) {
-            handler(piece, lt::sha1_hash{}, make_io_error("hash:short-read"));
+            auto err = make_io_error("hash:short-read");
+            lt::post(io_, [h = std::move(handler), piece, err]() mutable {
+                h(piece, lt::sha1_hash{}, err);
+            });
             return;
         }
         lt::hasher h;
         h.update(lt::span<char const>(data.data(), piece_actual));
-        handler(piece, h.final(), lt::storage_error{});
+        auto digest = h.final();
+        lt::post(io_, [hd = std::move(handler), piece, digest]() mutable {
+            hd(piece, digest, lt::storage_error{});
+        });
     }
 
     void async_hash2(lt::storage_index_t,
@@ -239,21 +260,25 @@ public:
     {
         lt::storage_error se;
         se.ec = lt::error_code(boost::system::errc::function_not_supported, lt::system_category());
-        handler(piece, lt::sha256_hash{}, se);
+        lt::post(io_, [h = std::move(handler), piece, se]() mutable {
+            h(piece, lt::sha256_hash{}, se);
+        });
     }
 
-    // ----- async maintenance -----
+    // ----- async maintenance ----- (handlers posted to io_, see async_read)
 
     void async_move_storage(lt::storage_index_t,
                             std::string p,
                             lt::move_flags_t,
                             std::function<void(lt::status_t, std::string const&, lt::storage_error const&)> handler) override
     {
-        handler(lt::status_t::no_error, p, lt::storage_error{});
+        lt::post(io_, [h = std::move(handler), p = std::move(p)]() mutable {
+            h(lt::status_t::no_error, p, lt::storage_error{});
+        });
     }
 
     void async_release_files(lt::storage_index_t, std::function<void()> handler) override {
-        handler();
+        lt::post(io_, std::move(handler));
     }
 
     void async_delete_files(lt::storage_index_t s,
@@ -261,7 +286,7 @@ public:
                             std::function<void(lt::storage_error const&)> handler) override
     {
         cb_.deleted(storage_id_of(s));
-        handler(lt::storage_error{});
+        lt::post(io_, [h = std::move(handler)]() mutable { h(lt::storage_error{}); });
     }
 
     void async_check_files(lt::storage_index_t /*s*/,
@@ -271,7 +296,9 @@ public:
     {
         // 4.1: nothing on disk yet — let libtorrent treat all pieces as missing.
         // 4.2 hooks `have()` callback to populate the bitmap before this step.
-        handler(lt::status_t::no_error, lt::storage_error{});
+        lt::post(io_, [h = std::move(handler)]() mutable {
+            h(lt::status_t::no_error, lt::storage_error{});
+        });
     }
 
     void async_rename_file(lt::storage_index_t,
@@ -279,25 +306,29 @@ public:
                            std::string name,
                            std::function<void(std::string const&, lt::file_index_t, lt::storage_error const&)> handler) override
     {
-        handler(name, idx, lt::storage_error{});
+        lt::post(io_, [h = std::move(handler), idx, name = std::move(name)]() mutable {
+            h(name, idx, lt::storage_error{});
+        });
     }
 
     void async_stop_torrent(lt::storage_index_t, std::function<void()> handler) override {
-        handler();
+        lt::post(io_, std::move(handler));
     }
 
     void async_set_file_priority(lt::storage_index_t,
                                  lt::aux::vector<lt::download_priority_t, lt::file_index_t> prio,
                                  std::function<void(lt::storage_error const&, lt::aux::vector<lt::download_priority_t, lt::file_index_t>)> handler) override
     {
-        handler(lt::storage_error{}, std::move(prio));
+        lt::post(io_, [h = std::move(handler), prio = std::move(prio)]() mutable {
+            h(lt::storage_error{}, std::move(prio));
+        });
     }
 
     void async_clear_piece(lt::storage_index_t,
                            lt::piece_index_t idx,
                            std::function<void(lt::piece_index_t)> handler) override
     {
-        handler(idx);
+        lt::post(io_, [h = std::move(handler), idx]() mutable { h(idx); });
     }
 
     // ----- accounting / control -----

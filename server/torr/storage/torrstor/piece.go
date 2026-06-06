@@ -63,9 +63,12 @@ func (p *Piece) WriteAt(b []byte, off int64) (int, error) {
 		if end > p.size {
 			p.size = end
 		}
-		if p.size >= p.expectedSize() {
-			p.complete = true
-		}
+		// NOTE: do NOT mark the piece complete here. p.size is only the highest
+		// written offset; blocks arrive out of order, so the last block (by
+		// offset) often lands first and would set size>=expected while the piece
+		// still has holes — a reader would then read garbage/zeros. Completion is
+		// driven solely by libtorrent's piece_finished_alert (all blocks present
+		// AND hash-verified) via Cache.SignalPieceComplete -> setComplete.
 		p.accessed = time.Now().Unix()
 	}
 	return n, err

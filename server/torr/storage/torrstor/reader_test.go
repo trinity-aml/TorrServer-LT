@@ -34,6 +34,10 @@ func TestReader_ReadAfterPieceWritten(t *testing.T) {
 	if _, err := c.writePiece(1, 0, p1); err != nil {
 		t.Fatal(err)
 	}
+	// Completion is driven by libtorrent's piece_finished_alert in production;
+	// simulate it here now that Piece.WriteAt no longer auto-marks complete.
+	c.SignalPieceComplete(0)
+	c.SignalPieceComplete(1)
 
 	r := NewReader(c, nil, FileInfo{Offset: 0, Length: 3 * pieceLen})
 	defer r.Close()
@@ -60,6 +64,8 @@ func TestReader_Seek(t *testing.T) {
 	p2 := bytes.Repeat([]byte{'Z'}, int(pieceLen))
 	_, _ = c.writePiece(0, 0, p0)
 	_, _ = c.writePiece(2, 0, p2)
+	c.SignalPieceComplete(0)
+	c.SignalPieceComplete(2)
 
 	r := NewReader(c, nil, FileInfo{Offset: 0, Length: 3 * pieceLen})
 	defer r.Close()
@@ -153,6 +159,7 @@ func TestReader_ActiveReaderCountTracksLifecycle(t *testing.T) {
 func TestReader_WaitForPiece_FastPath(t *testing.T) {
 	c := mkCache(t, pieceLen)
 	_, _ = c.writePiece(0, 0, bytes.Repeat([]byte{0x99}, int(pieceLen)))
+	c.SignalPieceComplete(0)
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	if !c.WaitForPiece(ctx, 0) {
@@ -180,8 +187,9 @@ func TestReader_PartialReadBoundary(t *testing.T) {
 	tail := bytes.Repeat([]byte{'T'}, int(half))
 	_, _ = c.writePiece(0, 0, full)
 	_, _ = c.writePiece(1, 0, tail)
-	// Manually flip Complete on piece 1 (it's smaller than PieceLength
-	// so the auto-Complete heuristic in Piece.WriteAt didn't fire).
+	// Completion is signalled explicitly (Piece.WriteAt no longer auto-marks
+	// complete — production relies on libtorrent's piece_finished_alert).
+	c.SignalPieceComplete(0)
 	c.SignalPieceComplete(1)
 
 	r := NewReader(c, nil, FileInfo{Offset: 0, Length: totalLen})

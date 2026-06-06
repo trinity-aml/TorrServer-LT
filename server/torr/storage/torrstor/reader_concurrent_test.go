@@ -15,12 +15,14 @@ func TestReader_ConcurrentReadersOnSameCache(t *testing.T) {
 	const filePieces = 4
 	c := mkCache(t, int64(filePieces)*pieceLen)
 
-	// Fill all pieces deterministically: piece i is byte-value 'A'+i.
+	// Fill all pieces deterministically: piece i is byte-value 'A'+i, then
+	// signal completion (production gets this from piece_finished_alert).
 	for i := 0; i < filePieces; i++ {
 		payload := bytes.Repeat([]byte{byte('A' + i)}, int(pieceLen))
 		if _, err := c.writePiece(i, 0, payload); err != nil {
 			t.Fatalf("writePiece(%d): %v", i, err)
 		}
+		c.SignalPieceComplete(i)
 	}
 
 	expect := make([]byte, int(int64(filePieces)*pieceLen))
@@ -76,6 +78,7 @@ func TestReader_SatisfiesReadSeekCloser(t *testing.T) {
 func TestReader_StatBeforeReadWorks(t *testing.T) {
 	c := mkCache(t, pieceLen)
 	_, _ = c.writePiece(0, 0, bytes.Repeat([]byte{0x77}, int(pieceLen)))
+	c.SignalPieceComplete(0)
 	r := NewReader(c, nil, FileInfo{Offset: 0, Length: pieceLen})
 	defer r.Close()
 

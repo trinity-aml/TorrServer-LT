@@ -76,8 +76,11 @@ func TestStorage_HaveAfterFullPiece(t *testing.T) {
 	if _, err := s.callbackWrite(11, 0, 0, payload); err != nil {
 		t.Fatalf("write: %v", err)
 	}
+	// In production libtorrent verifies the piece and posts piece_finished;
+	// the cache marks Have on that signal, not on the raw write.
+	s.CacheByHash(h).SignalPieceComplete(0)
 	if !s.callbackHave(11, 0) {
-		t.Fatal("Have should be true after writing a full piece")
+		t.Fatal("Have should be true after the piece is signalled complete")
 	}
 }
 
@@ -123,9 +126,10 @@ func TestStorage_Wipe(t *testing.T) {
 	s.callbackOpen(3, h, 4, pieceLen)
 	payload := bytes.Repeat([]byte{0x55}, int(pieceLen))
 	_, _ = s.callbackWrite(3, 0, 0, payload)
+	s.CacheByHash(h).SignalPieceComplete(0)
 
 	if !s.callbackHave(3, 0) {
-		t.Fatal("precondition: piece should be complete after full write")
+		t.Fatal("precondition: piece should be complete after being signalled")
 	}
 
 	s.callbackDeleted(3)
