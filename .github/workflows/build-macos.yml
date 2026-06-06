@@ -1,5 +1,11 @@
 name: build-macos
 
+# macOS is built natively on Apple-Silicon runners (macos-latest):
+#  - arm64 builds straight against the runner's Homebrew;
+#  - amd64 cross-builds against an x86_64 Homebrew under Rosetta, so the
+#    artifact is a real Intel binary (a plain build on macos-latest would be
+#    arm64). This avoids the deprecated/flaky macos-13 Intel runner.
+
 on:
   push:
     branches: [master]
@@ -10,71 +16,93 @@ on:
 jobs:
   macos:
     name: macos/${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-latest          # Apple Silicon (arm64)
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
-          # macos-latest is Apple Silicon (arm64) since 2024.
           - arch: arm64
-            runner: macos-latest
+            goarch: arm64
             artifact: TorrServer-LT-darwin-arm64
-          # macos-13 is the last Intel runner before GitHub deprecates.
           - arch: amd64
-            runner: macos-latest
+            goarch: amd64
             artifact: TorrServer-LT-darwin-amd64
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install build deps via brew
+      # arm64: native Homebrew at /opt/homebrew.
+      - name: Install deps (native arm64)
+        if: matrix.arch == 'arm64'
         run: |
           set -euo pipefail
           brew update >/dev/null
-          # libtorrent-rasterbar pulls in boost + openssl as deps.
           brew install pkg-config libtorrent-rasterbar
-          pkg-config --modversion libtorrent-rasterbar
-          pkg-config --cflags libtorrent-rasterbar | head -1
-          pkg-config --libs libtorrent-rasterbar | head -1
+          echo "BREW=brew" >> "$GITHUB_ENV"
+          echo "ARCHFLAG="  >> "$GITHUB_ENV"
+
+      # amd64: x86_64 Homebrew at /usr/local under Rosetta, then Intel bottles.
+      - name: Install deps (x86_64 via Rosetta)
+        if: matrix.arch == 'amd64'
+        run: |
+          set -euo pipefail
+          # Apple-Silicon runners ship Rosetta 2; install it defensively anyway.
+          /usr/bin/pgrep -q oahd || softwareupdate --install-rosetta --agree-to-license || true
+          if [ ! -x /usr/local/bin/brew ]; then
+            arch -x86_64 /bin/bash -c \
+              "NONINTERACTIVE=1 $(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          fi
+          arch -x86_64 /usr/local/bin/brew update >/dev/null
+          arch -x86_64 /usr/local/bin/brew install pkg-config libtorrent-rasterbar
+          echo "BREW=arch -x86_64 /usr/local/bin/brew" >> "$GITHUB_ENV"
+          echo "ARCHFLAG=-arch x86_64"                 >> "$GITHUB_ENV"
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version-file: server/go.mod
           cache: true
           cache-dependency-path: server/go.sum
 
-      - name: Resolve brew prefix
+      - name: Resolve Homebrew prefixes
         id: brew
         run: |
           set -euo pipefail
-          PREFIX="$(brew --prefix)"
-          BOOST_PREFIX="$(brew --prefix boost)"
-          OPENSSL_PREFIX="$(brew --prefix openssl@3 2>/dev/null || brew --prefix openssl)"
-          echo "prefix=$PREFIX"          | tee -a "$GITHUB_OUTPUT"
-          echo "boost=$BOOST_PREFIX"     | tee -a "$GITHUB_OUTPUT"
-          echo "openssl=$OPENSSL_PREFIX" | tee -a "$GITHUB_OUTPUT"
+          BOOST=$($BREW --prefix boost)
+          OPENSSL=$($BREW --prefix openssl@3 2>/dev/null || $BREW --prefix openssl)
+          LT=$($BREW --prefix libtorrent-rasterbar)
+          echo "boost=$BOOST"     >> "$GITHUB_OUTPUT"
+          echo "openssl=$OPENSSL" >> "$GITHUB_OUTPUT"
+          echo "lt=$LT"           >> "$GITHUB_OUTPUT"
 
+      # Native arm64 only: running x86_64 cgo tests under Rosetta is slow, and
+      # the build.yml linux-amd64 job already gates the test suite.
       - name: Run unit tests
+        if: matrix.arch == 'arm64'
+        working-directory: server
         env:
           CGO_ENABLED: '1'
-          # The Homebrew libtorrent pkg-config doesn't carry the Boost
-          # include path; on Apple Silicon Boost lives under a separate
-          # /opt/homebrew/Cellar/boost prefix. Wire it through CGO_*
-          # so cgo's underlying clang invocation finds boost/config.hpp.
+          PKG_CONFIG_PATH: "${{ steps.brew.outputs.lt }}/lib/pkgconfig:${{ steps.brew.outputs.openssl }}/lib/pkgconfig"
           CGO_CXXFLAGS: "-I${{ steps.brew.outputs.boost }}/include -I${{ steps.brew.outputs.openssl }}/include"
           CGO_LDFLAGS: "-L${{ steps.brew.outputs.boost }}/lib -L${{ steps.brew.outputs.openssl }}/lib"
-        run: |
-          cd server
-          go test -count=1 -timeout 180s ./lt/ ./torr/ ./torr/storage/torrstor/ ./dlna/
+        run: go test -count=1 -timeout 180s ./lt/ ./torr/ ./torr/storage/torrstor/ ./dlna/
 
       - name: Build TorrServer-LT
         env:
           CGO_ENABLED: '1'
+          GOOS: darwin
+          GOARCH: ${{ matrix.goarch }}
+          # Homebrew's libtorrent .pc doesn't carry the Boost/OpenSSL include
+          # paths; wire them through so cgo's clang finds boost/config.hpp.
           CGO_CXXFLAGS: "-I${{ steps.brew.outputs.boost }}/include -I${{ steps.brew.outputs.openssl }}/include"
           CGO_LDFLAGS: "-L${{ steps.brew.outputs.boost }}/lib -L${{ steps.brew.outputs.openssl }}/lib"
+          PKG_CONFIG_PATH: "${{ steps.brew.outputs.lt }}/lib/pkgconfig:${{ steps.brew.outputs.openssl }}/lib/pkgconfig"
         run: |
           set -euo pipefail
+          # ARCHFLAG is empty for arm64; for amd64 it makes every cgo compile and
+          # the final link target x86_64 (GOARCH=amd64 handles the Go objects).
+          export CC="clang $ARCHFLAG"
+          export CXX="clang++ $ARCHFLAG"
           cd server
           mkdir -p ../out
           go build \
@@ -84,6 +112,7 @@ jobs:
           file "../out/${{ matrix.artifact }}"
           du -h "../out/${{ matrix.artifact }}"
 
+      # The x86_64 binary runs on the arm64 host via Rosetta, so both probe.
       - name: Probe --version
         run: ./out/${{ matrix.artifact }} --version
 
