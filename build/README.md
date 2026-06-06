@@ -16,6 +16,7 @@ build/
   _common.sh         paths + pinned versions (Boost 1.85.0, libtorrent v2.0.10)
   _fetch_sources.sh  download Boost + clone libtorrent into _src/  (idempotent)
   _deps.sh           shared engine: b2 install libtorrent → go_build
+  _osxcross.sh       locate OSXCross wrappers/SDK (darwin targets)
   all.sh             build every target whose toolchain is present
   <target>.sh        per-target toolchain setup + cross_build
 ```
@@ -62,6 +63,20 @@ sudo apt install \
 > Linux is a legal grey area. For anything distributed, build on a real Mac or
 > the macOS CI runner (`.github/workflows/build-macos.yml`). The scripts exist
 > so "all architectures locally" is reproducible where the SDK is available.
+>
+> The darwin scripts accept either an OSXCross source build (`target/bin`) or a
+> prebuilt `crazymax/osxcross` tree (`bin/` + SDK). To get a ready toolchain
+> with an arm64-capable SDK (>= macOS 11) without building OSXCross — Docker is
+> used once only, to extract; the TorrServer build itself stays Docker-free:
+>
+> ```bash
+> docker create --name oxc crazymax/osxcross:13.1-ubuntu   # SDK 13.1, arm64+x86_64
+> docker cp oxc:/osxcross /opt/osxcross
+> docker cp oxc:/osxsdk   /opt/osxcross/SDK
+> docker rm oxc
+> sudo apt install -y clang        # wrappers drive the host clang
+> export OSXCROSS_ROOT=/opt/osxcross
+> ```
 
 ## Notes
 

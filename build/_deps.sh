@@ -52,7 +52,11 @@ build_libtorrent() {
 
     local compiler="${B2_COMPILER:-gcc}"
     local jam="$deps/user-config.jam"
-    printf 'using %s : %s : %s ;\n' "$compiler" "$B2_VARIANT" "$B2_TOOLSET_CXX" > "$jam"
+    # B2_USERCONFIG_EXTRA lets a target append toolset options (4th `using`
+    # field), e.g. a Mach-O archiver/ranlib for darwin cross. It must start with
+    # ": " when set. Empty for the gcc/clang targets that use the default ar.
+    printf 'using %s : %s : %s %s ;\n' \
+        "$compiler" "$B2_VARIANT" "$B2_TOOLSET_CXX" "${B2_USERCONFIG_EXTRA:-}" > "$jam"
 
     # b2's generate-pkg-config writes libtorrent-rasterbar.pc into the CWD
     # ($LT_DIR). Running two targets from the same CWD races on that file (a
