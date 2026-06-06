@@ -10,6 +10,11 @@ import (
 	"server/torr/storage/torrstor"
 )
 
+// tailPreloadBytes is how much of the file's END to buffer alongside the head,
+// so containers whose index lives at the tail (MP4 moov, MKV cues) can start
+// playing and seeking. ~4 MB covers typical indexes without much overhead.
+const tailPreloadBytes = 4 << 20
+
 // Preload (Torrent method) eagerly downloads the first `size` bytes of file
 // `index` so playback starts with a buffer. Because the torrent sits at piece
 // priority 0 (lazy streaming, see signalGotInfo), this is what actually pulls
@@ -47,29 +52,66 @@ func (t *Torrent) Preload(index int, size int64) {
 	}
 	plen := cache.PieceLength
 
-	preBytes := size
-	if preBytes > f.Length {
-		preBytes = f.Length
+	headBytes := size
+	if headBytes > f.Length {
+		headBytes = f.Length
 	}
-	firstP := int(f.Offset / plen)
-	lastP := int((f.Offset + preBytes - 1) / plen)
-	if lastP >= cache.NumPieces {
-		lastP = cache.NumPieces - 1
+	// Tail buffer: many containers keep their index (MP4 moov atom, MKV cues)
+	// at the END of the file, and players read it before playback can start or
+	// seek. Buffer it too, not just the head.
+	tailBytes := int64(tailPreloadBytes)
+	if tailBytes > f.Length {
+		tailBytes = f.Length
 	}
-	if lastP < firstP {
+
+	clamp := func(p int) int {
+		if p < 0 {
+			return 0
+		}
+		if p >= cache.NumPieces {
+			return cache.NumPieces - 1
+		}
+		return p
+	}
+	headFirst := clamp(int(f.Offset / plen))
+	headLast := clamp(int((f.Offset + headBytes - 1) / plen))
+	tailFirst := clamp(int((f.Offset + f.Length - tailBytes) / plen))
+	tailLast := clamp(int((f.Offset + f.Length - 1) / plen))
+
+	// Ordered, de-duplicated piece list: head pieces (playback order) followed
+	// by tail pieces not already covered by the head.
+	seen := make(map[int]bool)
+	var order []int
+	addRange := func(a, b int) {
+		for i := a; i <= b; i++ {
+			if !seen[i] {
+				seen[i] = true
+				order = append(order, i)
+			}
+		}
+	}
+	addRange(headFirst, headLast)
+	headCount := len(order)
+	addRange(tailFirst, tailLast)
+	if len(order) == 0 {
 		return
 	}
 
 	t.mu.Lock()
-	t.PreloadSize = preBytes
+	t.PreloadSize = int64(len(order)) * plen
 	t.PreloadedBytes = 0
 	t.Stat = state.TorrentPreload
 	t.mu.Unlock()
 
-	// Raise priority + playback-ordered deadlines on the preload range.
-	for i := firstP; i <= lastP; i++ {
-		_ = t.lh.SetPiecePriority(i, 7)
-		_ = t.lh.SetPieceDeadline(i, (i-firstP)*10, false)
+	// Priority 7 on every buffer piece; head gets playback-ordered deadlines,
+	// tail pieces are urgent (the player needs the index to begin).
+	for n, p := range order {
+		_ = t.lh.SetPiecePriority(p, 7)
+		if n < headCount {
+			_ = t.lh.SetPieceDeadline(p, n*10, false)
+		} else {
+			_ = t.lh.SetPieceDeadline(p, 0, false)
+		}
 	}
 
 	// Cancel the wait if the torrent is closed; cap the total at 2 minutes.
@@ -83,13 +125,13 @@ func (t *Torrent) Preload(index int, size int64) {
 		}
 	}()
 
-	for i := firstP; i <= lastP; i++ {
-		if !cache.WaitForPiece(ctx, i) {
+	for _, p := range order {
+		if !cache.WaitForPiece(ctx, p) {
 			break // timeout or torrent closed
 		}
 		t.mu.Lock()
-		if t.PreloadedBytes += plen; t.PreloadedBytes > preBytes {
-			t.PreloadedBytes = preBytes
+		if t.PreloadedBytes += plen; t.PreloadedBytes > t.PreloadSize {
+			t.PreloadedBytes = t.PreloadSize
 		}
 		t.mu.Unlock()
 	}
@@ -99,7 +141,8 @@ func (t *Torrent) Preload(index int, size int64) {
 		t.Stat = state.TorrentWorking
 	}
 	t.mu.Unlock()
-	log.TLogln("torr.Preload:", t.Name(), "buffered pieces", firstP, "..", lastP)
+	log.TLogln("torr.Preload:", t.Name(), "buffered", len(order), "pieces (head",
+		headFirst, "..", headLast, "+ tail", tailFirst, "..", tailLast, ")")
 }
 
 // Preload (free function) keeps API parity with the legacy call sites

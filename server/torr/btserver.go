@@ -214,6 +214,26 @@ func buildSessionConfig() (lt.SessionConfig, error) {
 	cfg := lt.SessionConfig{
 		"user_agent":       "qBittorrent/4.3.9",
 		"peer_fingerprint": "-qB4390-",
+
+		// Streaming-tuned defaults (cf. elgatito/elementum). These trade some
+		// bandwidth politeness for fast start/seek: find peers quickly, keep
+		// deep request pipelines, and race the last buffer pieces via end-game
+		// mode. BTsets-derived keys below may override where they overlap.
+		"strict_end_game_mode":         true,  // fetch the final buffer pieces from many peers
+		"prioritize_partial_pieces":    false, // prefer finishing the reader's window in order
+		"announce_to_all_tiers":        true,  // hit every tracker tier for peers fast
+		"announce_to_all_trackers":     true,
+		"min_announce_interval":        30,
+		"whole_pieces_threshold":       10,
+		"max_suggest_pieces":           50,
+		"request_queue_time":           2,
+		"max_out_request_queue":        5000,
+		"max_allowed_in_request_queue": 5000,
+		"send_buffer_watermark":        500 * 1024,
+		"send_buffer_watermark_factor": 50,
+		"connection_speed":             250, // open new peer connections faster
+		"max_peerlist_size":            50000,
+		"mixed_mode_algorithm":         0, // prefer_tcp: steadier throughput for streaming
 	}
 	// alert_mask is set to LT_ALERT_DEFAULT inside the shim — no need to
 	// pass it here.
