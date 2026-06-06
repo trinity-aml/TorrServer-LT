@@ -8,7 +8,29 @@ import (
 	"time"
 
 	"server/lt"
+	"server/settings"
 )
+
+// readaheadBytes is the forward streaming window: ReaderReadAHead percent of
+// the cache budget (the slider exposed in the UI). Falls back to 16 MB when
+// settings aren't loaded.
+func readaheadBytes() int64 {
+	if settings.BTsets == nil || settings.BTsets.CacheSize <= 0 {
+		return 16 << 20
+	}
+	prc := settings.BTsets.ReaderReadAHead
+	if prc < 5 {
+		prc = 5
+	}
+	if prc > 100 {
+		prc = 100
+	}
+	ra := settings.BTsets.CacheSize * int64(prc) / 100
+	if ra <= 0 {
+		ra = 16 << 20
+	}
+	return ra
+}
 
 // ReaderTimeout is how long a Read will block waiting for a piece to
 // arrive over the wire before bailing out.
@@ -58,7 +80,7 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo) *Reader {
 		cache:     cache,
 		handle:    handle,
 		file:      file,
-		readahead: 16 << 20, // 16 MB default; matches the legacy default
+		readahead: readaheadBytes(), // ReaderReadAHead % of cache (UI slider)
 		winFirst:  -1,
 		winLast:   -1,
 	}

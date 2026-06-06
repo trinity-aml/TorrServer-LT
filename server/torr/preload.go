@@ -58,8 +58,12 @@ func (t *Torrent) Preload(index int, size int64) {
 	}
 	// Tail buffer: many containers keep their index (MP4 moov atom, MKV cues)
 	// at the END of the file, and players read it before playback can start or
-	// seek. Buffer it too, not just the head.
+	// seek. Buffer it too, not just the head. Size is the PreloadBufferEnd
+	// setting (UI/API tunable), falling back to the built-in default.
 	tailBytes := int64(tailPreloadBytes)
+	if settings.BTsets != nil && settings.BTsets.PreloadBufferEnd > 0 {
+		tailBytes = settings.BTsets.PreloadBufferEnd
+	}
 	if tailBytes > f.Length {
 		tailBytes = f.Length
 	}

@@ -26,9 +26,10 @@ type TMDBConfig struct {
 
 type BTSets struct {
 	// Cache
-	CacheSize       int64 // in byte, def 64 MB
-	ReaderReadAHead int   // in percent, 5%-100%, [...S__X__E...] [S-E] not clean
-	PreloadCache    int   // in percent
+	CacheSize        int64 // in byte, def 64 MB
+	ReaderReadAHead  int   // in percent, 5%-100%, [...S__X__E...] [S-E] not clean
+	PreloadCache     int   // in percent
+	PreloadBufferEnd int64 // tail buffer in bytes (MP4 moov / MKV cues), def 4 MB
 
 	// Disk
 	UseDisk           bool
@@ -128,6 +129,10 @@ func SetBTSets(sets *BTSets) {
 		sets.PreloadCache = 100
 	}
 
+	if sets.PreloadBufferEnd <= 0 {
+		sets.PreloadBufferEnd = 4 * 1024 * 1024
+	}
+
 	if sets.TorrentsSavePath == "" {
 		sets.UseDisk = false
 	} else if sets.UseDisk {
@@ -162,6 +167,7 @@ func SetDefaultConfig() {
 	sets := new(BTSets)
 	sets.CacheSize = 64 * 1024 * 1024 // 64 MB
 	sets.PreloadCache = 50
+	sets.PreloadBufferEnd = 4 * 1024 * 1024 // 4 MB tail buffer
 	sets.ConnectionsLimit = 25
 	sets.RetrackersMode = 1
 	sets.TorrentDisconnectTimeout = 30
