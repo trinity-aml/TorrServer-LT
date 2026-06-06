@@ -496,12 +496,16 @@ func (t *Torrent) CloseReader(r Reader) {
 // is reborn in Etap 4. Fields are filled enough to keep /cache and the
 // tgbot snake command rendering something coherent (an empty piece map).
 func (t *Torrent) CacheState() *storageState.CacheState {
-	st := &storageState.CacheState{
-		Pieces:  map[int]storageState.ItemState{},
-		Readers: nil,
-	}
 	if t == nil {
-		return st
+		return &storageState.CacheState{Pieces: map[int]storageState.ItemState{}}
+	}
+	// Pull the real stats (Capacity, Filled, per-piece state) from the live
+	// torrstor cache; fall back to an empty shell if it isn't open yet.
+	var st *storageState.CacheState
+	if c := torrstor.Global().CacheByHash([20]byte(t.Hash())); c != nil {
+		st = c.State()
+	} else {
+		st = &storageState.CacheState{Pieces: map[int]storageState.ItemState{}}
 	}
 	st.Torrent = t.Status()
 	if t.TorrentSpec != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"server/settings"
@@ -31,6 +32,11 @@ type Cache struct {
 	// out pieces in someone's read range (Etap 6 refinement).
 	readersMu sync.Mutex
 	readers   map[*Reader]struct{}
+
+	// reserved grows the effective capacity so a streaming buffer (preload
+	// head+tail, reader window) fits without eviction churn even when the
+	// global CacheSize is smaller. See Reserve / capacity.
+	reserved atomic.Int64
 }
 
 func newCache(s *Storage, sid int64, hash [20]byte, numPieces int, pieceLength int64) *Cache {
@@ -208,7 +214,7 @@ func (c *Cache) writePiece(piece int, offset int64, src []byte) (int, error) {
 // capacity. The reader's active range is preserved in Etap 5 (this
 // implementation evicts purely by access timestamp).
 func (c *Cache) evictIfOverCapacity() {
-	cap := capacity()
+	cap := c.capacity()
 	if cap <= 0 {
 		return
 	}
@@ -242,12 +248,42 @@ func (c *Cache) evictIfOverCapacity() {
 	}
 }
 
-func capacity() int64 {
+// globalCacheSize is the user-configured cache budget in bytes.
+func globalCacheSize() int64 {
 	if settings.BTsets == nil {
 		return 0
 	}
 	return settings.BTsets.CacheSize
 }
+
+// capacity is this cache's effective eviction budget: the global CacheSize,
+// grown to fit a reserved streaming buffer (+ a small margin) when that buffer
+// is larger — so the head/tail preload and reader window aren't evicted out
+// from under playback on a small cache (cf. elementum's AdjustMemorySize).
+func (c *Cache) capacity() int64 {
+	base := globalCacheSize()
+	if r := c.reserved.Load(); r > 0 {
+		if want := r + 2*c.PieceLength; want > base {
+			return want
+		}
+	}
+	return base
+}
+
+// Reserve raises (never lowers) the buffer reservation so eviction keeps room
+// for `bytes` of streaming working set. ClearReserve drops it back to the
+// global budget.
+func (c *Cache) Reserve(bytes int64) {
+	for {
+		cur := c.reserved.Load()
+		if bytes <= cur || c.reserved.CompareAndSwap(cur, bytes) {
+			return
+		}
+	}
+}
+
+// ClearReserve resets the reservation (e.g. when the last reader detaches).
+func (c *Cache) ClearReserve() { c.reserved.Store(0) }
 
 // Have reports whether the piece has been fully written to the cache.
 func (c *Cache) Have(piece int) bool {
@@ -319,7 +355,7 @@ func (c *Cache) LastWrite() int64 {
 func (c *Cache) State() *state.CacheState {
 	return &state.CacheState{
 		Hash:         hashHex(c.InfoHash),
-		Capacity:     0, // Etap 4.2 plugs settings.BTsets.CacheSize here
+		Capacity:     c.capacity(), // effective budget (grown to fit the buffer)
 		Filled:       c.Filled(),
 		PiecesLength: c.PieceLength,
 		PiecesCount:  c.NumPieces,

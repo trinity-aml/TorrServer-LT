@@ -103,6 +103,10 @@ func (t *Torrent) Preload(index int, size int64) {
 	t.Stat = state.TorrentPreload
 	t.mu.Unlock()
 
+	// Grow the cache (if needed) so the whole head+tail buffer fits without
+	// eviction kicking pieces out before they're played.
+	cache.Reserve(t.PreloadSize)
+
 	// Priority 7 on every buffer piece; head gets playback-ordered deadlines,
 	// tail pieces are urgent (the player needs the index to begin).
 	for n, p := range order {

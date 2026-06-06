@@ -63,6 +63,9 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo) *Reader {
 		winLast:   -1,
 	}
 	cache.registerReader(r)
+	// Keep room in the cache for this reader's window so eviction doesn't drop
+	// pieces we're about to play.
+	cache.Reserve(r.readahead)
 	r.scheduleWindow()
 	return r
 }
