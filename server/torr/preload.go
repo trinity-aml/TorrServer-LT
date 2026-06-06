@@ -129,6 +129,13 @@ func (t *Torrent) Preload(index int, size int64) {
 	_ = t.lh.Pause()
 	_ = t.lh.Resume()
 
+	// Find peers fast: kick trackers + DHT now (the torrent was lazy and lightly
+	// announced until this preload).
+	_ = t.lh.ForceReannounce()
+	if settings.BTsets == nil || !settings.BTsets.DisableDHT {
+		_ = t.lh.ForceDhtAnnounce()
+	}
+
 	// Cancel the wait if the torrent is closed; cap the total at 2 minutes.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

@@ -37,6 +37,11 @@ type Cache struct {
 	// head+tail, reader window) fits without eviction churn even when the
 	// global CacheSize is smaller. See Reserve / capacity.
 	reserved atomic.Int64
+
+	// announced is flipped once when the first Reader attaches, to kick
+	// tracker+DHT announces for this (lazily-added) torrent exactly once per
+	// streaming session rather than on every range request.
+	announced atomic.Bool
 }
 
 func newCache(s *Storage, sid int64, hash [20]byte, numPieces int, pieceLength int64) *Cache {

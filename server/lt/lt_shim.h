@@ -143,6 +143,8 @@ int lt_torrent_remove(lt_session s, lt_torrent t, int delete_files);
 int lt_torrent_pause(lt_torrent t);
 int lt_torrent_resume(lt_torrent t);
 int lt_torrent_force_recheck(lt_torrent t);
+int lt_torrent_force_reannounce(lt_torrent t);
+int lt_torrent_force_dht_announce(lt_torrent t);
 
 /* ----- metadata accessors ----- */
 /* 1 if metadata is present, 0 if not yet downloaded, < 0 on error */

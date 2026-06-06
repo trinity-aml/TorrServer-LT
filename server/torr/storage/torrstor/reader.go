@@ -88,6 +88,15 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo) *Reader {
 	// Keep room in the cache for this reader's window so eviction doesn't drop
 	// pieces we're about to play.
 	cache.Reserve(r.readahead)
+	// Find peers fast at stream start: a lazily-added torrent announces lightly,
+	// so kick trackers + DHT once when streaming actually begins (CAS keeps it
+	// to one announce per session despite per-range-request readers).
+	if handle != nil && cache.announced.CompareAndSwap(false, true) {
+		_ = handle.ForceReannounce()
+		if settings.BTsets == nil || !settings.BTsets.DisableDHT {
+			_ = handle.ForceDhtAnnounce()
+		}
+	}
 	r.scheduleWindow()
 	return r
 }

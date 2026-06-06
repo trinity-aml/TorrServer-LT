@@ -677,6 +677,27 @@ int lt_torrent_force_recheck(lt_torrent tid) {
     WRAP_END(LT_ERR_INTERNAL)
 }
 
+// Re-announce to all trackers now (ignoring the min interval). Used at playback
+// start to grab peers fast for a lazily-added torrent.
+int lt_torrent_force_reannounce(lt_torrent tid) {
+    WRAP_BEGIN
+    auto h = get_torrent(tid);
+    if (!h.is_valid()) return set_err(LT_ERR_NOT_FOUND, "torrent not found");
+    h.force_reannounce();
+    return LT_OK;
+    WRAP_END(LT_ERR_INTERNAL)
+}
+
+// Force an immediate DHT announce for this torrent.
+int lt_torrent_force_dht_announce(lt_torrent tid) {
+    WRAP_BEGIN
+    auto h = get_torrent(tid);
+    if (!h.is_valid()) return set_err(LT_ERR_NOT_FOUND, "torrent not found");
+    h.force_dht_announce();
+    return LT_OK;
+    WRAP_END(LT_ERR_INTERNAL)
+}
+
 // ----- metadata accessors -----
 
 int lt_torrent_have_metadata(lt_torrent tid) {

@@ -362,6 +362,12 @@ func (t *Torrent) Pause() error        { return codeToErr(C.lt_torrent_pause(t.i
 func (t *Torrent) Resume() error       { return codeToErr(C.lt_torrent_resume(t.id)) }
 func (t *Torrent) ForceRecheck() error { return codeToErr(C.lt_torrent_force_recheck(t.id)) }
 
+// ForceReannounce re-announces to all trackers immediately (ignoring the min
+// interval). ForceDhtAnnounce does the same for the DHT. Used at playback start
+// to find peers fast for a lazily-added torrent.
+func (t *Torrent) ForceReannounce() error  { return codeToErr(C.lt_torrent_force_reannounce(t.id)) }
+func (t *Torrent) ForceDhtAnnounce() error { return codeToErr(C.lt_torrent_force_dht_announce(t.id)) }
+
 // HaveMetadata reports whether libtorrent has the .torrent's info dict yet.
 func (t *Torrent) HaveMetadata() (bool, error) {
 	rc := C.lt_torrent_have_metadata(t.id)
