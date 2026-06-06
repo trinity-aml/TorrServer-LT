@@ -43,7 +43,7 @@ Boost's `b2`). No cmake.
 | `linux-arm64`   | `sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu`           |
 | `linux-armv7`   | `sudo apt install gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf`       |
 | `windows-amd64` | `sudo apt install gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64`             |
-| `android-arm64` | Android NDK r26d, `export ANDROID_NDK_HOME=/opt/android-ndk-r26d`        |
+| `android-arm64` | Android NDK r26+ (tested r29), `export ANDROID_NDK_HOME=/path/to/android-ndk-r29` |
 | `android-armv7` | same as android-arm64                                                   |
 | `darwin-arm64`  | OSXCross, `export OSXCROSS_ROOT=/opt/osxcross` (see ⚠️ below)            |
 | `darwin-amd64`  | same as darwin-arm64                                                     |

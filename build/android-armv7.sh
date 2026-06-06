@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Cross-build for android/arm (armeabi-v7a) via the Android NDK (r26d).
+# Cross-build for android/arm (armeabi-v7a) via the Android NDK (r26+; tested r29).
 #
 # Prereqs: an unpacked NDK and ANDROID_NDK_HOME pointing at it.
-#   export ANDROID_NDK_HOME=/opt/android-ndk-r26d
+#   export ANDROID_NDK_HOME=/path/to/android-ndk-r29
 #
 # Note the NDK clang triple for 32-bit arm is armv7a-linux-androideabi.
 
@@ -18,8 +18,11 @@ B2_COMPILER=clang
 B2_VARIANT=android32
 B2_TOOLSET_CXX="$CXX"
 B2_FLAGS="target-os=android address-model=32 architecture=arm"
+# See android-arm64.sh: anet's //go:linkname needs Go's checklinkname off.
+EXTRA_GO_LDFLAGS="-checklinkname=0"
 
-export TARGET GOOS GOARCH GOARM CC CXX B2_COMPILER B2_VARIANT B2_TOOLSET_CXX B2_FLAGS
+export TARGET GOOS GOARCH GOARM CC CXX B2_COMPILER B2_VARIANT B2_TOOLSET_CXX \
+       B2_FLAGS EXTRA_GO_LDFLAGS
 
 # shellcheck source=_deps.sh
 . "$(dirname "$0")/_deps.sh"

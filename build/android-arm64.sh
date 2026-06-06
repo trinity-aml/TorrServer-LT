@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Cross-build for android/arm64 (arm64-v8a) via the Android NDK (r26d).
+# Cross-build for android/arm64 (arm64-v8a) via the Android NDK (r26+; tested r29).
 #
 # Prereqs: an unpacked NDK and ANDROID_NDK_HOME pointing at it.
-#   export ANDROID_NDK_HOME=/opt/android-ndk-r26d   # developer.android.com/ndk
+#   export ANDROID_NDK_HOME=/path/to/android-ndk-r29   # developer.android.com/ndk
 #
 # minSdk = 21 (Android 5.0), matching the original TorrServer Android target.
 
@@ -18,8 +18,13 @@ B2_COMPILER=clang
 B2_VARIANT=android64
 B2_TOOLSET_CXX="$CXX"
 B2_FLAGS="target-os=android address-model=64 architecture=arm"
+# github.com/wlynxg/anet reaches net.zoneCache via //go:linkname; Go 1.23+
+# rejects that by default. Its code only compiles on android, so the escape
+# hatch is only needed here.
+EXTRA_GO_LDFLAGS="-checklinkname=0"
 
-export TARGET GOOS GOARCH CC CXX B2_COMPILER B2_VARIANT B2_TOOLSET_CXX B2_FLAGS
+export TARGET GOOS GOARCH CC CXX B2_COMPILER B2_VARIANT B2_TOOLSET_CXX B2_FLAGS \
+       EXTRA_GO_LDFLAGS
 
 # shellcheck source=_deps.sh
 . "$(dirname "$0")/_deps.sh"

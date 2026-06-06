@@ -117,7 +117,7 @@ go_build() {
         CGO_CXXFLAGS="-DTS_PC_STAMP=$pc_stamp" \
         CGO_LDFLAGS="-L$deps/lib ${EXTRA_CGO_LDFLAGS:-}" \
         go build \
-        -ldflags "-s -w -X server/version.Version=${TS_VERSION}" \
+        -ldflags "-s -w ${EXTRA_GO_LDFLAGS:-} -X server/version.Version=${TS_VERSION}" \
         -o "$out" \
         ./cmd
 
