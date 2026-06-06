@@ -64,6 +64,7 @@ type BTSets struct {
 	DisableDHT        bool
 	DisablePEX        bool
 	DisableUpload     bool
+	DisableEndGame    bool // turn off libtorrent strict_end_game_mode (def off = end-game on)
 	DownloadRateLimit int // in kb, 0 - inf
 	UploadRateLimit   int // in kb, 0 - inf
 	ConnectionsLimit  int

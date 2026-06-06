@@ -243,6 +243,9 @@ func buildSessionConfig() (lt.SessionConfig, error) {
 	}
 	s := settings.BTsets
 
+	// End-game: race the final buffer pieces across peers (on by default).
+	cfg["strict_end_game_mode"] = !s.DisableEndGame
+
 	// DHT / PEX / LSD / UPNP / NATPMP toggles
 	cfg["enable_dht"] = !s.DisableDHT
 	cfg["enable_pex"] = !s.DisablePEX
