@@ -22,7 +22,7 @@ jobs:
             artifact: TorrServer-LT-darwin-arm64
           # macos-13 is the last Intel runner before GitHub deprecates.
           - arch: amd64
-            runner: macos-13
+            runner: macos-latest
             artifact: TorrServer-LT-darwin-amd64
     steps:
       - uses: actions/checkout@v4
