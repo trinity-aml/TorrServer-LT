@@ -436,6 +436,13 @@ func (t *Torrent) SetPiecePriority(piece, prio int) error {
 	return codeToErr(C.lt_torrent_set_piece_priority(t.id, C.int(piece), C.int(prio)))
 }
 
+// SetAllPiecesPriority sets every piece to prio in one call. Used to switch a
+// torrent to lazy/streaming mode (prio 0 = download nothing until a Reader or
+// Preload bumps the pieces it actually needs).
+func (t *Torrent) SetAllPiecesPriority(prio int) error {
+	return codeToErr(C.lt_torrent_set_all_pieces_priority(t.id, C.int(prio)))
+}
+
 // SetPieceDeadline sets a soft deadline (in ms) for a piece, optionally
 // asking for an alert when the piece is ready.
 func (t *Torrent) SetPieceDeadline(piece, deadlineMs int, alertWhenReady bool) error {

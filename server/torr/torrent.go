@@ -175,6 +175,14 @@ func legacySavePath(h Hash) string {
 
 func (t *Torrent) signalGotInfo() {
 	t.gotInfoOnce.Do(func() {
+		// Switch to lazy/streaming mode: download nothing until a Reader's
+		// window or Preload bumps the specific pieces it needs. Without this
+		// libtorrent pulls the whole torrent (default piece priority 1),
+		// thrashing the bounded cache on large files. No-op if metadata isn't
+		// actually ready yet (returns an error we ignore).
+		if t.lh != nil {
+			_ = t.lh.SetAllPiecesPriority(0)
+		}
 		if t.gotInfoCh != nil {
 			close(t.gotInfoCh)
 		}

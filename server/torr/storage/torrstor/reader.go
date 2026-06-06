@@ -14,6 +14,11 @@ import (
 // arrive over the wire before bailing out.
 var ReaderTimeout = 60 * time.Second
 
+// ltTopPriority is libtorrent's top download_priority (mirror of
+// LT_PRIO_TOP_PRIORITY). Window pieces get this so the picker fetches them
+// ahead of everything else.
+const ltTopPriority = 7
+
 // FileInfo carries enough of the libtorrent file_storage entry for the
 // Reader to translate file-local offsets into piece coordinates.
 type FileInfo struct {
@@ -37,6 +42,11 @@ type Reader struct {
 	offset    int64 // current position within the file
 	readahead int64 // hint in bytes; 0 = no readahead
 	closed    bool
+
+	// previously prioritised piece window [winFirst, winLast]; -1 = none.
+	// Tracked so scheduleWindow can drop priority on pieces that scrolled out.
+	winFirst int
+	winLast  int
 }
 
 // NewReader constructs a Reader. Returns nil when cache is nil.
@@ -49,6 +59,8 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo) *Reader {
 		handle:    handle,
 		file:      file,
 		readahead: 16 << 20, // 16 MB default; matches the legacy default
+		winFirst:  -1,
+		winLast:   -1,
 	}
 	cache.registerReader(r)
 	r.scheduleWindow()
@@ -168,6 +180,13 @@ func (r *Reader) Close() error {
 	r.cache.unregisterReader(r)
 	if r.handle != nil {
 		_ = r.handle.ClearPieceDeadlines()
+		// Return this reader's window to lazy (don't keep downloading a file
+		// nobody is streaming any more).
+		if r.winFirst >= 0 {
+			for i := r.winFirst; i <= r.winLast; i++ {
+				_ = r.handle.SetPiecePriority(i, 0)
+			}
+		}
 	}
 	return nil
 }
@@ -194,14 +213,13 @@ func (r *Reader) Offset() int64 {
 	return r.offset
 }
 
-// scheduleWindow communicates the streaming priority window to
-// libtorrent. The current piece is "NOW", the next 1 is "Next" (100ms),
-// the next 2 are "Readahead" (500ms), beyond that "High" (1500ms) up
-// to the end of the readahead range.
-//
-// Pieces outside the window keep whatever priority libtorrent's piece
-// picker assigned (we don't touch them; ClearPieceDeadlines on Close
-// resets everything).
+// scheduleWindow communicates the streaming priority window to libtorrent.
+// The torrent sits at piece priority 0 (lazy, see Torrent.signalGotInfo), so
+// the reader is what actually drives downloading: it raises priority on the
+// [current .. current+readahead] window and attaches deadlines (NOW=0ms, the
+// next one 100ms, then 500/1500/3000ms tiers) so the picker fetches them in
+// playback order. Pieces that scrolled out of the window (already played, or
+// beyond readahead) are dropped back to priority 0 so we stop pulling them.
 func (r *Reader) scheduleWindow() {
 	if r.handle == nil {
 		return
@@ -220,7 +238,19 @@ func (r *Reader) scheduleWindow() {
 	if last >= r.cache.NumPieces {
 		last = r.cache.NumPieces - 1
 	}
+
+	// Drop pieces that left the window back to "don't download".
+	if r.winFirst >= 0 {
+		for i := r.winFirst; i <= r.winLast; i++ {
+			if i < first || i > last {
+				_ = r.handle.SetPiecePriority(i, 0)
+			}
+		}
+	}
+
+	// Raise priority + deadline on the current window.
 	for i := first; i <= last; i++ {
+		_ = r.handle.SetPiecePriority(i, ltTopPriority)
 		var deadlineMs int
 		switch {
 		case i == first: // NOW
@@ -231,11 +261,12 @@ func (r *Reader) scheduleWindow() {
 			deadlineMs = 500
 		case i <= first+8: // High
 			deadlineMs = 1500
-		default: // Normal (5th tier — keeps the buffer growing past readahead)
+		default: // Normal (keeps the buffer growing past readahead)
 			deadlineMs = 3000
 		}
 		_ = r.handle.SetPieceDeadline(i, deadlineMs, false)
 	}
+	r.winFirst, r.winLast = first, last
 }
 
 // currentPiece reports the piece the reader is currently positioned in.

@@ -840,6 +840,24 @@ int lt_torrent_set_piece_priority(lt_torrent tid, int piece_idx, int prio) {
     WRAP_END(LT_ERR_INTERNAL)
 }
 
+// Set every piece to the same priority in one call (prioritize_pieces). Used
+// to flip a torrent to "download nothing" (prio 0) so streaming only pulls the
+// reader's window + preload buffer instead of the whole torrent.
+int lt_torrent_set_all_pieces_priority(lt_torrent tid, int prio) {
+    WRAP_BEGIN
+    auto h = get_torrent(tid);
+    if (!h.is_valid()) return set_err(LT_ERR_NOT_FOUND, "torrent not found");
+    if (prio < 0 || prio > 7) return set_err(LT_ERR_INVALID, "prio out of range");
+    auto ti = h.torrent_file();
+    if (!ti) return set_err(LT_ERR_NOT_FOUND, "no metadata yet");
+    std::vector<lt::download_priority_t> v(
+        static_cast<std::size_t>(ti->num_pieces()),
+        static_cast<lt::download_priority_t>(static_cast<std::uint8_t>(prio)));
+    h.prioritize_pieces(v);
+    return LT_OK;
+    WRAP_END(LT_ERR_INTERNAL)
+}
+
 int lt_torrent_set_piece_deadline(lt_torrent tid, int piece_idx, int deadline_ms, int alert_when_ready) {
     WRAP_BEGIN
     auto h = get_torrent(tid);

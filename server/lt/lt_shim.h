@@ -167,6 +167,7 @@ size_t  lt_torrent_info_hash_hex(lt_torrent t, char* buf, size_t cap);
 
 /* ----- priorities & streaming ----- */
 int lt_torrent_set_piece_priority(lt_torrent t, int piece_idx, int prio);
+int lt_torrent_set_all_pieces_priority(lt_torrent t, int prio);
 int lt_torrent_set_piece_deadline(lt_torrent t, int piece_idx, int deadline_ms, int alert_when_ready);
 int lt_torrent_clear_piece_deadlines(lt_torrent t);
 int lt_torrent_set_file_priority(lt_torrent t, int file_idx, int prio);
