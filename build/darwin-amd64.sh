@@ -16,13 +16,20 @@ TARGET=darwin-amd64
 GOOS=darwin GOARCH=amd64
 CC="$OSX_CC"
 CXX="$OSX_CXX"
-B2_COMPILER=clang
+# Boost.Build's `darwin` toolset (not `clang`) defines the <framework> feature
+# libtorrent's Jamfile uses for macOS, plus correct Mach-O link semantics.
+B2_COMPILER=darwin
 B2_VARIANT=darwin_amd64
 B2_TOOLSET_CXX="$OSX_CXX"
 B2_FLAGS="target-os=darwin address-model=64 architecture=x86"
-# Use the Mach-O archiver/ranlib for the static lib (host GNU ar/ranlib produce
-# an index ld64 can't use). Appended as the 4th `using` toolset field.
-[[ -n "$OSX_AR" ]] && B2_USERCONFIG_EXTRA=": <archiver>$OSX_AR <ranlib>${OSX_RANLIB:-$OSX_AR}"
+# The darwin toolset archives with `libtool -static`, so <archiver> must be the
+# Mach-O libtool (not ar — host GNU libtool/ar can't make a Mach-O archive).
+B2_USERCONFIG_EXTRA=": <archiver>$OSX_LIBTOOL"
+[[ -n "$OSX_RANLIB" ]] && B2_USERCONFIG_EXTRA+=" <ranlib>$OSX_RANLIB"
+# libtorrent's pkg-config doesn't emit the macOS frameworks it needs (its
+# ip_notifier uses SystemConfiguration/SCDynamicStore). Go already pulls
+# CoreFoundation+Security for its runtime; add the libtorrent ones here.
+EXTRA_CGO_LDFLAGS="-framework SystemConfiguration -framework CoreFoundation"
 
 export TARGET GOOS GOARCH CC CXX B2_COMPILER B2_VARIANT B2_TOOLSET_CXX B2_FLAGS \
        B2_USERCONFIG_EXTRA

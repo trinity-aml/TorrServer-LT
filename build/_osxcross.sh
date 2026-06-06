@@ -46,6 +46,18 @@ osxcross_setup() {
     [[ -n "$bin" ]] || die "no bin/ under $OSXCROSS_ROOT (looked in target/bin and bin)"
     export PATH="$bin:$PATH"
 
+    # The cctools linker (ld64) is dynamically linked against libxar/libtapi that
+    # ship in the osxcross lib/. A relocated tree (e.g. crazymax image copied out)
+    # loses the baked rpath, so make the host loader find them. Harmless to host
+    # tools — only libxar/libtapi live there.
+    local libdir
+    for libdir in "$OSXCROSS_ROOT/lib" "$(dirname "$bin")/lib"; do
+        [[ -e "$libdir/libtapi.so" || -e "$libdir/libxar.so.1" ]] && {
+            export LD_LIBRARY_PATH="$libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            break
+        }
+    done
+
     local short
     case "$arch" in
         arm64)  short=oa64 ;;
@@ -57,8 +69,10 @@ osxcross_setup() {
     OSX_CXX=$(_osx_tool "$bin" "$arch" "$short" clang++)
     OSX_AR=$(_osx_tool "$bin" "$arch" "$short" ar)
     OSX_RANLIB=$(_osx_tool "$bin" "$arch" "$short" ranlib)
+    # Boost's darwin toolset archives static libs with `libtool -static`, not ar.
+    OSX_LIBTOOL=$(_osx_tool "$bin" "$arch" "$short" libtool)
     [[ -n "$OSX_CC" && -n "$OSX_CXX" ]] || die "no clang wrapper for $arch in $bin"
-    export OSX_CC OSX_CXX OSX_AR OSX_RANLIB
+    export OSX_CC OSX_CXX OSX_AR OSX_RANLIB OSX_LIBTOOL
 
     # Point the wrappers at the SDK. If bin and SDK sit as <root>/bin + <root>/SDK
     # the wrappers resolve ../SDK on their own; otherwise (relocated crazymax
