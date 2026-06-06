@@ -55,21 +55,30 @@ typedef int64_t lt_torrent;
 #define LT_PRIO_HIGH          6
 #define LT_PRIO_TOP_PRIORITY  7
 
-/* ----- alert categories (mirror lt::alert_category_t bit flags) -----
- * If the bitmask is 0, the shim picks a sensible default
- * (status | storage | error | piece_progress | block_progress | tracker).
+/* ----- alert categories -----
+ * These MUST match libtorrent's lt::alert_category_t bit positions exactly
+ * (see libtorrent/alert.hpp); they go straight into settings_pack's alert_mask.
+ * Earlier they were sequential 0x1,0x2,0x4,... which silently enabled the
+ * WRONG categories: piece_progress/block_progress (where piece_finished,
+ * block_finished and hash_failed live) were never delivered, so the streaming
+ * Reader was never told a piece had completed.
+ * If the bitmask is 0, the shim picks the default below.
  */
-#define LT_ALERT_STATUS         0x00000001u
-#define LT_ALERT_STORAGE        0x00000002u
-#define LT_ALERT_ERROR          0x00000004u
-#define LT_ALERT_PIECE_PROGRESS 0x00000008u
-#define LT_ALERT_BLOCK_PROGRESS 0x00000010u
-#define LT_ALERT_TRACKER        0x00000020u
-#define LT_ALERT_PEER           0x00000040u
-#define LT_ALERT_DHT            0x00000080u
-#define LT_ALERT_PORT_MAPPING   0x00000100u
-#define LT_ALERT_PERFORMANCE    0x00000200u
-#define LT_ALERT_DEFAULT (LT_ALERT_STATUS | LT_ALERT_STORAGE | LT_ALERT_ERROR | LT_ALERT_PIECE_PROGRESS | LT_ALERT_BLOCK_PROGRESS | LT_ALERT_TRACKER)
+#define LT_ALERT_ERROR          0x00000001u  /*  0_bit */
+#define LT_ALERT_PEER           0x00000002u  /*  1_bit */
+#define LT_ALERT_PORT_MAPPING   0x00000004u  /*  2_bit */
+#define LT_ALERT_STORAGE        0x00000008u  /*  3_bit: read_piece, file_completed */
+#define LT_ALERT_TRACKER        0x00000010u  /*  4_bit */
+#define LT_ALERT_CONNECT        0x00000020u  /*  5_bit: peer_connect */
+#define LT_ALERT_STATUS         0x00000040u  /*  6_bit: add/metadata/finished/state */
+#define LT_ALERT_PERFORMANCE    0x00000200u  /*  9_bit */
+#define LT_ALERT_DHT            0x00000400u  /* 10_bit */
+#define LT_ALERT_PIECE_PROGRESS 0x00400000u  /* 22_bit: piece_finished, hash_failed */
+#define LT_ALERT_BLOCK_PROGRESS 0x01000000u  /* 24_bit: block_finished */
+#define LT_ALERT_DEFAULT (LT_ALERT_ERROR | LT_ALERT_PEER | LT_ALERT_STORAGE | \
+                          LT_ALERT_TRACKER | LT_ALERT_CONNECT | LT_ALERT_STATUS | \
+                          LT_ALERT_PERFORMANCE | LT_ALERT_DHT | \
+                          LT_ALERT_PIECE_PROGRESS | LT_ALERT_BLOCK_PROGRESS)
 
 /* ----- error reporting ----- */
 /* Thread-local last error message. Valid until the next lt_* call from
