@@ -44,16 +44,25 @@ jobs:
       # amd64: x86_64 Homebrew at /usr/local under Rosetta, then Intel bottles.
       - name: Install deps (x86_64 via Rosetta)
         if: matrix.arch == 'amd64'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+          HOMEBREW_NO_ENV_HINTS: '1'
+          HOMEBREW_NO_INSTALL_CLEANUP: '1'
         run: |
           set -euo pipefail
-          # Apple-Silicon runners ship Rosetta 2; install it defensively anyway.
-          /usr/bin/pgrep -q oahd || softwareupdate --install-rosetta --agree-to-license || true
+          # macos-latest already ships an x86_64 Homebrew at /usr/local and
+          # Rosetta 2; set them up only if missing.
+          /usr/bin/pgrep -q oahd || sudo softwareupdate --install-rosetta --agree-to-license || true
           if [ ! -x /usr/local/bin/brew ]; then
             arch -x86_64 /bin/bash -c \
               "NONINTERACTIVE=1 $(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
           fi
-          arch -x86_64 /usr/local/bin/brew update >/dev/null
-          arch -x86_64 /usr/local/bin/brew install pkg-config libtorrent-rasterbar
+          # Only libtorrent (pulls boost/openssl). pkg-config stays the arm64 one
+          # already on PATH — it reads the x86_64 .pc fine. brew can exit non-zero
+          # on a harmless PATH-shadow hint, so assert the .pc rather than trust $?.
+          arch -x86_64 /usr/local/bin/brew install libtorrent-rasterbar || true
+          LT=$(arch -x86_64 /usr/local/bin/brew --prefix libtorrent-rasterbar)
+          test -f "$LT/lib/pkgconfig/libtorrent-rasterbar.pc"
           echo "BREW=arch -x86_64 /usr/local/bin/brew" >> "$GITHUB_ENV"
           echo "ARCHFLAG=-arch x86_64"                 >> "$GITHUB_ENV"
 
