@@ -11,7 +11,19 @@ import (
 	"server/rutor/models"
 )
 
+// TestParseChannel / TestParseArr parse the entire production rutor.ls
+// (~390k torrents, 250+ MB decompressed) and are manual stress/inspection
+// tools, not routine units — they don't finish in a normal `go test` window.
+// Skipped unless RUTOR_FULL_PARSE is set.
+func skipUnlessFullParse(t *testing.T) {
+	t.Helper()
+	if os.Getenv("RUTOR_FULL_PARSE") == "" {
+		t.Skip("set RUTOR_FULL_PARSE=1 to parse the full rutor.ls (slow)")
+	}
+}
+
 func TestParseChannel(t *testing.T) {
+	skipUnlessFullParse(t)
 	channel := make(chan *models.TorrentDetails, 0)
 	var ftors []*models.TorrentDetails
 	go func() {
@@ -48,6 +60,7 @@ func TestParseChannel(t *testing.T) {
 }
 
 func TestParseArr(t *testing.T) {
+	skipUnlessFullParse(t)
 	var ftors []*models.TorrentDetails
 	path, _ := os.Getwd()
 	ff, err := os.Open(filepath.Join(path, "rutor.ls"))
