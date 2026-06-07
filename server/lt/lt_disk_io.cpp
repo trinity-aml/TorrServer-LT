@@ -184,8 +184,20 @@ public:
         }
         int got = cb_.read(storage_id_of(s), static_cast<int>(r.piece),
                            r.start, reinterpret_cast<uint8_t*>(buf), r.length);
+        // A short/empty read means the piece was evicted from the streaming
+        // cache (we only keep the reader's window + recently-played pieces).
+        // async_read is libtorrent's UPLOAD path — our own HTTP Reader reads the
+        // cache directly and hashing uses async_hash — so a miss here must NOT
+        // fault the torrent: returning a storage_error makes libtorrent treat it
+        // as disk corruption and pause playback. Zero-fill the gap and report
+        // success instead; at worst we feed a peer a bad block (rare, and we run
+        // unchoke_slots_limit=0 so we don't upload anyway), never killing our own
+        // download or stream.
+        if (got < 0) got = 0;
+        if (got < r.length) {
+            std::memset(buf + got, 0, static_cast<size_t>(r.length - got));
+        }
         lt::storage_error err;
-        if (got != r.length) err = make_io_error("read");
         // Do the I/O inline (like posix_disk_io) but deliver the completion
         // handler via the session's io_context. libtorrent requires disk
         // handlers to be posted, not invoked re-entrantly — calling them
