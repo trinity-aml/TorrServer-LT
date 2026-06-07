@@ -215,9 +215,15 @@ func (c *Cache) writePiece(piece int, offset int64, src []byte) (int, error) {
 	return n, err
 }
 
-// evictIfOverCapacity drops the oldest complete pieces until Filled <=
-// capacity. The reader's active range is preserved in Etap 5 (this
-// implementation evicts purely by access timestamp).
+// evictIfOverCapacity drops the least-recently-used complete pieces until
+// Filled <= capacity, but never evicts a piece inside an active reader's
+// protected window (its forward readahead + a behind-margin). Protecting the
+// window keeps about-to-be-played pieces from being dropped under churn and lets
+// short rewinds reuse the cache instead of stalling on a re-download libtorrent
+// won't perform. capacity() is grown (via Reserve) to fit the protected working
+// set, so the over-capacity excess is always outside it and there is something
+// to evict; if every spare piece is somehow protected we leave the cache a touch
+// over budget rather than evict the playing window.
 func (c *Cache) evictIfOverCapacity() {
 	cap := c.capacity()
 	if cap <= 0 {
@@ -226,6 +232,7 @@ func (c *Cache) evictIfOverCapacity() {
 	if c.Filled() <= cap {
 		return
 	}
+	protect := c.readerProtectRanges()
 	c.mu.Lock()
 	pieces := make([]*Piece, 0, len(c.pieces))
 	for _, p := range c.pieces {
@@ -244,6 +251,9 @@ func (c *Cache) evictIfOverCapacity() {
 		if sz <= 0 {
 			continue
 		}
+		if pieceInRanges(p.Id, protect) {
+			continue // keep a reader's working set resident
+		}
 		// Eviction needs to free disk space too, not just memory.
 		p.wipe()
 		c.mu.Lock()
@@ -251,6 +261,33 @@ func (c *Cache) evictIfOverCapacity() {
 		c.mu.Unlock()
 		needFree -= sz
 	}
+}
+
+// readerProtectRanges collects the protected piece window of every active
+// reader, so eviction can keep each one's working set resident.
+func (c *Cache) readerProtectRanges() [][2]int {
+	c.readersMu.Lock()
+	rs := make([]*Reader, 0, len(c.readers))
+	for r := range c.readers {
+		rs = append(rs, r)
+	}
+	c.readersMu.Unlock()
+	out := make([][2]int, 0, len(rs))
+	for _, r := range rs {
+		lo, hi := r.protectRange()
+		out = append(out, [2]int{lo, hi})
+	}
+	return out
+}
+
+// pieceInRanges reports whether id falls inside any [lo, hi] inclusive range.
+func pieceInRanges(id int, ranges [][2]int) bool {
+	for _, rg := range ranges {
+		if id >= rg[0] && id <= rg[1] {
+			return true
+		}
+	}
+	return false
 }
 
 // globalCacheSize is the user-configured cache budget in bytes.

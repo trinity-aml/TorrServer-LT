@@ -34,7 +34,7 @@ func newDiskPiece(p *Piece, savePath string) *DiskPiece {
 		if p.size >= p.cache.PieceLength {
 			p.complete = true
 		}
-		p.accessed = fi.ModTime().Unix()
+		p.accessed.Store(fi.ModTime().Unix())
 	}
 	return dp
 }

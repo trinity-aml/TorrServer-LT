@@ -86,9 +86,10 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo) *Reader {
 		winLast:   -1,
 	}
 	cache.registerReader(r)
-	// Keep room in the cache for this reader's window so eviction doesn't drop
-	// pieces we're about to play.
-	cache.Reserve(r.readahead)
+	// Keep room in the cache for this reader's working set so eviction doesn't
+	// drop pieces we're about to play (forward window) or just played (behind
+	// margin, for small rewinds/re-seeks). See protectRange / behindBytes.
+	cache.Reserve(r.readahead + r.behindBytes())
 	// Find peers fast at stream start: a lazily-added torrent announces lightly,
 	// so kick trackers + DHT once when streaming actually begins (CAS keeps it
 	// to one announce per session despite per-range-request readers).
@@ -230,7 +231,10 @@ func (r *Reader) Close() error {
 func (r *Reader) SetReadahead(n int64) {
 	r.mu.Lock()
 	r.readahead = n
+	behind := r.behindBytes()
 	r.mu.Unlock()
+	// Grow the reservation to fit the new working set (Reserve never shrinks).
+	r.cache.Reserve(n + behind)
 	r.scheduleWindow()
 }
 
@@ -311,6 +315,38 @@ func (r *Reader) currentPiece() int {
 		return 0
 	}
 	return int((r.file.Offset + r.offset) / r.cache.PieceLength)
+}
+
+// behindBytes is how much of the just-played stream to keep resident behind the
+// playhead so small rewinds / re-seeks don't have to re-download (libtorrent
+// won't re-fetch a piece it already marked complete, so an evicted piece behind
+// the playhead is effectively lost — keeping a margin avoids that for the common
+// short backward seek). Half the forward readahead: enough to cover a rewind
+// without doubling the reserved working set.
+func (r *Reader) behindBytes() int64 {
+	return r.readahead / 2
+}
+
+// protectRange reports the inclusive piece range eviction must keep resident for
+// this reader: the behind-margin, the current piece, and the forward window.
+// Returned lo is clamped to >= 0; hi may exceed the last piece and is fine — the
+// eviction check only compares membership.
+func (r *Reader) protectRange() (int, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cur := r.currentPiece()
+	hi := r.winLast
+	if hi < cur {
+		hi = cur
+	}
+	lo := cur
+	if plen := r.cache.PieceLength; plen > 0 {
+		lo = cur - int(r.behindBytes()/plen)
+	}
+	if lo < 0 {
+		lo = 0
+	}
+	return lo, hi
 }
 
 // State snapshots this reader's position + prioritised window for the /cache

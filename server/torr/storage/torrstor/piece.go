@@ -2,6 +2,7 @@ package torrstor
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"server/settings"
@@ -13,11 +14,14 @@ type Piece struct {
 	cache *Cache
 	Id    int
 
-	mu       sync.RWMutex
-	mem      *MemPiece
-	disk     *DiskPiece
-	size     int64
-	accessed int64
+	mu   sync.RWMutex
+	mem  *MemPiece
+	disk *DiskPiece
+	size int64
+	// accessed is the last read/write unix time; atomic so ReadAt can stamp it
+	// under the shared (read) lock without racing concurrent readers of the same
+	// piece, and so Accessed() can be read lock-free for LRU eviction sorting.
+	accessed atomic.Int64
 	complete bool
 }
 
@@ -69,7 +73,7 @@ func (p *Piece) WriteAt(b []byte, off int64) (int, error) {
 		// still has holes — a reader would then read garbage/zeros. Completion is
 		// driven solely by libtorrent's piece_finished_alert (all blocks present
 		// AND hash-verified) via Cache.SignalPieceComplete -> setComplete.
-		p.accessed = time.Now().Unix()
+		p.accessed.Store(time.Now().Unix())
 	}
 	return n, err
 }
@@ -87,7 +91,7 @@ func (p *Piece) ReadAt(b []byte, off int64) (int, error) {
 		n, err = p.mem.ReadAt(b, off)
 	}
 	if n > 0 {
-		p.accessed = time.Now().Unix()
+		p.accessed.Store(time.Now().Unix())
 	}
 	return n, err
 }
@@ -144,7 +148,5 @@ func (p *Piece) setComplete(v bool) {
 }
 
 func (p *Piece) Accessed() int64 {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.accessed
+	return p.accessed.Load()
 }

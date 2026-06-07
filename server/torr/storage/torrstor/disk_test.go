@@ -177,6 +177,65 @@ func TestCache_LRUEvictsOldestWhenOverCapacity(t *testing.T) {
 	}
 }
 
+func TestCache_EvictionSparesReaderWindow(t *testing.T) {
+	// 12 pieces written, budget shrunk to 6 → 6 must be evicted. A reader pins a
+	// forward window [0..2] at the file head; those are the OLDEST pieces, so
+	// plain LRU would evict them first. Window protection must keep them and
+	// evict the next-oldest unprotected pieces instead.
+	prev := settings.BTsets
+	settings.BTsets = &settings.BTSets{UseDisk: false, CacheSize: 6 * pieceLen}
+	t.Cleanup(func() { settings.BTsets = prev })
+
+	s := NewStorage()
+	h := mkHash(0x5A)
+	const total = 12
+	s.callbackOpen(1, h, total, pieceLen)
+	c := s.CacheByHash(h)
+
+	// Populate pieces directly (not via callbackWrite, which would spawn async
+	// eviction). Piece i is the i-th oldest — deterministic LRU order, since
+	// accessed is otherwise 1-second granular and a tight loop ties.
+	payload := bytes.Repeat([]byte{0x9}, int(pieceLen))
+	c.mu.Lock()
+	for i := 0; i < total; i++ {
+		p := newPiece(c, i)
+		if _, err := p.WriteAt(payload, 0); err != nil {
+			c.mu.Unlock()
+			t.Fatalf("write %d: %v", i, err)
+		}
+		p.accessed.Store(int64(i))
+		c.pieces[i] = p
+	}
+	c.mu.Unlock()
+
+	// Reader pinned at the head with forward window [0..2] and no behind margin.
+	r := &Reader{cache: c, file: FileInfo{Offset: 0, Length: total * pieceLen}, winFirst: 0, winLast: 2}
+	c.registerReader(r)
+
+	c.evictIfOverCapacity() // 12 pieces, budget 6 → 6 must go
+
+	present := func(id int) bool {
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		return c.pieces[id] != nil
+	}
+	// Protected oldest pieces survive.
+	for _, keep := range []int{0, 1, 2} {
+		if !present(keep) {
+			t.Fatalf("protected window piece %d was evicted", keep)
+		}
+	}
+	// The next-oldest unprotected pieces are the ones dropped.
+	for _, gone := range []int{3, 4, 5} {
+		if present(gone) {
+			t.Fatalf("unprotected old piece %d should have been evicted", gone)
+		}
+	}
+	if c.Filled() > 6*pieceLen {
+		t.Fatalf("eviction did not converge: filled=%d cap=%d", c.Filled(), 6*pieceLen)
+	}
+}
+
 func TestDiskPiece_NameLayoutMatchesLegacy(t *testing.T) {
 	dir := withDiskCache(t, 0)
 	s := NewStorage()
