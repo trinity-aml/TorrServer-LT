@@ -42,7 +42,7 @@ func settings(c *gin.Context) {
 	}
 
 	if req.Action == "get" {
-		c.JSON(200, sets.BTsets)
+		c.JSON(200, sets.BTsets())
 		return
 	} else if req.Action == "set" {
 		torr.SetSettings(req.Sets)

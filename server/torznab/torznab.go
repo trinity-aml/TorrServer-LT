@@ -44,20 +44,20 @@ type TorznabResponse struct {
 }
 
 func Search(query string, index int) []*models.TorrentDetails {
-	if !settings.BTsets.EnableTorznabSearch || len(settings.BTsets.TorznabUrls) == 0 {
+	if !settings.BTsets().EnableTorznabSearch || len(settings.BTsets().TorznabUrls) == 0 {
 		return nil
 	}
 
 	var allResults []*models.TorrentDetails
-	if index >= 0 && index < len(settings.BTsets.TorznabUrls) {
-		config := settings.BTsets.TorznabUrls[index]
+	if index >= 0 && index < len(settings.BTsets().TorznabUrls) {
+		config := settings.BTsets().TorznabUrls[index]
 		if config.Host != "" && config.Key != "" {
 			return searchOne(config.Host, config.Key, query)
 		}
 		return nil
 	}
 
-	for _, config := range settings.BTsets.TorznabUrls {
+	for _, config := range settings.BTsets().TorznabUrls {
 		if config.Host == "" || config.Key == "" {
 			continue
 		}

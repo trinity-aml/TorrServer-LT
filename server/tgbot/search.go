@@ -13,7 +13,7 @@ import (
 )
 
 func cmdSearch(c tele.Context) error {
-	if sets.BTsets == nil || (!sets.BTsets.EnableRutorSearch && !sets.BTsets.EnableTorznabSearch) {
+	if sets.BTsets() == nil || (!sets.BTsets().EnableRutorSearch && !sets.BTsets().EnableTorznabSearch) {
 		return c.Send(tr(c.Sender().ID, "search_disabled_rutor"))
 	}
 
@@ -29,10 +29,10 @@ func cmdSearch(c tele.Context) error {
 	}
 	go func() {
 		var list []*models.TorrentDetails
-		if sets.BTsets != nil && sets.BTsets.EnableRutorSearch {
+		if sets.BTsets() != nil && sets.BTsets().EnableRutorSearch {
 			list = append(list, rutor.Search(query)...)
 		}
-		if sets.BTsets != nil && sets.BTsets.EnableTorznabSearch {
+		if sets.BTsets() != nil && sets.BTsets().EnableTorznabSearch {
 			list = append(list, torznab.Search(query, -1)...)
 		}
 		source := "RuTor+Torznab"
@@ -42,7 +42,7 @@ func cmdSearch(c tele.Context) error {
 }
 
 func cmdSearchRutor(c tele.Context) error {
-	if sets.BTsets == nil || !sets.BTsets.EnableRutorSearch {
+	if sets.BTsets() == nil || !sets.BTsets().EnableRutorSearch {
 		return c.Send(tr(c.Sender().ID, "search_disabled_rutor"))
 	}
 
@@ -64,7 +64,7 @@ func cmdSearchRutor(c tele.Context) error {
 }
 
 func cmdTorznab(c tele.Context) error {
-	if sets.BTsets == nil || !sets.BTsets.EnableTorznabSearch {
+	if sets.BTsets() == nil || !sets.BTsets().EnableTorznabSearch {
 		return c.Send(tr(c.Sender().ID, "search_disabled_torznab"))
 	}
 

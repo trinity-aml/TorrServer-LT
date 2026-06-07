@@ -13,12 +13,12 @@ var (
 )
 
 func Start() {
-	if settings.BTsets.EnableProxy {
+	if settings.BTsets().EnableProxy {
 		cfg := opts.DefOptions()
 		var err error
 
 		cfg.Server.Port = settings.Args.Port
-		cfg.Hosts = settings.BTsets.ProxyHosts
+		cfg.Hosts = settings.BTsets().ProxyHosts
 
 		P2Proxy, err = p2p.NewP2PServer(cfg)
 		if err != nil {

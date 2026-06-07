@@ -88,7 +88,7 @@ func Start() {
 		webdav.MountWebDAV(route)
 	}
 
-	if settings.BTsets.EnableDLNA {
+	if settings.BTsets().EnableDLNA {
 		dlna.Start()
 	}
 
@@ -100,23 +100,23 @@ func Start() {
 	// check if https enabled
 	if settings.Ssl {
 		// if no cert and key files set in db/settings, generate new self-signed cert and key files
-		if settings.BTsets.SslCert == "" || settings.BTsets.SslKey == "" {
-			settings.BTsets.SslCert, settings.BTsets.SslKey = sslcerts.MakeCertKeyFiles(ips)
-			log.TLogln("Saving path to ssl cert and key in db", settings.BTsets.SslCert, settings.BTsets.SslKey)
-			settings.SetBTSets(settings.BTsets)
+		if settings.BTsets().SslCert == "" || settings.BTsets().SslKey == "" {
+			settings.BTsets().SslCert, settings.BTsets().SslKey = sslcerts.MakeCertKeyFiles(ips)
+			log.TLogln("Saving path to ssl cert and key in db", settings.BTsets().SslCert, settings.BTsets().SslKey)
+			settings.SetBTSets(settings.BTsets())
 		}
 		// verify if cert and key files are valid
-		err = sslcerts.VerifyCertKeyFiles(settings.BTsets.SslCert, settings.BTsets.SslKey, settings.SslPort)
+		err = sslcerts.VerifyCertKeyFiles(settings.BTsets().SslCert, settings.BTsets().SslKey, settings.SslPort)
 		// if not valid, generate new self-signed cert and key files
 		if err != nil {
 			log.TLogln("Error checking certificate and private key files:", err)
-			settings.BTsets.SslCert, settings.BTsets.SslKey = sslcerts.MakeCertKeyFiles(ips)
-			log.TLogln("Saving path to ssl cert and key in db", settings.BTsets.SslCert, settings.BTsets.SslKey)
-			settings.SetBTSets(settings.BTsets)
+			settings.BTsets().SslCert, settings.BTsets().SslKey = sslcerts.MakeCertKeyFiles(ips)
+			log.TLogln("Saving path to ssl cert and key in db", settings.BTsets().SslCert, settings.BTsets().SslKey)
+			settings.SetBTSets(settings.BTsets())
 		}
 		go func() {
 			log.TLogln("Start https server at", settings.IP+":"+settings.SslPort)
-			waitChan <- route.RunTLS(settings.IP+":"+settings.SslPort, settings.BTsets.SslCert, settings.BTsets.SslKey)
+			waitChan <- route.RunTLS(settings.IP+":"+settings.SslPort, settings.BTsets().SslCert, settings.BTsets().SslKey)
 		}()
 	}
 

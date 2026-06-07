@@ -15,8 +15,8 @@ import (
 var dbMigrationLock sync.RWMutex
 
 func IsDebug() bool {
-	if BTsets != nil {
-		return BTsets.EnableDebug
+	if BTsets() != nil {
+		return BTsets().EnableDebug
 	}
 	return false
 }
@@ -74,10 +74,10 @@ func InitSets(readOnly, searchWA bool) {
 	loadBTSets()
 
 	// Update preferences if they changed
-	if BTsets != nil && (BTsets.StoreSettingsInJson != settingsStoragePref || BTsets.StoreViewedInJson != viewedStoragePref) {
-		BTsets.StoreSettingsInJson = settingsStoragePref
-		BTsets.StoreViewedInJson = viewedStoragePref
-		SetBTSets(BTsets)
+	if BTsets() != nil && (BTsets().StoreSettingsInJson != settingsStoragePref || BTsets().StoreViewedInJson != viewedStoragePref) {
+		BTsets().StoreSettingsInJson = settingsStoragePref
+		BTsets().StoreViewedInJson = viewedStoragePref
+		SetBTSets(BTsets())
 	}
 
 	// Migrate old torrents
@@ -299,9 +299,9 @@ func SwitchSettingsStorage(useJson bool) error {
 		map[bool]string{true: "JSON", false: "BBolt"}[useJson]))
 
 	// Update storage preference (must be called before migrate as this setting migrate too)
-	if BTsets != nil {
-		BTsets.StoreSettingsInJson = useJson
-		SetBTSets(BTsets)
+	if BTsets() != nil {
+		BTsets().StoreSettingsInJson = useJson
+		SetBTSets(BTsets())
 	}
 
 	var err error
@@ -363,9 +363,9 @@ func SwitchViewedStorage(useJson bool) error {
 	}
 
 	// Update preference
-	if BTsets != nil {
-		BTsets.StoreViewedInJson = useJson
-		SetBTSets(BTsets)
+	if BTsets() != nil {
+		BTsets().StoreViewedInJson = useJson
+		SetBTSets(BTsets())
 	}
 
 	log.TLogln("Viewed storage switched. Restart required for routing changes.")
@@ -379,15 +379,15 @@ func GetStoragePreferences() map[string]interface{} {
 		"viewed":   "bbolt", // Default fallback
 	}
 
-	if BTsets != nil {
+	if BTsets() != nil {
 		// Convert boolean preferences to string values
-		if BTsets.StoreSettingsInJson {
+		if BTsets().StoreSettingsInJson {
 			prefs["settings"] = "json"
 		} else {
 			prefs["settings"] = "bbolt"
 		}
 
-		if BTsets.StoreViewedInJson {
+		if BTsets().StoreViewedInJson {
 			prefs["viewed"] = "json"
 		} else {
 			prefs["viewed"] = "bbolt"
@@ -407,7 +407,7 @@ func GetStoragePreferences() map[string]interface{} {
 
 // Used in /storage/settings web API
 func SetStoragePreferences(prefs map[string]interface{}) error {
-	if ReadOnly || BTsets == nil {
+	if ReadOnly || BTsets() == nil {
 		return errors.New("cannot change storage preferences. Read-only mode")
 	}
 
@@ -420,9 +420,9 @@ func SetStoragePreferences(prefs map[string]interface{}) error {
 		useJson := (settingsPref == "json")
 		if IsDebug() {
 			log.TLogln(fmt.Sprintf("Changing settings storage to useJson=%v (was %v)",
-				useJson, BTsets.StoreSettingsInJson))
+				useJson, BTsets().StoreSettingsInJson))
 		}
-		if BTsets.StoreSettingsInJson != useJson {
+		if BTsets().StoreSettingsInJson != useJson {
 			if err := SwitchSettingsStorage(useJson); err != nil {
 				return fmt.Errorf("failed to switch settings storage: %w", err)
 			}
@@ -433,9 +433,9 @@ func SetStoragePreferences(prefs map[string]interface{}) error {
 		useJson := (viewedPref == "json")
 		if IsDebug() {
 			log.TLogln(fmt.Sprintf("Changing viewed storage to useJson=%v (was %v)",
-				useJson, BTsets.StoreViewedInJson))
+				useJson, BTsets().StoreViewedInJson))
 		}
-		if BTsets.StoreViewedInJson != useJson {
+		if BTsets().StoreViewedInJson != useJson {
 			if err := SwitchViewedStorage(useJson); err != nil {
 				return fmt.Errorf("failed to switch viewed storage: %w", err)
 			}

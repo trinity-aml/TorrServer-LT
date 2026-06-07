@@ -175,8 +175,8 @@ func RemTorrent(hashHex string) {
 	tor := bts.GetTorrent(hash)
 	if tor == nil {
 		RemTorrentDB(hash)
-		if sets.BTsets.UseDisk && hashHex != "" && hashHex != "/" {
-			os.RemoveAll(filepath.Join(sets.BTsets.TorrentsSavePath, hashHex))
+		if sets.BTsets().UseDisk && hashHex != "" && hashHex != "/" {
+			os.RemoveAll(filepath.Join(sets.BTsets().TorrentsSavePath, hashHex))
 		}
 		return
 	}
@@ -188,8 +188,8 @@ func RemTorrent(hashHex string) {
 		case <-time.After(5 * time.Second):
 			log.TLogln("torr.RemTorrent: timeout waiting for close:", hashHex)
 		}
-		if sets.BTsets.UseDisk && hashHex != "" && hashHex != "/" {
-			name := filepath.Join(sets.BTsets.TorrentsSavePath, hashHex)
+		if sets.BTsets().UseDisk && hashHex != "" && hashHex != "/" {
+			name := filepath.Join(sets.BTsets().TorrentsSavePath, hashHex)
 			if _, err := os.Stat(name); err == nil {
 				log.TLogln("torr.RemTorrent: removing cache files for", hashHex)
 				os.RemoveAll(name)

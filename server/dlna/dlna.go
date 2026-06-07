@@ -83,7 +83,7 @@ func Start() {
 				Bytes:    template.Dlnaicon120png,
 			},
 		},
-		LogHeaders:     settings.BTsets.EnableDebug,
+		LogHeaders:     settings.BTsets().EnableDebug,
 		NotifyInterval: 30 * time.Second,
 		AllowedIpNets: func() []*net.IPNet {
 			var nets []*net.IPNet
@@ -143,8 +143,8 @@ func onBrowseMeta(path string, rootObjectPath string, host, userAgent string) (r
 func getDefaultFriendlyName() string {
 	logger := log.Default.WithNames("dlna")
 
-	if settings.BTsets.FriendlyName != "" {
-		return settings.BTsets.FriendlyName
+	if settings.BTsets().FriendlyName != "" {
+		return settings.BTsets().FriendlyName
 	}
 
 	ret := "TorrServer"

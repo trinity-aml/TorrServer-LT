@@ -78,7 +78,7 @@ func NewTorrent(spec *TorrentSpec, bt *BTServer) (*Torrent, error) {
 	// to per-torrent. Mirror legacy RetrackersMode semantics.
 	defTrackers := utils.GetDefTrackers()
 	fileTrackers := utils.GetTrackerFromFile()
-	switch settings.BTsets.RetrackersMode {
+	switch settings.BTsets().RetrackersMode {
 	case 1:
 		spec.Trackers = append(spec.Trackers, defTrackers)
 	case 2:
@@ -157,7 +157,7 @@ func magnetFromSpec(spec *TorrentSpec) string {
 }
 
 func torrentExpireTimeout() time.Duration {
-	t := time.Second * time.Duration(settings.BTsets.TorrentDisconnectTimeout)
+	t := time.Second * time.Duration(settings.BTsets().TorrentDisconnectTimeout)
 	if t > time.Minute {
 		t = time.Minute
 	}
@@ -165,8 +165,8 @@ func torrentExpireTimeout() time.Duration {
 }
 
 func legacySavePath(h Hash) string {
-	if settings.BTsets != nil && settings.BTsets.UseDisk && settings.BTsets.TorrentsSavePath != "" {
-		return settings.BTsets.TorrentsSavePath + "/" + h.HexString()
+	if settings.BTsets() != nil && settings.BTsets().UseDisk && settings.BTsets().TorrentsSavePath != "" {
+		return settings.BTsets().TorrentsSavePath + "/" + h.HexString()
 	}
 	return ""
 }
@@ -203,7 +203,7 @@ func (t *Torrent) WaitInfo() bool {
 		t.signalGotInfo()
 		return true
 	}
-	deadline := time.Minute + time.Second*time.Duration(settings.BTsets.TorrentDisconnectTimeout)
+	deadline := time.Minute + time.Second*time.Duration(settings.BTsets().TorrentDisconnectTimeout)
 	select {
 	case <-t.gotInfoCh:
 		return true

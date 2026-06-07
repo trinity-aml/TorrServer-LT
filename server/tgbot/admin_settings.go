@@ -15,7 +15,7 @@ import (
 
 func cmdSettings(c tele.Context) error {
 	uid := c.Sender().ID
-	if settings.BTsets == nil {
+	if settings.BTsets() == nil {
 		return c.Send(tr(uid, "settings_not_loaded"))
 	}
 	return sendSettingsMenu(c, uid)
@@ -32,7 +32,7 @@ func sendSettingsMenuPage(c tele.Context, uid int64, page string) error {
 }
 
 func sendSettingsMenuText(c tele.Context, uid int64, page string) string {
-	s := settings.BTsets
+	s := settings.BTsets()
 	msg := "⚙️ <b>" + tr(uid, "settings_title") + "</b>"
 	switch page {
 	case "1":
@@ -140,7 +140,7 @@ func retrackersStr(mode int) string {
 }
 
 func sendSettingsMenuKbd(uid int64, page string) *tele.ReplyMarkup {
-	s := settings.BTsets
+	s := settings.BTsets()
 	var btns [][]tele.InlineButton
 
 	switch page {
@@ -367,12 +367,12 @@ func settingsCallback(c tele.Context, action string) error {
 	if !isAdmin(uid) {
 		return c.Respond(&tele.CallbackResponse{Text: tr(uid, "admin_only")})
 	}
-	if settings.BTsets == nil {
+	if settings.BTsets() == nil {
 		return c.Respond(&tele.CallbackResponse{Text: tr(uid, "settings_not_loaded")})
 	}
 
 	if action == "export" {
-		buf, err := json.MarshalIndent(settings.BTsets, "", "  ")
+		buf, err := json.MarshalIndent(settings.BTsets(), "", "  ")
 		if err != nil {
 			return c.Respond(&tele.CallbackResponse{Text: fmt.Sprintf(tr(uid, "settings_error"), err.Error())})
 		}
@@ -500,7 +500,7 @@ func settingsCallback(c tele.Context, action string) error {
 	}
 
 	sets := new(settings.BTSets)
-	*sets = *settings.BTsets
+	*sets = *settings.BTsets()
 	page := "1"
 
 	// Extract return page from action (e.g. "rutor|1a" -> action "rutor", page "1a")

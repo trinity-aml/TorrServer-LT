@@ -57,14 +57,14 @@ func TestE2E_LocalSessionReaderReadsHavePiece(t *testing.T) {
 
 	// 2. Point UseDisk at a temp dir and pre-stage the piece file the
 	//    scan/resume path will find.
-	prev := settings.BTsets
+	prev := settings.BTsets()
 	dir := t.TempDir()
-	settings.BTsets = &settings.BTSets{
+	settings.StoreBTsets(&settings.BTSets{
 		UseDisk:          true,
 		TorrentsSavePath: dir,
 		CacheSize:        0, // unlimited for this test
-	}
-	t.Cleanup(func() { settings.BTsets = prev })
+	})
+	t.Cleanup(func() { settings.StoreBTsets(prev) })
 
 	pieceDir := filepath.Join(dir, hashHex(infoHash))
 	if err := os.MkdirAll(pieceDir, 0o755); err != nil {

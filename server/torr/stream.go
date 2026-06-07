@@ -105,7 +105,7 @@ func (t *Torrent) Stream(fileID int, req *http.Request, resp http.ResponseWriter
 		resp.Header().Set("Accept-Ranges", "bytes")
 	}
 
-	if sets.BTsets != nil && sets.BTsets.EnableDebug {
+	if sets.BTsets() != nil && sets.BTsets().EnableDebug {
 		log.TLogln("torr.Stream: connect",
 			"id=", streamID, "remote=", req.RemoteAddr,
 			"file=", file.Path, "size=", file.Length,
@@ -115,7 +115,7 @@ func (t *Torrent) Stream(fileID int, req *http.Request, resp http.ResponseWriter
 
 	http.ServeContent(resp, req, file.Path, time.Unix(t.Timestamp, 0), reader)
 
-	if sets.BTsets != nil && sets.BTsets.EnableDebug {
+	if sets.BTsets() != nil && sets.BTsets().EnableDebug {
 		log.TLogln("torr.Stream: disconnect", "id=", streamID, "remote=", req.RemoteAddr)
 	}
 	return nil

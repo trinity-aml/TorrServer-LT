@@ -19,13 +19,13 @@ import (
 // обновлении индекса (loadDB) и поиске (Search). 
 // !Запускать с -count=3
 func TestConcurrentSearchAndLoadDB(t *testing.T) {
-	if settings.BTsets == nil {
-		settings.BTsets = &settings.BTSets{EnableRutorSearch: true}
-		defer func() { settings.BTsets = nil }()
+	if settings.BTsets() == nil {
+		settings.StoreBTsets(&settings.BTSets{EnableRutorSearch: true})
+		defer func() { settings.StoreBTsets(nil) }()
 	} else {
-		old := settings.BTsets.EnableRutorSearch
-		settings.BTsets.EnableRutorSearch = true
-		defer func() { settings.BTsets.EnableRutorSearch = old }()
+		old := settings.BTsets().EnableRutorSearch
+		settings.BTsets().EnableRutorSearch = true
+		defer func() { settings.BTsets().EnableRutorSearch = old }()
 	}
 
 	dir := t.TempDir()

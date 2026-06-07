@@ -16,14 +16,14 @@ import (
 // configuration at the end. Returns the temp dir for inspection.
 func withDiskCache(t *testing.T, cacheSize int64) string {
 	t.Helper()
-	prev := settings.BTsets
+	prev := settings.BTsets()
 	dir := t.TempDir()
-	settings.BTsets = &settings.BTSets{
+	settings.StoreBTsets(&settings.BTSets{
 		UseDisk:          true,
 		TorrentsSavePath: dir,
 		CacheSize:        cacheSize,
-	}
-	t.Cleanup(func() { settings.BTsets = prev })
+	})
+	t.Cleanup(func() { settings.StoreBTsets(prev) })
 	return dir
 }
 
@@ -140,9 +140,9 @@ func TestScanHavePieces_PartialAndFinal(t *testing.T) {
 }
 
 func TestScanHavePieces_OffWhenUseDiskFalse(t *testing.T) {
-	prev := settings.BTsets
-	settings.BTsets = &settings.BTSets{UseDisk: false}
-	t.Cleanup(func() { settings.BTsets = prev })
+	prev := settings.BTsets()
+	settings.StoreBTsets(&settings.BTSets{UseDisk: false})
+	t.Cleanup(func() { settings.StoreBTsets(prev) })
 	if bm := ScanHavePieces(mkHash(1), 4, pieceLen); bm != nil {
 		t.Fatalf("expected nil bitmap when UseDisk=false, got %x", bm)
 	}
@@ -182,9 +182,9 @@ func TestCache_EvictionSparesReaderWindow(t *testing.T) {
 	// forward window [0..2] at the file head; those are the OLDEST pieces, so
 	// plain LRU would evict them first. Window protection must keep them and
 	// evict the next-oldest unprotected pieces instead.
-	prev := settings.BTsets
-	settings.BTsets = &settings.BTSets{UseDisk: false, CacheSize: 6 * pieceLen}
-	t.Cleanup(func() { settings.BTsets = prev })
+	prev := settings.BTsets()
+	settings.StoreBTsets(&settings.BTSets{UseDisk: false, CacheSize: 6 * pieceLen})
+	t.Cleanup(func() { settings.StoreBTsets(prev) })
 
 	s := NewStorage()
 	h := mkHash(0x5A)

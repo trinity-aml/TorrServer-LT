@@ -19,9 +19,9 @@ import (
 //	@Success		200	{object}	sets.TMDBConfig	"TMDB settings"
 //	@Router			/tmdb/settings [get]
 func tmdbSettings(c *gin.Context) {
-	if sets.BTsets == nil {
+	if sets.BTsets() == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Settings not initialized"})
 		return
 	}
-	c.JSON(200, sets.BTsets.TMDBSettings)
+	c.JSON(200, sets.BTsets().TMDBSettings)
 }

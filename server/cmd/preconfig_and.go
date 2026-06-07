@@ -27,7 +27,7 @@ func Preconfig(dkill bool) {
 	go func() {
 		for s := range sigc {
 			if dkill {
-				if settings.BTsets.EnableDebug || s != syscall.SIGPIPE {
+				if settings.BTsets().EnableDebug || s != syscall.SIGPIPE {
 					log.TLogln("Signal catched:", s)
 					log.TLogln("To stop server, close it from web / api")
 				}

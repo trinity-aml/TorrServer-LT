@@ -49,12 +49,12 @@ func handleInlineQuery(c tele.Context) error {
 		}
 	}
 
-	if len(query) >= 2 && sets.BTsets != nil && (sets.BTsets.EnableRutorSearch || sets.BTsets.EnableTorznabSearch) {
+	if len(query) >= 2 && sets.BTsets() != nil && (sets.BTsets().EnableRutorSearch || sets.BTsets().EnableTorznabSearch) {
 		var list []*models.TorrentDetails
-		if sets.BTsets.EnableRutorSearch {
+		if sets.BTsets().EnableRutorSearch {
 			list = append(list, rutor.Search(query)...)
 		}
-		if sets.BTsets.EnableTorznabSearch {
+		if sets.BTsets().EnableTorznabSearch {
 			list = append(list, torznab.Search(query, -1)...)
 		}
 		for _, item := range list {

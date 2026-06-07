@@ -31,7 +31,7 @@ var (
 
 func Start() {
 	go func() {
-		if settings.BTsets.EnableRutorSearch {
+		if settings.BTsets().EnableRutorSearch {
 			if !updateDB() {
 				loadDB()
 			}
@@ -152,7 +152,7 @@ func loadDB() {
 }
 
 func Search(query string) []*models.TorrentDetails {
-	if !settings.BTsets.EnableRutorSearch {
+	if !settings.BTsets().EnableRutorSearch {
 		return nil
 	}
 	mu.RLock()

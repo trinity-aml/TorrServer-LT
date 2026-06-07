@@ -30,7 +30,7 @@ func addTorrentFromSpec(c tele.Context, torrSpec *torr.TorrentSpec, displayLabel
 		return errors.New("torrent not created")
 	}
 
-	if set.BTsets != nil && set.BTsets.EnableDebug {
+	if set.BTsets() != nil && set.BTsets().EnableDebug {
 		if tor.Data != "" {
 			log.TLogln("tg add data", logSafeStr(tor.Data, 60))
 		}

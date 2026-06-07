@@ -7,6 +7,7 @@ import (
 
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"server/log"
 )
@@ -99,7 +100,19 @@ func (v *BTSets) String() string {
 	return string(buf)
 }
 
-var BTsets *BTSets
+// btSets holds the live BitTorrent settings. It's an atomic pointer because it
+// is swapped at runtime (SetBTSets / SetDefaultConfig, e.g. from the settings
+// API) while many goroutines read it concurrently — notably the torrent cache's
+// async eviction. Access it through BTsets() / StoreBTsets, never directly.
+var btSets atomic.Pointer[BTSets]
+
+// BTsets returns the current settings, or nil before they're loaded.
+func BTsets() *BTSets { return btSets.Load() }
+
+// StoreBTsets atomically replaces the settings pointer. SetBTSets is the normal
+// entry point (validation + persistence); this is the raw store used internally
+// and by tests.
+func StoreBTsets(s *BTSets) { btSets.Store(s) }
 
 func SetBTSets(sets *BTSets) {
 	if ReadOnly {
@@ -137,15 +150,15 @@ func SetBTSets(sets *BTSets) {
 	if sets.TorrentsSavePath == "" {
 		sets.UseDisk = false
 	} else if sets.UseDisk {
-		BTsets = sets
+		StoreBTsets(sets)
 
 		go filepath.WalkDir(sets.TorrentsSavePath, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
 			if d.IsDir() && strings.ToLower(d.Name()) == ".tsc" {
-				BTsets.TorrentsSavePath = path
-				log.TLogln("Find directory \"" + BTsets.TorrentsSavePath + "\", use as cache dir")
+				sets.TorrentsSavePath = path
+				log.TLogln("Find directory \"" + sets.TorrentsSavePath + "\", use as cache dir")
 				return io.EOF
 			}
 			if d.IsDir() && strings.HasPrefix(d.Name(), ".") {
@@ -155,8 +168,8 @@ func SetBTSets(sets *BTSets) {
 		})
 	}
 
-	BTsets = sets
-	buf, err := json.Marshal(BTsets)
+	StoreBTsets(sets)
+	buf, err := json.Marshal(sets)
 	if err != nil {
 		log.TLogln("Error marshal btsets", err)
 		return
@@ -185,9 +198,9 @@ func SetDefaultConfig() {
 		ImageURL:   "https://image.tmdb.org",
 		ImageURLRu: "https://imagetmdb.com",
 	}
-	BTsets = sets
+	StoreBTsets(sets)
 	if !ReadOnly {
-		buf, err := json.Marshal(BTsets)
+		buf, err := json.Marshal(sets)
 		if err != nil {
 			log.TLogln("Error marshal btsets", err)
 			return
@@ -202,20 +215,22 @@ func SetDefaultConfig() {
 func loadBTSets() {
 	buf := tdb.Get("Settings", "BitTorr")
 	if len(buf) > 0 {
-		err := json.Unmarshal(buf, &BTsets)
+		sets := new(BTSets)
+		err := json.Unmarshal(buf, sets)
 		if err == nil {
-			if BTsets.ReaderReadAHead < 5 {
-				BTsets.ReaderReadAHead = 5
+			if sets.ReaderReadAHead < 5 {
+				sets.ReaderReadAHead = 5
 			}
 			// Set default TMDB settings if missing (for existing configs)
-			if BTsets.TMDBSettings.APIURL == "" {
-				BTsets.TMDBSettings = TMDBConfig{
+			if sets.TMDBSettings.APIURL == "" {
+				sets.TMDBSettings = TMDBConfig{
 					APIKey:     "",
 					APIURL:     "https://api.themoviedb.org",
 					ImageURL:   "https://image.tmdb.org",
 					ImageURLRu: "https://imagetmdb.com",
 				}
 			}
+			StoreBTsets(sets)
 			return
 		}
 		log.TLogln("Error unmarshal btsets", err)

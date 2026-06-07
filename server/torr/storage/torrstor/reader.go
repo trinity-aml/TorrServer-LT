@@ -16,17 +16,17 @@ import (
 // the cache budget (the slider exposed in the UI). Falls back to 16 MB when
 // settings aren't loaded.
 func readaheadBytes() int64 {
-	if settings.BTsets == nil || settings.BTsets.CacheSize <= 0 {
+	if settings.BTsets() == nil || settings.BTsets().CacheSize <= 0 {
 		return 16 << 20
 	}
-	prc := settings.BTsets.ReaderReadAHead
+	prc := settings.BTsets().ReaderReadAHead
 	if prc < 5 {
 		prc = 5
 	}
 	if prc > 100 {
 		prc = 100
 	}
-	ra := settings.BTsets.CacheSize * int64(prc) / 100
+	ra := settings.BTsets().CacheSize * int64(prc) / 100
 	if ra <= 0 {
 		ra = 16 << 20
 	}
@@ -95,7 +95,7 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo) *Reader {
 	// to one announce per session despite per-range-request readers).
 	if handle != nil && cache.announced.CompareAndSwap(false, true) {
 		_ = handle.ForceReannounce()
-		if settings.BTsets == nil || !settings.BTsets.DisableDHT {
+		if settings.BTsets() == nil || !settings.BTsets().DisableDHT {
 			_ = handle.ForceDhtAnnounce()
 		}
 	}

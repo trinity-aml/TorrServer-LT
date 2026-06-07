@@ -107,7 +107,7 @@ func (ffs *FuseFS) Mount(mountPath string) error {
 			AllowOther: true,
 			Name:       "torrserver",
 			FsName:     "torrserver-fuse",
-			Debug:      settings.BTsets.EnableDebug,
+			Debug:      settings.BTsets().EnableDebug,
 		},
 		EntryTimeout: &entryTimeout,
 		AttrTimeout:  &attrTimeout,

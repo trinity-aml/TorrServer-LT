@@ -147,7 +147,7 @@ func addTorrent(req torrReqJS, c *gin.Context) {
 		}
 	}()
 
-	if set.BTsets.EnableDLNA {
+	if set.BTsets().EnableDLNA {
 		dlna.Stop()
 		dlna.Start()
 	}
@@ -185,7 +185,7 @@ func remTorrent(req torrReqJS, c *gin.Context) {
 	}
 	torr.RemTorrent(req.Hash)
 	// TODO: remove
-	if set.BTsets.EnableDLNA {
+	if set.BTsets().EnableDLNA {
 		dlna.Stop()
 		dlna.Start()
 	}
@@ -220,7 +220,7 @@ func wipeTorrents(c *gin.Context) {
 		torr.RemTorrent(t.TorrentSpec.InfoHash.HexString())
 	}
 	// TODO: remove (copied todo from remTorrent())
-	if set.BTsets.EnableDLNA {
+	if set.BTsets().EnableDLNA {
 		dlna.Stop()
 		dlna.Start()
 	}

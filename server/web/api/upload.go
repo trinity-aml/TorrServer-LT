@@ -86,10 +86,10 @@ func torrentUpload(c *gin.Context) {
 			continue
 		}
 
-		if tor.Data != "" && set.BTsets.EnableDebug {
+		if tor.Data != "" && set.BTsets().EnableDebug {
 			log.TLogln("torrent data:", tor.Data)
 		}
-		if tor.Category != "" && set.BTsets.EnableDebug {
+		if tor.Category != "" && set.BTsets().EnableDebug {
 			log.TLogln("torrent category:", tor.Category)
 		}
 

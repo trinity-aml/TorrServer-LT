@@ -46,7 +46,7 @@ func cmdPreset(c tele.Context) error {
 	if !isAdmin(uid) {
 		return c.Send(tr(uid, "admin_only"))
 	}
-	if settings.BTsets == nil {
+	if settings.BTsets() == nil {
 		return c.Send(tr(uid, "settings_not_loaded"))
 	}
 	if settings.ReadOnly {
@@ -59,7 +59,7 @@ func cmdPreset(c tele.Context) error {
 	}
 
 	sets := new(settings.BTSets)
-	*sets = *settings.BTsets
+	*sets = *settings.BTsets()
 
 	first := strings.ToLower(args[1])
 	presetName := first

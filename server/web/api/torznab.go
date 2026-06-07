@@ -25,7 +25,7 @@ import (
 //	@Success		200	{array}	models.TorrentDetails	"Torznab torrent search result(s)"
 //	@Router			/torznab/search [get]
 func torznabSearch(c *gin.Context) {
-	if !sets.BTsets.EnableTorznabSearch {
+	if !sets.BTsets().EnableTorznabSearch {
 		c.JSON(http.StatusBadRequest, []string{})
 		return
 	}

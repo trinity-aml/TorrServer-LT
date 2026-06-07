@@ -178,7 +178,7 @@ func (bt *BTServer) alertPump(stop <-chan struct{}, done chan<- struct{}) {
 }
 
 func (bt *BTServer) handleAlert(a *lt.Alert) {
-	if settings.BTsets != nil && settings.BTsets.EnableDebug && a.Type != "" {
+	if settings.BTsets() != nil && settings.BTsets().EnableDebug && a.Type != "" {
 		log.Printf("lt: %s — %s", a.Type, a.Message)
 	}
 	if a.TorrentHash == "" {
@@ -247,10 +247,10 @@ func buildSessionConfig() (lt.SessionConfig, error) {
 	// alert_mask is set to LT_ALERT_DEFAULT inside the shim — no need to
 	// pass it here.
 
-	if settings.BTsets == nil {
+	if settings.BTsets() == nil {
 		return cfg, nil
 	}
-	s := settings.BTsets
+	s := settings.BTsets()
 
 	// End-game: race the final buffer pieces across peers (on by default).
 	cfg["strict_end_game_mode"] = !s.DisableEndGame
@@ -437,7 +437,7 @@ func publicIPs(ctx context.Context) (v4, v6 net.IP) {
 	}
 	if settings.PubIPv6 != "" {
 		v6 = net.ParseIP(settings.PubIPv6)
-	} else if settings.BTsets != nil && settings.BTsets.EnableIPv6 {
+	} else if settings.BTsets() != nil && settings.BTsets().EnableIPv6 {
 		if ip, err := publicip.Get6(ctx); err == nil {
 			v6 = ip
 		}
@@ -482,8 +482,8 @@ func Version() string { return version.Version }
 
 // UserAgent returns the wire UA libtorrent reports to peers/trackers.
 func UserAgent() string {
-	if settings.BTsets != nil && strings.TrimSpace(settings.BTsets.FriendlyName) != "" {
-		return settings.BTsets.FriendlyName
+	if settings.BTsets() != nil && strings.TrimSpace(settings.BTsets().FriendlyName) != "" {
+		return settings.BTsets().FriendlyName
 	}
 	return "TorrServer-LT/" + version.Version
 }

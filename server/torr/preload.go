@@ -61,8 +61,8 @@ func (t *Torrent) Preload(index int, size int64) {
 	// seek. Buffer it too, not just the head. Size is the PreloadBufferEnd
 	// setting (UI/API tunable), falling back to the built-in default.
 	tailBytes := int64(tailPreloadBytes)
-	if settings.BTsets != nil && settings.BTsets.PreloadBufferEnd > 0 {
-		tailBytes = settings.BTsets.PreloadBufferEnd
+	if settings.BTsets() != nil && settings.BTsets().PreloadBufferEnd > 0 {
+		tailBytes = settings.BTsets().PreloadBufferEnd
 	}
 	if tailBytes > f.Length {
 		tailBytes = f.Length
@@ -132,7 +132,7 @@ func (t *Torrent) Preload(index int, size int64) {
 	// Find peers fast: kick trackers + DHT now (the torrent was lazy and lightly
 	// announced until this preload).
 	_ = t.lh.ForceReannounce()
-	if settings.BTsets == nil || !settings.BTsets.DisableDHT {
+	if settings.BTsets() == nil || !settings.BTsets().DisableDHT {
 		_ = t.lh.ForceDhtAnnounce()
 	}
 
@@ -170,11 +170,11 @@ func (t *Torrent) Preload(index int, size int64) {
 // Preload (free function) keeps API parity with the legacy call sites
 // (web/api/stream.go) that do `torr.Preload(tor, index)`.
 func Preload(torr *Torrent, index int) {
-	if torr == nil || settings.BTsets == nil {
+	if torr == nil || settings.BTsets() == nil {
 		return
 	}
-	cache := float32(settings.BTsets.CacheSize)
-	prc := float32(settings.BTsets.PreloadCache)
+	cache := float32(settings.BTsets().CacheSize)
+	prc := float32(settings.BTsets().PreloadCache)
 	size := int64((cache / 100.0) * prc)
 	if size <= 0 {
 		return

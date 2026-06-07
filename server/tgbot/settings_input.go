@@ -101,7 +101,7 @@ func applySettingsInput(c tele.Context, setting, value string) {
 		_ = c.Send(tr(uid, "settings_readonly"))
 		return
 	}
-	if settings.BTsets == nil {
+	if settings.BTsets() == nil {
 		_ = c.Send(tr(uid, "settings_not_loaded"))
 		return
 	}
@@ -112,7 +112,7 @@ func applySettingsInput(c tele.Context, setting, value string) {
 	}
 
 	sets := new(settings.BTSets)
-	*sets = *settings.BTsets
+	*sets = *settings.BTsets()
 
 	switch setting {
 	case "friendlyname":

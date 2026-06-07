@@ -39,15 +39,15 @@ func newPiece(c *Cache, id int) *Piece {
 // re-opening a Cache after a settings change picks the new backend
 // (existing Pieces keep their original backend until released).
 func useDisk() bool {
-	return settings.BTsets != nil && settings.BTsets.UseDisk &&
-		settings.BTsets.TorrentsSavePath != ""
+	return settings.BTsets() != nil && settings.BTsets().UseDisk &&
+		settings.BTsets().TorrentsSavePath != ""
 }
 
 func savePath() string {
-	if settings.BTsets == nil {
+	if settings.BTsets() == nil {
 		return ""
 	}
-	return settings.BTsets.TorrentsSavePath
+	return settings.BTsets().TorrentsSavePath
 }
 
 func (p *Piece) WriteAt(b []byte, off int64) (int, error) {

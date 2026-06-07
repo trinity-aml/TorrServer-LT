@@ -24,7 +24,7 @@ import (
 //	@Success		200	{array}	models.TorrentDetails	"Rutor torrent search result(s)"
 //	@Router			/search [get]
 func rutorSearch(c *gin.Context) {
-	if !sets.BTsets.EnableRutorSearch {
+	if !sets.BTsets().EnableRutorSearch {
 		c.JSON(http.StatusBadRequest, []string{})
 		return
 	}

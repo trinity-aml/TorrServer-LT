@@ -20,7 +20,7 @@ func Start() {
 		// set settings ssl enabled
 		settings.Ssl = settings.Args.Ssl
 		if settings.Args.SslPort == "" {
-			dbSSlPort := strconv.Itoa(settings.BTsets.SslPort)
+			dbSSlPort := strconv.Itoa(settings.BTsets().SslPort)
 			if dbSSlPort != "0" {
 				settings.Args.SslPort = dbSSlPort
 			} else {
@@ -29,14 +29,14 @@ func Start() {
 		} else { // store ssl port from params to DB
 			dbSSlPort, err := strconv.Atoi(settings.Args.SslPort)
 			if err == nil {
-				settings.BTsets.SslPort = dbSSlPort
+				settings.BTsets().SslPort = dbSSlPort
 			}
 		}
 		// check if ssl cert and key files exist
 		if settings.Args.SslCert != "" && settings.Args.SslKey != "" {
 			// set settings ssl cert and key files
-			settings.BTsets.SslCert = settings.Args.SslCert
-			settings.BTsets.SslKey = settings.Args.SslKey
+			settings.BTsets().SslCert = settings.Args.SslCert
+			settings.BTsets().SslKey = settings.Args.SslKey
 		}
 		log.TLogln("Check web ssl port", settings.Args.SslPort)
 		l, err := net.Listen("tcp", settings.Args.IP+":"+settings.Args.SslPort)
@@ -78,18 +78,18 @@ func Start() {
 }
 
 func cleanCache() {
-	if !settings.BTsets.UseDisk || settings.BTsets.TorrentsSavePath == "/" || settings.BTsets.TorrentsSavePath == "" {
+	if !settings.BTsets().UseDisk || settings.BTsets().TorrentsSavePath == "/" || settings.BTsets().TorrentsSavePath == "" {
 		return
 	}
 
-	dirs, err := os.ReadDir(settings.BTsets.TorrentsSavePath)
+	dirs, err := os.ReadDir(settings.BTsets().TorrentsSavePath)
 	if err != nil {
 		return
 	}
 
 	torrs := settings.ListTorrent()
 
-	log.TLogln("Remove unused cache in dir:", settings.BTsets.TorrentsSavePath)
+	log.TLogln("Remove unused cache in dir:", settings.BTsets().TorrentsSavePath)
 	keep := map[string]bool{}
 	for _, d := range dirs {
 		if len(d.Name()) != 40 {
@@ -97,7 +97,7 @@ func cleanCache() {
 			continue
 		}
 
-		if !settings.BTsets.RemoveCacheOnDrop {
+		if !settings.BTsets().RemoveCacheOnDrop {
 			keep[d.Name()] = true
 			for _, t := range torrs {
 				if d.IsDir() && t.TorrentSpec != nil && d.Name() == t.TorrentSpec.InfoHash {
@@ -108,13 +108,13 @@ func cleanCache() {
 			for hash, del := range keep {
 				if del && hash == d.Name() {
 					log.TLogln("Remove unused cache:", d.Name())
-					removeAllFiles(filepath.Join(settings.BTsets.TorrentsSavePath, d.Name()))
+					removeAllFiles(filepath.Join(settings.BTsets().TorrentsSavePath, d.Name()))
 				}
 			}
 		} else {
 			if d.IsDir() {
 				log.TLogln("Remove unused cache:", d.Name())
-				removeAllFiles(filepath.Join(settings.BTsets.TorrentsSavePath, d.Name()))
+				removeAllFiles(filepath.Join(settings.BTsets().TorrentsSavePath, d.Name()))
 			}
 		}
 	}

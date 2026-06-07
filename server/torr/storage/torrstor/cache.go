@@ -292,10 +292,10 @@ func pieceInRanges(id int, ranges [][2]int) bool {
 
 // globalCacheSize is the user-configured cache budget in bytes.
 func globalCacheSize() int64 {
-	if settings.BTsets == nil {
+	if settings.BTsets() == nil {
 		return 0
 	}
-	return settings.BTsets.CacheSize
+	return settings.BTsets().CacheSize
 }
 
 // capacity is this cache's effective eviction budget: the global CacheSize,
