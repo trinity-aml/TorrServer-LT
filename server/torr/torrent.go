@@ -515,5 +515,13 @@ func (t *Torrent) CacheState() *storageState.CacheState {
 		st.PiecesCount = t.lh.NumPieces()
 		st.PiecesLength = t.lh.PieceLength()
 	}
+	// Never hand the web UI a nil Pieces/Readers: useCreateCacheMap iterates both
+	// without a null guard, so JSON null crashes the torrent info dialog.
+	if st.Pieces == nil {
+		st.Pieces = map[int]storageState.ItemState{}
+	}
+	if st.Readers == nil {
+		st.Readers = []*storageState.ReaderState{}
+	}
 	return st
 }

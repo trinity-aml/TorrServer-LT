@@ -9,6 +9,7 @@ import (
 
 	"server/lt"
 	"server/settings"
+	"server/torr/storage/state"
 )
 
 // readaheadBytes is the forward streaming window: ReaderReadAHead percent of
@@ -310,4 +311,17 @@ func (r *Reader) currentPiece() int {
 		return 0
 	}
 	return int((r.file.Offset + r.offset) / r.cache.PieceLength)
+}
+
+// State snapshots this reader's position + prioritised window for the /cache
+// detail view (the web UI highlights it on the piece grid).
+func (r *Reader) State() state.ReaderState {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cur := r.currentPiece()
+	start, end := r.winFirst, r.winLast
+	if start < 0 { // window not scheduled yet
+		start, end = cur, cur
+	}
+	return state.ReaderState{Start: start, End: end, Reader: cur}
 }

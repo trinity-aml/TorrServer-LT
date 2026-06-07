@@ -365,8 +365,22 @@ func (c *Cache) State() *state.CacheState {
 		PiecesLength: c.PieceLength,
 		PiecesCount:  c.NumPieces,
 		Pieces:       c.PiecesSnapshot(),
-		Readers:      nil,
+		Readers:      c.ReadersSnapshot(),
 	}
+}
+
+// ReadersSnapshot returns the active readers' positions for the /cache detail
+// view. ALWAYS non-nil: the web UI iterates Readers without a null guard, so a
+// nil here (JSON null) crashes the torrent info dialog.
+func (c *Cache) ReadersSnapshot() []*state.ReaderState {
+	c.readersMu.Lock()
+	defer c.readersMu.Unlock()
+	out := make([]*state.ReaderState, 0, len(c.readers))
+	for r := range c.readers {
+		st := r.State()
+		out = append(out, &st)
+	}
+	return out
 }
 
 func hashHex(h [20]byte) string {
