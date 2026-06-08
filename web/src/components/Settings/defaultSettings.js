@@ -26,6 +26,7 @@ export default {
   DownloadRateLimit: 0,
   UploadRateLimit: 0,
   ConnectionsLimit: 25,
+  DHTConnectionsLimit: 500,
   PeersListenPort: 0,
   ResponsiveMode: true,
   SslPort: 0,

@@ -132,6 +132,8 @@
     "CacheStorageLocation": "Место хранения кеша",
     "ConnectionsLimit": "Торрент-соединения",
     "ConnectionsLimitHint": "рекомендуется 20-25",
+    "DHTConnectionsLimit": "Максимум DHT-соединений",
+    "DHTConnectionsLimitHint": "Сколько пиров хранить на торрент в DHT (libtorrent dht_max_peers). По умолчанию 500.",
     "DHT": "DHT (Distributed Hash Table)",
     "EndGameMode": "Режим эндшпиля (end-game)",
     "EndGameModeHint": "Запрашивать последние куски буфера сразу у всех пиров — быстрее завершение/перемотка. Отключите, чтобы уменьшить дублирующий трафик.",

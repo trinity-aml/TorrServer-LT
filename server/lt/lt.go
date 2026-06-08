@@ -229,6 +229,21 @@ func (s *Session) ApplySettings(cfg SessionConfig) error {
 	return codeToErr(C.lt_session_apply_settings(s.id, cs))
 }
 
+// SettingInt reads back an int settings_pack value from the live session by
+// name (e.g. "dht_max_peers"). Useful to confirm a setting was actually applied.
+func (s *Session) SettingInt(name string) (int64, error) {
+	if s == nil || s.id == 0 {
+		return 0, ErrInvalid
+	}
+	cName := C.CString(name)
+	defer C.free(unsafe.Pointer(cName))
+	var out C.int64_t
+	if err := codeToErr(C.lt_session_get_setting_int(s.id, cName, &out)); err != nil {
+		return 0, err
+	}
+	return int64(out), nil
+}
+
 // SetIPFilter installs an IP filter from a P2P-format text block.
 // Pass "" to clear the filter.
 func (s *Session) SetIPFilter(p2pText string) error {

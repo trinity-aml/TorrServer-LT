@@ -65,6 +65,7 @@ export default function SecondarySettingsComponent({ settings, inputForm }) {
     DownloadRateLimit,
     UploadRateLimit,
     ConnectionsLimit,
+    DHTConnectionsLimit,
     PeersListenPort,
     ResponsiveMode,
     SslPort,
@@ -259,6 +260,19 @@ export default function SecondarySettingsComponent({ settings, inputForm }) {
         />
         <FormHelperText margin='none'>{t('SettingsDialog.DisableDHTHint')}</FormHelperText>
       </FormGroup>
+      <TextField
+        onChange={inputForm}
+        margin='normal'
+        id='DHTConnectionsLimit'
+        label={t('SettingsDialog.DHTConnectionsLimit')}
+        helperText={t('SettingsDialog.DHTConnectionsLimitHint')}
+        value={DHTConnectionsLimit ?? 500}
+        type='number'
+        variant='outlined'
+        fullWidth
+        disabled={DisableDHT}
+      />
+      <br />
       <FormGroup>
         <FormControlLabel
           control={<Switch checked={!DisableEndGame} onChange={inputForm} id='DisableEndGame' color='secondary' />}

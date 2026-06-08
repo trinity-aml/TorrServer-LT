@@ -66,14 +66,18 @@ type BTSets struct {
 	DisablePEX        bool
 	DisableUpload     bool
 	DisableEndGame    bool // turn off libtorrent strict_end_game_mode (def off = end-game on)
-	DownloadRateLimit int // in kb, 0 - inf
-	UploadRateLimit   int // in kb, 0 - inf
+	DownloadRateLimit int  // in kb, 0 - inf
+	UploadRateLimit   int  // in kb, 0 - inf
 	ConnectionsLimit  int
-	PeersListenPort   int
-	
+	// DHTConnectionsLimit caps DHT peer storage — libtorrent's dht_max_peers
+	// (max peers kept per torrent in the DHT), def 500. Keeps DHT from holding
+	// an unbounded number of peer endpoints.
+	DHTConnectionsLimit int
+	PeersListenPort     int
+
 	// LPD
 	EnableLPD bool
-    LPDIPv6   bool
+	LPDIPv6   bool
 
 	// HTTPS
 	SslPort int
@@ -124,6 +128,9 @@ func SetBTSets(sets *BTSets) {
 	}
 	if sets.ConnectionsLimit == 0 {
 		sets.ConnectionsLimit = 25
+	}
+	if sets.DHTConnectionsLimit <= 0 {
+		sets.DHTConnectionsLimit = 500
 	}
 	if sets.TorrentDisconnectTimeout == 0 {
 		sets.TorrentDisconnectTimeout = 30
@@ -183,14 +190,15 @@ func SetDefaultConfig() {
 	sets.PreloadCache = 50
 	sets.PreloadBufferEnd = 4 * 1024 * 1024 // 4 MB tail buffer
 	sets.ConnectionsLimit = 25
+	sets.DHTConnectionsLimit = 500
 	sets.RetrackersMode = 1
 	sets.TorrentDisconnectTimeout = 30
 	sets.ReaderReadAHead = 95 // 95%
 	sets.ResponsiveMode = true
 	sets.ShowFSActiveTorr = true
 	sets.StoreSettingsInJson = true
-    sets.EnableLPD = true
-  	sets.LPDIPv6 = false
+	sets.EnableLPD = true
+	sets.LPDIPv6 = false
 	// Set default TMDB settings
 	sets.TMDBSettings = TMDBConfig{
 		APIKey:     "",

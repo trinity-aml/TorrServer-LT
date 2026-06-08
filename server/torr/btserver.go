@@ -265,6 +265,9 @@ func buildSessionConfig() (lt.SessionConfig, error) {
 
 	// DHT / PEX / LSD / UPNP / NATPMP toggles
 	cfg["enable_dht"] = !s.DisableDHT
+	if s.DHTConnectionsLimit > 0 {
+		cfg["dht_max_peers"] = s.DHTConnectionsLimit
+	}
 	cfg["enable_pex"] = !s.DisablePEX
 	cfg["enable_lsd"] = s.EnableLPD
 	cfg["enable_upnp"] = !s.DisableUPNP

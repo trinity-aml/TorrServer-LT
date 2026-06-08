@@ -510,6 +510,21 @@ int lt_session_apply_settings(lt_session id, const char* settings_json) {
     WRAP_END(LT_ERR_INTERNAL)
 }
 
+int lt_session_get_setting_int(lt_session id, const char* name, int64_t* out) {
+    WRAP_BEGIN
+    auto slot = get_session(id);
+    if (!slot) return set_err(LT_ERR_NOT_FOUND, "session not found");
+    if (!name || !*name) return set_err(LT_ERR_INVALID, "empty setting name");
+    int sid = lt::setting_by_name(name);
+    if (sid < 0) return set_err(LT_ERR_NOT_FOUND, "unknown setting");
+    if ((sid & lt::settings_pack::type_mask) != lt::settings_pack::int_type_base)
+        return set_err(LT_ERR_INVALID, "not an int setting");
+    lt::settings_pack sp = slot->s->get_settings();
+    if (out) *out = sp.get_int(sid);
+    return LT_OK;
+    WRAP_END(LT_ERR_INTERNAL)
+}
+
 int lt_session_set_ip_filter(lt_session id, const char* p2p_text) {
     WRAP_BEGIN
     auto slot = get_session(id);

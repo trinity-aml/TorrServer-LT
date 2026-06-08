@@ -109,6 +109,12 @@ lt_session lt_session_new(const char* settings_json);
  * warning recorded as last_error (but the call still returns LT_OK). */
 int        lt_session_apply_settings(lt_session s, const char* settings_json);
 
+/* Read back an int settings_pack value from the live session by name (e.g.
+ * "dht_max_peers"). Writes the value to *out. Returns LT_ERR_NOT_FOUND for an
+ * unknown name, LT_ERR_INVALID for a non-int setting. Used to verify a setting
+ * was actually applied. */
+int        lt_session_get_setting_int(lt_session s, const char* name, int64_t* out);
+
 /* P2P-format text (one range per line: desc:from-to or desc:single).
  * Empty string clears the filter. */
 int        lt_session_set_ip_filter(lt_session s, const char* p2p_text);

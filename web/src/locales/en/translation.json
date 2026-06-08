@@ -132,6 +132,8 @@
     "CacheStorageLocation": "Cache Storage Location",
     "ConnectionsLimit": "Connections Limit",
     "ConnectionsLimitHint": "20-25 recommended",
+    "DHTConnectionsLimit": "Max DHT connections",
+    "DHTConnectionsLimitHint": "Max peers kept per torrent in the DHT (libtorrent dht_max_peers). Default 500.",
     "DHT": "DHT (Distributed Hash Table)",
     "EndGameMode": "End-game mode",
     "EndGameModeHint": "Request the final buffer pieces from all peers at once for a faster finish/seek. Disable to cut duplicate traffic.",
