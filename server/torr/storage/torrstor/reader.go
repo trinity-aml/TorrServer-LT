@@ -38,9 +38,38 @@ func readaheadBytes() int64 {
 var ReaderTimeout = 60 * time.Second
 
 // ltTopPriority is libtorrent's top download_priority (mirror of
-// LT_PRIO_TOP_PRIORITY). Window pieces get this so the picker fetches them
-// ahead of everything else.
+// LT_PRIO_TOP_PRIORITY). The piece under the playhead gets this so the picker
+// fetches it ahead of everything else.
 const ltTopPriority = 7
+
+// reprioritizeInterval is how often a Reader re-asserts its window priorities
+// and deadlines while streaming, independent of read/seek activity. libtorrent
+// deadlines expire and peers/pieces churn, so a periodic refresh (cf.
+// elementum's 1s prioritizeTicker) keeps the picker pulling the playhead window
+// even when the HTTP client is briefly idle (paused video, slow demuxer).
+const reprioritizeInterval = time.Second
+
+// windowPriority grades a window piece by its distance (in pieces) ahead of the
+// playhead: the closer to "now", the higher the download_priority and the
+// tighter the deadline. A gradient (rather than a flat top priority across the
+// whole window) makes the picker fetch the pieces at the playhead before the
+// far-readahead ones under peer contention, so playback stalls less right where
+// it matters while the buffer still fills ahead. Mirrors elementum's
+// PrioritizePieces tiering, combined with our existing deadline tiers.
+func windowPriority(pos int) (prio, deadlineMs int) {
+	switch {
+	case pos <= 0: // NOW — the piece being read
+		return ltTopPriority, 0
+	case pos == 1: // Next
+		return 6, 100
+	case pos <= 3: // Readahead
+		return 5, 500
+	case pos <= 8: // High
+		return 4, 1500
+	default: // Normal — keeps the buffer growing past readahead
+		return 3, 3000
+	}
+}
 
 // FileInfo carries enough of the libtorrent file_storage entry for the
 // Reader to translate file-local offsets into piece coordinates.
@@ -70,6 +99,9 @@ type Reader struct {
 	// Tracked so scheduleWindow can drop priority on pieces that scrolled out.
 	winFirst int
 	winLast  int
+
+	// stopTicker ends the periodic re-prioritize loop; closed once by Close.
+	stopTicker chan struct{}
 }
 
 // NewReader constructs a Reader. Returns nil when cache is nil.
@@ -78,12 +110,13 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo) *Reader {
 		return nil
 	}
 	r := &Reader{
-		cache:     cache,
-		handle:    handle,
-		file:      file,
-		readahead: readaheadBytes(), // ReaderReadAHead % of cache (UI slider)
-		winFirst:  -1,
-		winLast:   -1,
+		cache:      cache,
+		handle:     handle,
+		file:       file,
+		readahead:  readaheadBytes(), // ReaderReadAHead % of cache (UI slider)
+		winFirst:   -1,
+		winLast:    -1,
+		stopTicker: make(chan struct{}),
 	}
 	cache.registerReader(r)
 	// Keep room in the cache for this reader's working set so eviction doesn't
@@ -100,7 +133,31 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo) *Reader {
 		}
 	}
 	r.scheduleWindow()
+	if handle != nil {
+		go r.reprioritizeLoop()
+	}
 	return r
+}
+
+// reprioritizeLoop periodically re-asserts the streaming window (priorities +
+// deadlines) until the Reader is closed, so the picker keeps fetching the
+// playhead window as deadlines expire and peers churn — even while the HTTP
+// client is idle between Reads. Ends when Close signals stopTicker.
+func (r *Reader) reprioritizeLoop() {
+	t := time.NewTicker(reprioritizeInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-r.stopTicker:
+			return
+		case <-t.C:
+			r.mu.Lock()
+			if !r.closed {
+				r.scheduleWindow()
+			}
+			r.mu.Unlock()
+		}
+	}
 }
 
 // Read implements io.Reader. Returns up to len(p) bytes once at least
@@ -213,6 +270,7 @@ func (r *Reader) Close() error {
 	}
 	r.closed = true
 	r.mu.Unlock()
+	close(r.stopTicker) // end the re-prioritize loop
 	r.cache.unregisterReader(r)
 	if r.handle != nil {
 		_ = r.handle.ClearPieceDeadlines()
@@ -287,22 +345,11 @@ func (r *Reader) scheduleWindow() {
 		}
 	}
 
-	// Raise priority + deadline on the current window.
+	// Raise priority + deadline on the current window, graded by distance ahead
+	// of the playhead (closest = highest priority, tightest deadline).
 	for i := first; i <= last; i++ {
-		_ = r.handle.SetPiecePriority(i, ltTopPriority)
-		var deadlineMs int
-		switch {
-		case i == first: // NOW
-			deadlineMs = 0
-		case i == first+1: // Next
-			deadlineMs = 100
-		case i <= first+3: // Readahead
-			deadlineMs = 500
-		case i <= first+8: // High
-			deadlineMs = 1500
-		default: // Normal (keeps the buffer growing past readahead)
-			deadlineMs = 3000
-		}
+		prio, deadlineMs := windowPriority(i - first)
+		_ = r.handle.SetPiecePriority(i, prio)
 		_ = r.handle.SetPieceDeadline(i, deadlineMs, false)
 	}
 	r.winFirst, r.winLast = first, last

@@ -233,7 +233,24 @@ func buildSessionConfig() (lt.SessionConfig, error) {
 		"send_buffer_watermark_factor": 50,
 		"connection_speed":             250, // open new peer connections faster
 		"max_peerlist_size":            50000,
+		"max_pex_peers":                200,
+		"dht_upload_rate_limit":        50000,
 		"mixed_mode_algorithm":         0, // prefer_tcp: steadier throughput for streaming
+
+		// Don't let the queue manager pause our stream. Torrents are added
+		// auto_managed, and libtorrent's default active limits (≈3 downloads /
+		// 15 active) would queue+pause a torrent mid-playback once a few are
+		// running. Lift every active limit to unlimited (cf. elementum) so the
+		// auto-manager never stops a torrent someone is streaming.
+		"active_downloads":            -1,
+		"active_seeds":                -1,
+		"active_limit":                -1,
+		"active_tracker_limit":        -1,
+		"active_dht_limit":            -1,
+		"active_lsd_limit":            -1,
+		"rate_limit_ip_overhead":      false, // don't count protocol overhead against rate caps
+		"send_buffer_low_watermark":   10 * 1024,
+		"close_redundant_connections": false, // keep peers around for seek re-requests
 	}
 	// alert_mask is set to LT_ALERT_DEFAULT inside the shim — no need to
 	// pass it here.
