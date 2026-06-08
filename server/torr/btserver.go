@@ -234,15 +234,6 @@ func buildSessionConfig() (lt.SessionConfig, error) {
 		"connection_speed":             250, // open new peer connections faster
 		"max_peerlist_size":            50000,
 		"mixed_mode_algorithm":         0, // prefer_tcp: steadier throughput for streaming
-
-		// Leech-only: never unchoke a peer, so libtorrent never reads pieces to
-		// upload them. This is REQUIRED for the evicting streaming cache: we only
-		// keep the reader's window + recently-played pieces and drop the rest, but
-		// libtorrent still advertises every downloaded piece as "have". If a peer
-		// then requests an evicted piece, async_read misses, libtorrent treats the
-		// storage miss as a fatal I/O error and pauses the torrent mid-playback.
-		// A windowed cache can't seed the whole file anyway, so don't try.
-		"unchoke_slots_limit": 0,
 	}
 	// alert_mask is set to LT_ALERT_DEFAULT inside the shim — no need to
 	// pass it here.
@@ -316,9 +307,10 @@ func buildSessionConfig() (lt.SessionConfig, error) {
 // libtorrent's settings_pack proxy_* keys. No-op when ProxyURL is empty.
 //
 // Schemes recognised:
-//   http / https → http proxy (libtorrent's proxy_type=5, with auth = 6)
-//   socks4 / socks4a → SOCKS4
-//   socks5 / socks5h → SOCKS5 (5_pw when user/password present)
+//
+//	http / https → http proxy (libtorrent's proxy_type=5, with auth = 6)
+//	socks4 / socks4a → SOCKS4
+//	socks5 / socks5h → SOCKS5 (5_pw when user/password present)
 func applyProxyConfig(cfg lt.SessionConfig) {
 	if settings.Args == nil || settings.Args.ProxyURL == "" {
 		return

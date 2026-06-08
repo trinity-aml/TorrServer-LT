@@ -173,6 +173,13 @@ int lt_torrent_set_all_pieces_priority(lt_torrent t, int prio);
 int lt_torrent_set_piece_deadline(lt_torrent t, int piece_idx, int deadline_ms, int alert_when_ready);
 int lt_torrent_clear_piece_deadlines(lt_torrent t);
 int lt_torrent_set_file_priority(lt_torrent t, int file_idx, int prio);
+/* Per-piece "un-have": tell libtorrent's piece_picker it no longer has this
+ * piece, so the picker will re-request it from peers. Needed because the
+ * streaming cache evicts pieces libtorrent still marks "have"; without this a
+ * seek back into an evicted region can never be re-downloaded (there is no
+ * public torrent_handle equivalent — this pokes the internal picker on the
+ * session network thread). Also clears any deadline on the piece. */
+int lt_torrent_we_dont_have(lt_torrent t, int piece_idx);
 
 /* ----- status & stats -----
  * status_json output schema (subset used by Go state.TorrentStatus):

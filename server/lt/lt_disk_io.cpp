@@ -190,9 +190,14 @@ public:
         // cache directly and hashing uses async_hash — so a miss here must NOT
         // fault the torrent: returning a storage_error makes libtorrent treat it
         // as disk corruption and pause playback. Zero-fill the gap and report
-        // success instead; at worst we feed a peer a bad block (rare, and we run
-        // unchoke_slots_limit=0 so we don't upload anyway), never killing our own
-        // download or stream.
+        // success instead; at worst we feed a peer a bad block, never killing our
+        // own download or stream.
+        //
+        // On eviction we now also call WeDontHave (piece_picker un-have) so
+        // libtorrent stops advertising evicted pieces and peers stop requesting
+        // them — but that un-have is posted to the network thread, so there is a
+        // brief window where a request for a just-evicted piece can still arrive.
+        // This zero-fill safety net covers that race.
         if (got < 0) got = 0;
         if (got < r.length) {
             std::memset(buf + got, 0, static_cast<size_t>(r.length - got));

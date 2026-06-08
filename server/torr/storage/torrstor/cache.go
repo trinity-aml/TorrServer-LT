@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"server/lt"
 	"server/settings"
 	"server/torr/storage/state"
 )
@@ -42,6 +43,12 @@ type Cache struct {
 	// tracker+DHT announces for this (lazily-added) torrent exactly once per
 	// streaming session rather than on every range request.
 	announced atomic.Bool
+
+	// handle is the libtorrent torrent backing this cache, captured from the
+	// first Reader. Eviction uses it to call WeDontHave on each dropped piece so
+	// libtorrent's have-bitfield stays in sync with what is actually buffered —
+	// otherwise a seek back into an evicted region could never be re-downloaded.
+	handle atomic.Pointer[lt.Torrent]
 }
 
 func newCache(s *Storage, sid int64, hash [20]byte, numPieces int, pieceLength int64) *Cache {
@@ -105,6 +112,9 @@ func (c *Cache) WaitForPiece(ctx context.Context, piece int) bool {
 // registerReader / unregisterReader track active streaming clients so
 // later LRU heuristics can preserve their working set.
 func (c *Cache) registerReader(r *Reader) {
+	if r.handle != nil {
+		c.handle.CompareAndSwap(nil, r.handle)
+	}
 	c.readersMu.Lock()
 	c.readers[r] = struct{}{}
 	c.readersMu.Unlock()
@@ -259,6 +269,12 @@ func (c *Cache) evictIfOverCapacity() {
 		c.mu.Lock()
 		delete(c.pieces, p.Id)
 		c.mu.Unlock()
+		// Keep libtorrent's have-bitfield in sync with the buffer: tell the
+		// picker it no longer has this piece so a later seek back into this
+		// region re-downloads it instead of being skipped as "already have".
+		if h := c.handle.Load(); h != nil {
+			_ = h.WeDontHave(p.Id)
+		}
 		needFree -= sz
 	}
 }

@@ -26,6 +26,14 @@
 #include <libtorrent/torrent_status.hpp>
 #include <libtorrent/version.hpp>
 
+// Internal headers for lt_torrent_we_dont_have: poking the piece_picker to
+// drop a "have" piece must happen on the session network thread.
+#include <libtorrent/download_priority.hpp>
+#include <libtorrent/io_context.hpp>
+#include <libtorrent/piece_picker.hpp>
+#include <libtorrent/torrent.hpp>
+#include <libtorrent/aux_/session_interface.hpp>
+
 // Implemented in lt_disk_io.cpp; declared here after all libtorrent
 // headers have been seen so the session_params type is unambiguous.
 extern void tsl_install_disk_io_on(libtorrent::session_params& params);
@@ -875,6 +883,36 @@ int lt_torrent_set_all_pieces_priority(lt_torrent tid, int prio) {
         static_cast<std::size_t>(ti->num_pieces()),
         static_cast<lt::download_priority_t>(static_cast<std::uint8_t>(prio)));
     h.prioritize_pieces(v);
+    return LT_OK;
+    WRAP_END(LT_ERR_INTERNAL)
+}
+
+// Per-piece "un-have". The streaming cache evicts pieces that libtorrent still
+// records as "have"; a seek back into an evicted region would then never be
+// re-downloaded (the picker skips pieces it believes it owns, and priority on a
+// complete piece is ignored). There is no public torrent_handle API for this,
+// so we reach into the internal piece_picker — which is only safe on the
+// session's network thread, hence the post() onto its io_context. We also drop
+// any deadline and lower the piece priority so the picker won't instantly
+// re-request it; the reader's scheduleWindow re-raises priority when (and if)
+// the window covers the piece again.
+int lt_torrent_we_dont_have(lt_torrent tid, int piece_idx) {
+    WRAP_BEGIN
+    auto h = get_torrent(tid);
+    if (!h.is_valid()) return set_err(LT_ERR_NOT_FOUND, "torrent not found");
+    auto tor = h.native_handle();
+    if (!tor) return set_err(LT_ERR_NOT_FOUND, "no native handle");
+    h.reset_piece_deadline(lt::piece_index_t{piece_idx});
+    lt::io_context& ioc = tor->session().get_context();
+    lt::post(ioc, [tor, piece_idx]() {
+        lt::piece_index_t const pi{piece_idx};
+        // need_picker() materialises a picker reflecting current have-state
+        // (e.g. a seeding torrent with have_all and no picker), so we_dont_have
+        // works even after the torrent finished.
+        if (!tor->has_picker()) tor->need_picker();
+        tor->set_piece_priority(pi, lt::dont_download);
+        tor->picker().we_dont_have(pi);
+    });
     return LT_OK;
     WRAP_END(LT_ERR_INTERNAL)
 }

@@ -449,6 +449,16 @@ func (t *Torrent) SetAllPiecesPriority(prio int) error {
 	return codeToErr(C.lt_torrent_set_all_pieces_priority(t.id, C.int(prio)))
 }
 
+// WeDontHave tells libtorrent's piece_picker to forget that it has the given
+// piece, so the picker will re-request it from peers. The streaming cache calls
+// this when it evicts a piece, keeping libtorrent's have-bitfield in sync with
+// what is actually buffered — without it a seek back into an evicted region
+// could never be re-downloaded. Also clears the piece deadline and lowers its
+// priority (the reader's window re-raises it on demand).
+func (t *Torrent) WeDontHave(piece int) error {
+	return codeToErr(C.lt_torrent_we_dont_have(t.id, C.int(piece)))
+}
+
 // SetPieceDeadline sets a soft deadline (in ms) for a piece, optionally
 // asking for an alert when the piece is ready.
 func (t *Torrent) SetPieceDeadline(piece, deadlineMs int, alertWhenReady bool) error {
