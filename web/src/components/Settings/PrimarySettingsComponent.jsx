@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next'
 import { USBIcon, RAMIcon } from 'icons'
-import { FormControlLabel, Switch } from '@material-ui/core'
+import { FormControlLabel, InputAdornment, Switch } from '@material-ui/core'
 import TextField from '@material-ui/core/TextField'
 
 import {
@@ -41,7 +41,7 @@ export default function PrimarySettingsComponent({
   updateSettings,
 }) {
   const { t } = useTranslation()
-  const { UseDisk, TorrentsSavePath, RemoveCacheOnDrop } = settings || {}
+  const { UseDisk, TorrentsSavePath, RemoveCacheOnDrop, PreloadBufferEnd } = settings || {}
   const preloadCacheSize = Math.round((cacheSize / 100) * preloadCachePercentage)
 
   return (
@@ -104,6 +104,19 @@ export default function PrimarySettingsComponent({
           sliderMax={100}
           inputMin={0}
           inputMax={100}
+        />
+
+        <TextField
+          onChange={inputForm}
+          margin='normal'
+          id='PreloadBufferEnd'
+          label={t('SettingsDialog.PreloadBufferEnd')}
+          helperText={t('SettingsDialog.PreloadBufferEndHint')}
+          InputProps={{ endAdornment: <InputAdornment position='end'>{t('MB')}</InputAdornment> }}
+          value={PreloadBufferEnd ?? 4}
+          type='number'
+          variant='outlined'
+          fullWidth
         />
       </div>
 

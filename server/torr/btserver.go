@@ -290,6 +290,14 @@ func buildSessionConfig() (lt.SessionConfig, error) {
 		cfg["upload_rate_limit"] = s.UploadRateLimit * 1024
 	}
 
+	// Leech-only: never unchoke a peer, so we don't upload at all. Overrides
+	// the active-limit seeding restored above. (Eviction no longer depends on
+	// this — WeDontHave keeps the have-bitfield honest — so it's purely the
+	// user's ratio choice now.)
+	if s.DisableUpload {
+		cfg["unchoke_slots_limit"] = 0
+	}
+
 	// Encryption
 	if s.ForceEncrypt {
 		cfg["out_enc_policy"] = 0 // forced

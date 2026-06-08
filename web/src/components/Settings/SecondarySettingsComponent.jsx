@@ -59,6 +59,7 @@ export default function SecondarySettingsComponent({ settings, inputForm }) {
     DisableDHT,
     DisablePEX,
     DisableUpload,
+    DisableEndGame,
     EnableLPD,
     LPDIPv6,
     DownloadRateLimit,
@@ -257,6 +258,14 @@ export default function SecondarySettingsComponent({ settings, inputForm }) {
           labelPlacement='start'
         />
         <FormHelperText margin='none'>{t('SettingsDialog.DisableDHTHint')}</FormHelperText>
+      </FormGroup>
+      <FormGroup>
+        <FormControlLabel
+          control={<Switch checked={!DisableEndGame} onChange={inputForm} id='DisableEndGame' color='secondary' />}
+          label={t('SettingsDialog.EndGameMode')}
+          labelPlacement='start'
+        />
+        <FormHelperText margin='none'>{t('SettingsDialog.EndGameModeHint')}</FormHelperText>
       </FormGroup>
       <TextField
         onChange={inputForm}

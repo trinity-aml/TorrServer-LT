@@ -2,6 +2,8 @@ export default {
   CacheSize: 64,
   ReaderReadAHead: 95,
   PreloadCache: 50,
+  PreloadBufferEnd: 4,
+  DisableEndGame: false,
   UseDisk: false,
   TorrentsSavePath: '',
   RemoveCacheOnDrop: false,
