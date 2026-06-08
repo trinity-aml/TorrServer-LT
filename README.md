@@ -263,9 +263,10 @@ this libtorrent fork:
 | **Upload** (`DisableUpload`) | on | Turn off to run leech-only (never unchoke peers — no seeding). |
 
 `PreloadBufferEnd` and the end-game toggle live on the **Main** and
-**Additional** settings tabs respectively (Additional requires PRO mode). Other
-tabs cover connection/rate limits, DHT/PEX/LSD/UPnP, encryption, DLNA, HTTPS,
-proxy and Torznab search.
+**Additional** settings tabs respectively (Additional requires PRO mode). The
+Additional tab also covers connection/rate limits (including **Max DHT
+connections**, `DHTConnectionsLimit` → libtorrent `dht_max_peers`, default 500),
+DHT/PEX/LSD/UPnP, encryption, DLNA, HTTPS, proxy and Torznab search.
 
 ## Development
 
