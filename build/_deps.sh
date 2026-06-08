@@ -118,7 +118,7 @@ go_build() {
         PKG_CONFIG_PATH="$deps/lib/pkgconfig" \
         PKG_CONFIG_LIBDIR="$deps/lib/pkgconfig" \
         CGO_CFLAGS="-DTS_PC_STAMP=$pc_stamp" \
-        CGO_CXXFLAGS="-DTS_PC_STAMP=$pc_stamp" \
+        CGO_CXXFLAGS="-DTS_PC_STAMP=$pc_stamp -DTSL_HAVE_LT_INTERNALS" \
         CGO_LDFLAGS="-L$deps/lib ${EXTRA_CGO_LDFLAGS:-}" \
         go build \
         -ldflags "-s -w ${EXTRA_GO_LDFLAGS:-} -X server/version.Version=${TS_VERSION}" \

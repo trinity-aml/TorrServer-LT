@@ -272,12 +272,16 @@ DHT/PEX/LSD/UPnP, encryption, DLNA, HTTPS, proxy and Torznab search.
 
 This fork links **libtorrent 2.0.10 (arvidn)** into the Go server through a CGo
 shim (`server/lt`). Unlike upstream's pure-Go engine, every build is therefore
-**CGo + C++** and needs a libtorrent/Boost toolchain. Some shim features (e.g.
-the per-piece `we_dont_have` the streaming cache uses to re-download evicted
-regions on seek-back) call libtorrent internals that the distro **shared**
-`libtorrent-rasterbar` does not export — so you must link the **static**
-libtorrent the build scripts produce. A plain `go build` against a system
-`libtorrent-rasterbar-dev` will fail at link time with `undefined reference`.
+**CGo + C++** and needs a libtorrent/Boost toolchain. One shim feature — the
+per-piece `we_dont_have` the streaming cache uses to re-download evicted regions
+on seek-back — calls libtorrent internals that a **shared** `libtorrent-rasterbar`
+(distro / Homebrew) doesn't export. It's compiled in only when the build defines
+`TSL_HAVE_LT_INTERNALS`, which the `build/*.sh` scripts do because they link the
+**static** libtorrent they build from source. A plain `go build` against a system
+`libtorrent-rasterbar-dev` still links (the feature falls back to a no-op), so it
+runs for development; seek-back into an already-evicted region just won't
+re-download. For the full feature set, build via the scripts below (or pass
+`CGO_CXXFLAGS=-DTSL_HAVE_LT_INTERNALS` when linking a static libtorrent yourself).
 
 ### Prerequisites
 

@@ -27,12 +27,18 @@
 #include <libtorrent/version.hpp>
 
 // Internal headers for lt_torrent_we_dont_have: poking the piece_picker to
-// drop a "have" piece must happen on the session network thread.
+// drop a "have" piece must happen on the session network thread. These symbols
+// are only present when linking a static libtorrent built from source (the
+// build/*.sh release path, which defines TSL_HAVE_LT_INTERNALS); a shared
+// distro/Homebrew libtorrent doesn't export them, so the feature falls back to
+// a public-API no-op there. See lt_torrent_we_dont_have below.
+#ifdef TSL_HAVE_LT_INTERNALS
 #include <libtorrent/download_priority.hpp>
 #include <libtorrent/io_context.hpp>
 #include <libtorrent/piece_picker.hpp>
 #include <libtorrent/torrent.hpp>
 #include <libtorrent/aux_/session_interface.hpp>
+#endif
 
 // Implemented in lt_disk_io.cpp; declared here after all libtorrent
 // headers have been seen so the session_params type is unambiguous.
@@ -915,6 +921,7 @@ int lt_torrent_we_dont_have(lt_torrent tid, int piece_idx) {
     WRAP_BEGIN
     auto h = get_torrent(tid);
     if (!h.is_valid()) return set_err(LT_ERR_NOT_FOUND, "torrent not found");
+#ifdef TSL_HAVE_LT_INTERNALS
     auto tor = h.native_handle();
     if (!tor) return set_err(LT_ERR_NOT_FOUND, "no native handle");
     h.reset_piece_deadline(lt::piece_index_t{piece_idx});
@@ -929,6 +936,16 @@ int lt_torrent_we_dont_have(lt_torrent tid, int piece_idx) {
         tor->picker().we_dont_have(pi);
     });
     return LT_OK;
+#else
+    // Linked against a shared libtorrent that doesn't export piece_picker /
+    // torrent internals (distro or Homebrew). Per-piece un-have isn't
+    // available, so just clear any deadline. The consequence is the documented
+    // pre-we_dont_have limitation: a seek back into an already-evicted region
+    // won't re-download (forward seek, playback and short rewind still work).
+    // reset_piece_deadline is public torrent_handle API, so this always links.
+    h.reset_piece_deadline(lt::piece_index_t{piece_idx});
+    return LT_OK;
+#endif
     WRAP_END(LT_ERR_INTERNAL)
 }
 
