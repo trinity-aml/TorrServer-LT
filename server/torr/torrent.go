@@ -7,15 +7,15 @@ import (
 	"sync"
 	"time"
 
-	"server/lt"
 	"server/log"
+	"server/lt"
 	"server/settings"
 	"server/torr/state"
 	storageState "server/torr/storage/state"
 	"server/torr/storage/torrstor"
 	"server/torr/utils"
-	utils2 "server/utils"
 	"server/torrshash"
+	utils2 "server/utils"
 )
 
 // Torrent is the public engine-agnostic wrapper. Composes a libtorrent
@@ -56,10 +56,10 @@ type Torrent struct {
 
 	expiredTime time.Time
 
-	gotInfoCh chan struct{}
+	gotInfoCh   chan struct{}
 	gotInfoOnce sync.Once
 
-	closeCh chan struct{}
+	closeCh   chan struct{}
 	closeOnce sync.Once
 
 	watcher *time.Ticker
@@ -235,9 +235,34 @@ func (t *Torrent) GotInfo() bool {
 // AddExpiredTime pushes the auto-drop deadline forward.
 func (t *Torrent) AddExpiredTime(d time.Duration) {
 	newDeadline := time.Now().Add(d)
+	t.mu.Lock()
 	if t.expiredTime.Before(newDeadline) {
 		t.expiredTime = newDeadline
 	}
+	t.mu.Unlock()
+}
+
+// expired reports whether the torrent has passed its auto-drop deadline and is
+// safe to drop from the session: it must not be mid-handshake (getting metadata
+// or preloading) or already closed, and must have no active reader. Playback,
+// status polls and preload all push expiredTime forward, so an in-use torrent
+// is never seen as expired. Used by BTServer.expireWatch.
+func (t *Torrent) expired(now time.Time) bool {
+	t.mu.Lock()
+	stat := t.Stat
+	deadline := t.expiredTime
+	t.mu.Unlock()
+	switch stat {
+	case state.TorrentClosed, state.TorrentGettingInfo, state.TorrentPreload, state.TorrentInDB:
+		return false
+	}
+	if deadline.IsZero() || now.Before(deadline) {
+		return false
+	}
+	if c := torrstor.Global().CacheByHash([20]byte(t.Hash())); c != nil && c.ActiveReaders() > 0 {
+		return false
+	}
+	return true
 }
 
 // ----- watch / progress -----

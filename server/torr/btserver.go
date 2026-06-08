@@ -76,6 +76,7 @@ func (bt *BTServer) Connect() error {
 	bt.stopAlert = make(chan struct{})
 	bt.alertDone = make(chan struct{})
 	go bt.alertPump(bt.stopAlert, bt.alertDone)
+	go bt.expireWatch(bt.stopAlert)
 
 	InitApiHelper(bt)
 	return nil
@@ -173,6 +174,33 @@ func (bt *BTServer) alertPump(stop <-chan struct{}, done chan<- struct{}) {
 		}
 		for i := range alerts {
 			bt.handleAlert(&alerts[i])
+		}
+	}
+}
+
+// expireWatch drops idle torrents from the session once they pass their
+// auto-drop deadline (TorrentDisconnectTimeout) with no active reader, which
+// closes their cache and frees the RAM. Without it a torrent that was added or
+// played once stays resident in the session forever — its cache never freed —
+// since nothing else consumes expiredTime. Mirrors upstream TorrServer's
+// inactivity drop; the DB record is kept, so the torrent is re-promoted on next
+// access. Stops when the session's stopAlert channel is closed (Disconnect).
+func (bt *BTServer) expireWatch(stop <-chan struct{}) {
+	tick := time.NewTicker(5 * time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-tick.C:
+			now := time.Now()
+			for _, t := range bt.ListTorrents() {
+				if t == nil || !t.expired(now) {
+					continue
+				}
+				log.Println("torr: auto-drop idle torrent", t.Hash().HexString())
+				bt.RemoveTorrent(t.Hash())
+			}
 		}
 	}
 }

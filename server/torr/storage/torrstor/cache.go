@@ -123,7 +123,17 @@ func (c *Cache) registerReader(r *Reader) {
 func (c *Cache) unregisterReader(r *Reader) {
 	c.readersMu.Lock()
 	delete(c.readers, r)
+	empty := len(c.readers) == 0
 	c.readersMu.Unlock()
+	// When the last reader detaches, drop the streaming reservation so capacity
+	// falls back to the global CacheSize and trim the now-unprotected overage
+	// right away — don't keep a readahead-sized buffer resident for a torrent
+	// nobody is streaming. (The torrent itself is dropped later by the expiry
+	// watchdog, which frees the rest.)
+	if empty {
+		c.ClearReserve()
+		go c.evictIfOverCapacity()
+	}
 }
 
 // ActiveReaders returns the current number of subscribed Readers.
