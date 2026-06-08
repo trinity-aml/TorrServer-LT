@@ -2,7 +2,7 @@
 
 > Fork of [YouROK/TorrServer](https://github.com/YouROK/TorrServer) with the BitTorrent core replaced by [libtorrent (arvidn)](https://www.libtorrent.org/).
 >
-> **Status:** work in progress. The HTTP API, on-disk databases (`config.db`, JSON, `accs.db`, viewed) and the `torrs://` token format remain compatible with upstream. The cache layout under `TorrentsSavePath/<hash>/<pieceID>` is preserved.
+> **Status:** work in progress, but the core is functional — streaming, preload, and seeking (including back into already-evicted regions) are verified on real torrents. The HTTP API, on-disk databases (`config.db`, JSON, `accs.db`, viewed) and the `torrs://` token format remain compatible with upstream. The cache layout under `TorrentsSavePath/<hash>/<pieceID>` is preserved.
 >
 > **Platforms:**
 > - Linux: `amd64`, `arm64`, `armv7`
@@ -244,55 +244,145 @@ services:
 
 3. Enter current ip and port of the TorrServe(r), e.g. `127.0.0.1:8090`
 
+## Settings
+
+Most behaviour is configured in the web UI (**Settings**), stored in the config
+DB and applied live — saving reconnects the torrent session, so changes take
+effect without a restart. The cache and streaming options that matter most for
+this libtorrent fork:
+
+| Setting | Default | What it does |
+|---------|---------|--------------|
+| **Cache size** (`CacheSize`) | 64 MB | Memory (or disk) budget for the piece cache. The streaming cache keeps the reader's forward window + recently-played pieces and evicts the rest; an evicted piece is un-`have`d in libtorrent so a later seek back into it re-downloads instead of stalling. |
+| **Readahead cache** (`ReaderReadAHead`) | 95% | Forward streaming window as a percentage of the cache — how far ahead of the play head pieces are prioritised (graded so the play head is fetched first). |
+| **Preload before play** (`PreloadCache`) | 50% | Buffer this fraction of the cache at the file head before playback starts (e.g. 64 MB × 50% = 32 MB). |
+| **Preload end buffer** (`PreloadBufferEnd`) | 4 MB | **New.** Also buffer the *tail* of the file (MP4 `moov` / MKV cues) so the player can read its index for instant seek. |
+| **End-game mode** (`DisableEndGame`) | on | **New.** Request the final buffer pieces from all peers at once for a faster finish/seek; turn off to cut duplicate traffic. |
+| **Disk cache** (`UseDisk` + `TorrentsSavePath`) | off | Store pieces on disk under `TorrentsSavePath/<hash>/<pieceID>` instead of RAM. |
+| **Remove cache on drop** (`RemoveCacheOnDrop`) | off | Delete the on-disk cache when a torrent is removed. |
+| **Upload** (`DisableUpload`) | on | Turn off to run leech-only (never unchoke peers — no seeding). |
+
+`PreloadBufferEnd` and the end-game toggle live on the **Main** and
+**Additional** settings tabs respectively (Additional requires PRO mode). Other
+tabs cover connection/rate limits, DHT/PEX/LSD/UPnP, encryption, DLNA, HTTPS,
+proxy and Torznab search.
+
 ## Development
 
-### Go server
+This fork links **libtorrent 2.0.10 (arvidn)** into the Go server through a CGo
+shim (`server/lt`). Unlike upstream's pure-Go engine, every build is therefore
+**CGo + C++** and needs a libtorrent/Boost toolchain. Some shim features (e.g.
+the per-piece `we_dont_have` the streaming cache uses to re-download evicted
+regions on seek-back) call libtorrent internals that the distro **shared**
+`libtorrent-rasterbar` does not export — so you must link the **static**
+libtorrent the build scripts produce. A plain `go build` against a system
+`libtorrent-rasterbar-dev` will fail at link time with `undefined reference`.
 
-To run the Go server locally, just run
+### Prerequisites
+
+- **Go 1.25+**
+- A host C/C++ toolchain (`gcc`/`g++`), `curl`, `git` — to bootstrap Boost's
+  `b2` and build libtorrent. No cmake, Docker or QEMU required.
+- For the web UI: **Node.js 18+** and **yarn**.
+
+### Local server (linux-amd64)
+
+Build the libtorrent + Boost deps once (cached in `_deps/linux-amd64/`); this
+also drops a ready binary in `_out/`:
+
+```bash
+build/linux-amd64.sh
+```
+
+To iterate on the Go code with `go run` / `go test`, point pkg-config at that
+static tree so cgo links the right libtorrent:
 
 ```bash
 cd server
-go run ./cmd
+export PKG_CONFIG_PATH=$PWD/../_deps/linux-amd64/lib/pkgconfig
+export PKG_CONFIG_LIBDIR=$PWD/../_deps/linux-amd64/lib/pkgconfig
+export CGO_LDFLAGS="-L$PWD/../_deps/linux-amd64/lib"
+go run ./cmd        # or: go test ./...
 ```
 
-### Web development
+Then open <http://127.0.0.1:8090>.
 
-To run the web server locally, just run
+### Cross-compilation (no Docker)
+
+`build/` cross-builds **every** supported target on a Linux host: it builds
+libtorrent and `boost_system` from source with Boost.Build (`b2`) into
+`_deps/<target>/`, then links the Go binary against it via pkg-config. Output
+lands in `_out/TorrServer-LT-<target>`.
 
 ```bash
-yarn start
+build/all.sh                        # everything the host can build
+TARGETS="linux-arm64" build/all.sh  # a subset
 ```
 
-More info at <https://github.com/YouROK/TorrServer/tree/master/web#readme>
+`all.sh` reports each target `OK` / `FAIL` / `SKIP` (toolchain missing).
+Targets and the cross-toolchain each needs:
 
-### Build
+| Target          | Toolchain to install                                       |
+|-----------------|------------------------------------------------------------|
+| `linux-amd64`   | host gcc/g++ (nothing extra)                               |
+| `linux-arm64`   | `gcc-aarch64-linux-gnu g++-aarch64-linux-gnu`              |
+| `linux-armv7`   | `gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf`          |
+| `windows-amd64` | `gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64`                |
+| `android-arm64` / `android-armv7` | Android NDK r26+ (`export ANDROID_NDK_HOME=…`) |
+| `darwin-arm64` / `darwin-amd64`   | OSXCross + Apple macOS SDK (see below)     |
 
-#### Server
+libtorrent is built with `crypto=built-in`, so there is no OpenSSL cross
+dependency; the only dynamic deps in the final binary are libc/libstdc++/libgcc
+(Windows links those static too). Versions are pinned in `build/_common.sh`
+(Boost 1.85.0, libtorrent v2.0.10) and overridable, e.g.
+`LIBTORRENT_TAG=v2.0.11 build/linux-arm64.sh`. Full detail and the per-target
+prerequisites table: [`build/README.md`](build/README.md).
 
-- Install [Golang](https://golang.org/doc/install) 1.20+
-- Go to the TorrServer source directory
-- Run build script under linux or macOS `build-all.sh`
+### macOS
 
-#### Web
+Three ways to produce macOS binaries (`darwin-amd64` Intel, `darwin-arm64`
+Apple Silicon):
 
-- Install **npm** and **yarn**
-- Go to the web directory
-- Run `NODE_OPTIONS=--openssl-legacy-provider yarn build`
+1. **On a real Mac** — install Go 1.25+ and the Xcode command-line tools, then
+   run `build/darwin-arm64.sh` (or `darwin-amd64.sh`). This is the supported path
+   for anything you distribute.
+2. **CI** — the `.github/workflows/build-macos.yml` runner builds both arches on
+   a macOS host.
+3. **Cross-build from Linux via OSXCross** — needs the Apple macOS SDK, which
+   Apple's licence only permits on Apple hardware, so this is a legal grey area
+   and is meant for local reproducibility only. Set `OSXCROSS_ROOT` and run the
+   `darwin-*` scripts; the one-time SDK-extraction recipe is in
+   [`build/README.md`](build/README.md).
 
-#### Android
+### Web UI
 
-To build an Android server you will need the Android Toolchain.
+The React app under `web/` is compiled and **embedded** into the Go binary
+(`server/web/pages/template`), so a UI change is only visible after rebuilding
+the bundle *and* the server:
 
-#### Swagger
+```bash
+cd web
+yarn install
+NODE_OPTIONS=--openssl-legacy-provider CI=false yarn build   # CRA needs legacy OpenSSL on Node 18+
 
-`swag` must be installed on the system to [re]build Swagger documentation.
+cd ..
+go run gen_web.go     # copies web/build → server tree, regenerates the //go:embed table + routes
+```
+
+`gen_web.go` runs `yarn build` for you when `web/build` is missing. The embed
+table is keyed on CRA's hashed chunk filenames, so you **must** regenerate it
+after a rebuild — copying `web/build` by hand is not enough. For live UI work
+without rebuilding the binary, `cd web && yarn start` proxies to a running
+server. More info: [`web/README.md`](web/README.md).
+
+### Swagger
+
+`swag` must be installed to (re)build the API docs:
 
 ```bash
 go install github.com/swaggo/swag/cmd/swag@latest
-cd server; swag init -g web/server.go
-
-# Documentation can be linted using
-swag fmt
+cd server && swag init -g web/server.go
+swag fmt   # lint/format the annotations
 ```
 
 ## API
