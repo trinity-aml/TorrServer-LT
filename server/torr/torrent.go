@@ -139,9 +139,22 @@ func NewTorrent(spec *TorrentSpec, bt *BTServer) (*Torrent, error) {
 	t.AddExpiredTime(timeout)
 
 	// If the .torrent payload was provided up-front, metadata is already
-	// known — signal immediately.
+	// known — signal immediately. Otherwise this is a magnet and we must pull
+	// the info-dict from peers before anything (file list, playlist, stream)
+	// can proceed; kick an immediate DHT + tracker announce so peer discovery
+	// for the metadata starts aggressively right away instead of waiting for a
+	// Reader to attach (which only happens at playback start, long after the
+	// playlist is requested). This is the difference between a magnet whose
+	// playlist appears in a couple of seconds and one that times out.
 	if len(spec.InfoBytes) > 0 {
 		t.signalGotInfo()
+	} else if lh != nil {
+		go func() {
+			_ = lh.ForceReannounce()
+			if settings.BTsets() == nil || !settings.BTsets().DisableDHT {
+				_ = lh.ForceDhtAnnounce()
+			}
+		}()
 	}
 
 	bt.registerTorrent(t)
