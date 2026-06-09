@@ -174,15 +174,23 @@ func legacySavePath(h Hash) string {
 // ----- metadata ready signalling -----
 
 func (t *Torrent) signalGotInfo() {
+	// Only fire once metadata is actually parsed. The add_torrent alert (and a
+	// magnet's early alerts) arrive BEFORE the info-dict is known; consuming the
+	// once here would burn it on a no-op SetAllPiecesPriority and then make the
+	// real metadata_received alert a no-op — leaving the torrent at libtorrent's
+	// default piece priority 1, which downloads the WHOLE torrent and thrashes
+	// the bounded cache. So bail until metadata is ready and wait for a later
+	// alert (metadata_received / torrent_finished) or WaitInfo's fast path.
+	if t.lh == nil {
+		return
+	}
+	if have, _ := t.lh.HaveMetadata(); !have {
+		return
+	}
 	t.gotInfoOnce.Do(func() {
 		// Switch to lazy/streaming mode: download nothing until a Reader's
-		// window or Preload bumps the specific pieces it needs. Without this
-		// libtorrent pulls the whole torrent (default piece priority 1),
-		// thrashing the bounded cache on large files. No-op if metadata isn't
-		// actually ready yet (returns an error we ignore).
-		if t.lh != nil {
-			_ = t.lh.SetAllPiecesPriority(0)
-		}
+		// window or Preload bumps the specific pieces it needs.
+		_ = t.lh.SetAllPiecesPriority(0)
 		if t.gotInfoCh != nil {
 			close(t.gotInfoCh)
 		}
