@@ -247,19 +247,26 @@ func buildSessionConfig() (lt.SessionConfig, error) {
 		// bandwidth politeness for fast start/seek: find peers quickly, keep
 		// deep request pipelines, and race the last buffer pieces via end-game
 		// mode. BTsets-derived keys below may override where they overlap.
+		//
+		// NB on request pipelining: keep request_queue_time / max_out_request_queue
+		// near libtorrent's defaults. Cranking them (e.g. queue_time=2s,
+		// max_out=5000) makes us flood a single peer with hundreds–thousands of
+		// outstanding block requests; many clients (qBittorrent) cap incoming
+		// requests and choke/drop a peer that over-asks, which *slows* streaming
+		// and can stall it. The default-ish values below pipeline enough for
+		// throughput without tripping peer anti-flood limits.
 		"strict_end_game_mode":         true,  // fetch the final buffer pieces from many peers
 		"prioritize_partial_pieces":    false, // prefer finishing the reader's window in order
 		"announce_to_all_tiers":        true,  // hit every tracker tier for peers fast
 		"announce_to_all_trackers":     true,
 		"min_announce_interval":        30,
-		"whole_pieces_threshold":       10,
 		"max_suggest_pieces":           50,
-		"request_queue_time":           2,
-		"max_out_request_queue":        5000,
-		"max_allowed_in_request_queue": 5000,
+		"request_queue_time":           3,    // libtorrent default; ~3s of requests in flight
+		"max_out_request_queue":        1500, // cap outstanding block requests per peer
+		"max_allowed_in_request_queue": 2000, // libtorrent default
 		"send_buffer_watermark":        500 * 1024,
 		"send_buffer_watermark_factor": 50,
-		"connection_speed":             250, // open new peer connections faster
+		"connection_speed":             100, // open new peer connections faster (default 30)
 		"max_peerlist_size":            50000,
 		"max_pex_peers":                200,
 		"dht_upload_rate_limit":        50000,

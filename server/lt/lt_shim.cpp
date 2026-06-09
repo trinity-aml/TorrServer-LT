@@ -823,6 +823,18 @@ int lt_torrent_num_pieces(lt_torrent tid) {
     WRAP_END(LT_ERR_INTERNAL)
 }
 
+// lt_torrent_have_piece reports whether libtorrent's picker considers the piece
+// downloaded+verified. Used by the streaming reader to detect a have-bitfield /
+// cache desync (libtorrent thinks it has a piece our cache has evicted) so it can
+// un-have just that piece on demand. Returns 1 = have, 0 = not, -1 = error.
+int lt_torrent_have_piece(lt_torrent tid, int piece_idx) {
+    WRAP_BEGIN
+    auto h = get_torrent(tid);
+    if (!h.is_valid()) return set_err(LT_ERR_NOT_FOUND, "torrent not found");
+    return h.have_piece(lt::piece_index_t{piece_idx}) ? 1 : 0;
+    WRAP_END(LT_ERR_INTERNAL)
+}
+
 int64_t lt_torrent_piece_length(lt_torrent tid) {
     set_err(LT_OK, "");
     try {
@@ -909,24 +921,33 @@ int lt_torrent_set_all_pieces_priority(lt_torrent tid, int prio) {
 }
 
 // Per-piece "un-have". The streaming cache evicts pieces that libtorrent still
-// records as "have"; a seek back into an evicted region would then never be
-// re-downloaded (the picker skips pieces it believes it owns, and priority on a
-// complete piece is ignored). There is no public torrent_handle API for this,
-// so we reach into the internal piece_picker — which is only safe on the
-// session's network thread, hence the post() onto its io_context. We also drop
-// any deadline and lower the piece priority so the picker won't instantly
-// re-request it; the reader's scheduleWindow re-raises priority when (and if)
-// the window covers the piece again.
-int lt_torrent_we_dont_have(lt_torrent tid, int piece_idx) {
+// records as "have"; a seek back into an evicted region (or a playhead piece
+// that was downloaded ahead, cached, then evicted before the reader reached it)
+// would then never be re-downloaded — the picker skips pieces it believes it
+// owns, and priority on a complete piece is ignored. There is no public
+// torrent_handle API for this, so we reach into the internal piece_picker —
+// only safe on the session's network thread, hence the post() onto its
+// io_context.
+//
+// `prio` is the download priority to leave the piece at AFTER clearing the have
+// bit. It is applied inside the same posted lambda, *after* we_dont_have, so it
+// can't be lost to a race: doing set_piece_priority from the caller's thread (as
+// we used to) ran concurrently with this lambda, which transiently drops the
+// piece to dont_download to satisfy the picker — the lambda's store would then
+// clobber the caller's, leaving the piece at priority 0 and never re-requested.
+// Callers that want the piece re-downloaded now (the streaming reader) pass a
+// non-zero prio; pass 0 to un-have and leave it lazy.
+int lt_torrent_we_dont_have(lt_torrent tid, int piece_idx, int prio) {
     WRAP_BEGIN
     auto h = get_torrent(tid);
     if (!h.is_valid()) return set_err(LT_ERR_NOT_FOUND, "torrent not found");
+    if (prio < 0 || prio > 7) return set_err(LT_ERR_INVALID, "prio out of range");
 #ifdef TSL_HAVE_LT_INTERNALS
     auto tor = h.native_handle();
     if (!tor) return set_err(LT_ERR_NOT_FOUND, "no native handle");
     h.reset_piece_deadline(lt::piece_index_t{piece_idx});
     lt::io_context& ioc = tor->session().get_context();
-    lt::post(ioc, [tor, piece_idx]() {
+    lt::post(ioc, [tor, piece_idx, prio]() {
         lt::piece_index_t const pi{piece_idx};
         // need_picker() materialises a picker reflecting current have-state
         // (e.g. a seeding torrent with have_all and no picker), so we_dont_have
@@ -934,6 +955,10 @@ int lt_torrent_we_dont_have(lt_torrent tid, int piece_idx) {
         if (!tor->has_picker()) tor->need_picker();
         tor->set_piece_priority(pi, lt::dont_download);
         tor->picker().we_dont_have(pi);
+        // Re-apply the requested priority last so the picker will (or won't)
+        // re-request the piece exactly as the caller intends.
+        tor->set_piece_priority(pi,
+            static_cast<lt::download_priority_t>(static_cast<std::uint8_t>(prio)));
     });
     return LT_OK;
 #else

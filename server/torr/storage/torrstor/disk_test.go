@@ -209,7 +209,9 @@ func TestCache_EvictionSparesReaderWindow(t *testing.T) {
 	c.mu.Unlock()
 
 	// Reader pinned at the head with forward window [0..2] and no behind margin.
-	r := &Reader{cache: c, file: FileInfo{Offset: 0, Length: total * pieceLen}, winFirst: 0, winLast: 2}
+	r := &Reader{cache: c, file: FileInfo{Offset: 0, Length: total * pieceLen}}
+	r.winFirst.Store(0)
+	r.winLast.Store(2)
 	c.registerReader(r)
 
 	c.evictIfOverCapacity() // 12 pieces, budget 6 → 6 must go

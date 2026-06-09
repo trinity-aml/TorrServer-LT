@@ -45,9 +45,10 @@ type Cache struct {
 	announced atomic.Bool
 
 	// handle is the libtorrent torrent backing this cache, captured from the
-	// first Reader. Eviction uses it to call WeDontHave on each dropped piece so
-	// libtorrent's have-bitfield stays in sync with what is actually buffered —
-	// otherwise a seek back into an evicted region could never be re-downloaded.
+	// first Reader. The Reader uses it (not eviction) to reconcile the
+	// have-bitfield on demand: if it needs a piece libtorrent has but the cache
+	// evicted, it un-haves just that piece so it re-downloads. See
+	// evictIfOverCapacity for why this is no longer done per-eviction.
 	handle atomic.Pointer[lt.Torrent]
 }
 
@@ -279,12 +280,12 @@ func (c *Cache) evictIfOverCapacity() {
 		c.mu.Lock()
 		delete(c.pieces, p.Id)
 		c.mu.Unlock()
-		// Keep libtorrent's have-bitfield in sync with the buffer: tell the
-		// picker it no longer has this piece so a later seek back into this
-		// region re-downloads it instead of being skipped as "already have".
-		if h := c.handle.Load(); h != nil {
-			_ = h.WeDontHave(p.Id)
-		}
+		// NB: we deliberately do NOT call WeDontHave here. Un-having every evicted
+		// piece churns libtorrent's piece_picker and, once the cache starts
+		// evicting mid-stream, stalls the whole download (verified). The
+		// have-bitfield is instead reconciled lazily, on demand, by the Reader: if
+		// it later needs a piece libtorrent has but we evicted, it un-haves just
+		// that one piece to force a re-download (see ensurePieceLocked).
 		needFree -= sz
 	}
 }

@@ -432,6 +432,12 @@ func (t *Torrent) Files() ([]File, error) {
 // NumPieces returns the total piece count (0 before metadata).
 func (t *Torrent) NumPieces() int { return int(C.lt_torrent_num_pieces(t.id)) }
 
+// HasPiece reports whether libtorrent's picker considers the piece downloaded
+// and verified. Used to detect a have-bitfield vs cache desync.
+func (t *Torrent) HasPiece(piece int) bool {
+	return C.lt_torrent_have_piece(t.id, C.int(piece)) == 1
+}
+
 // PieceLength returns the piece length in bytes (0 before metadata).
 func (t *Torrent) PieceLength() int64 { return int64(C.lt_torrent_piece_length(t.id)) }
 
@@ -465,13 +471,14 @@ func (t *Torrent) SetAllPiecesPriority(prio int) error {
 }
 
 // WeDontHave tells libtorrent's piece_picker to forget that it has the given
-// piece, so the picker will re-request it from peers. The streaming cache calls
-// this when it evicts a piece, keeping libtorrent's have-bitfield in sync with
-// what is actually buffered — without it a seek back into an evicted region
-// could never be re-downloaded. Also clears the piece deadline and lowers its
-// priority (the reader's window re-raises it on demand).
-func (t *Torrent) WeDontHave(piece int) error {
-	return codeToErr(C.lt_torrent_we_dont_have(t.id, C.int(piece)))
+// piece, so the picker will re-request it from peers — needed when the streaming
+// cache has evicted a piece libtorrent still records as "have" (the picker skips
+// pieces it believes it owns, so without this a reader could block on it
+// forever). prio is the download priority to leave the piece at after clearing
+// the have bit, applied atomically with the un-have on the network thread; pass
+// a top priority (7) to re-download it now, 0 to leave it lazy.
+func (t *Torrent) WeDontHave(piece, prio int) error {
+	return codeToErr(C.lt_torrent_we_dont_have(t.id, C.int(piece), C.int(prio)))
 }
 
 // SetPieceDeadline sets a soft deadline (in ms) for a piece, optionally

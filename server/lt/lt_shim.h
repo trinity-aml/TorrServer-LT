@@ -164,6 +164,7 @@ size_t  lt_torrent_file_path(lt_torrent t, int idx, char* buf, size_t cap);
 int64_t lt_torrent_file_size(lt_torrent t, int idx);
 int64_t lt_torrent_file_offset(lt_torrent t, int idx);
 int     lt_torrent_num_pieces(lt_torrent t);
+int     lt_torrent_have_piece(lt_torrent t, int piece_idx);
 int64_t lt_torrent_piece_length(lt_torrent t);
 int64_t lt_torrent_total_size(lt_torrent t);
 
@@ -185,7 +186,7 @@ int lt_torrent_set_file_priority(lt_torrent t, int file_idx, int prio);
  * seek back into an evicted region can never be re-downloaded (there is no
  * public torrent_handle equivalent — this pokes the internal picker on the
  * session network thread). Also clears any deadline on the piece. */
-int lt_torrent_we_dont_have(lt_torrent t, int piece_idx);
+int lt_torrent_we_dont_have(lt_torrent t, int piece_idx, int prio);
 
 /* ----- status & stats -----
  * status_json output schema (subset used by Go state.TorrentStatus):
