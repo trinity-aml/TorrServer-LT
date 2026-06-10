@@ -151,6 +151,11 @@ int lt_torrent_resume(lt_torrent t);
 int lt_torrent_force_recheck(lt_torrent t);
 int lt_torrent_force_reannounce(lt_torrent t);
 int lt_torrent_force_dht_announce(lt_torrent t);
+/* Per-torrent peer connection cap (torrent_handle::set_max_connections).
+ * The BTsets "connections limit" is historically per-torrent, while
+ * settings_pack's connections_limit is session-wide — this keeps the
+ * user-visible semantics. n <= 0 means unlimited. */
+int lt_torrent_set_max_connections(lt_torrent t, int n);
 
 /* ----- metadata accessors ----- */
 /* 1 if metadata is present, 0 if not yet downloaded, < 0 on error */

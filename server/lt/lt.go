@@ -388,6 +388,13 @@ func (t *Torrent) ForceRecheck() error { return codeToErr(C.lt_torrent_force_rec
 func (t *Torrent) ForceReannounce() error  { return codeToErr(C.lt_torrent_force_reannounce(t.id)) }
 func (t *Torrent) ForceDhtAnnounce() error { return codeToErr(C.lt_torrent_force_dht_announce(t.id)) }
 
+// SetMaxConnections caps how many peer connections this torrent may use.
+// n <= 0 means unlimited. The BTsets "connections limit" is per-torrent
+// (anacrolix legacy), unlike settings_pack's session-wide connections_limit.
+func (t *Torrent) SetMaxConnections(n int) error {
+	return codeToErr(C.lt_torrent_set_max_connections(t.id, C.int(n)))
+}
+
 // HaveMetadata reports whether libtorrent has the .torrent's info dict yet.
 func (t *Torrent) HaveMetadata() (bool, error) {
 	rc := C.lt_torrent_have_metadata(t.id)

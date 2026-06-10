@@ -266,11 +266,25 @@ func buildSessionConfig() (lt.SessionConfig, error) {
 		"max_allowed_in_request_queue": 2000, // libtorrent default
 		"send_buffer_watermark":        500 * 1024,
 		"send_buffer_watermark_factor": 50,
-		"connection_speed":             100, // open new peer connections faster (default 30)
+		"connection_speed":             250, // outgoing connection attempts per second (default 30)
 		"max_peerlist_size":            50000,
 		"max_pex_peers":                200,
 		"dht_upload_rate_limit":        50000,
 		"mixed_mode_algorithm":         0, // prefer_tcp: steadier throughput for streaming
+
+		// Swarm ramp-up: connect to many peers immediately and fail the dead
+		// ones fast, so the first seconds of playback see the full swarm
+		// instead of trickling in at libtorrent's polite defaults.
+		"torrent_connect_boost":             100, // peers to try the moment a torrent is added (default 30)
+		"peer_connect_timeout":              7,   // give up on unreachable peers sooner (default 15)
+		"piece_timeout":                     10,  // re-request a slow block from another peer sooner (default 20)
+		"min_reconnect_time":                10,  // retry failed peers sooner (default 60)
+		"allow_multiple_connections_per_ip": true,
+		"dht_announce_interval":             60,   // keep fresh peers flowing in (default 15 min)
+		"auto_scrape_interval":              1200, // cf. elementum
+		"auto_scrape_min_interval":          900,
+		"stop_tracker_timeout":              1,
+		"seed_choking_algorithm":            1, // fastest_upload: reciprocity favours fast peers
 
 		// Don't let the queue manager pause our stream. Torrents are added
 		// auto_managed, and libtorrent's default active limits (≈3 downloads /
@@ -314,9 +328,19 @@ func buildSessionConfig() (lt.SessionConfig, error) {
 	cfg["enable_outgoing_utp"] = !s.DisableUTP
 	cfg["enable_incoming_utp"] = !s.DisableUTP
 
-	// Peer pool
+	// Peer pool. BTsets.ConnectionsLimit is historically PER-TORRENT (anacrolix
+	// EstablishedConnsPerTorrent, default 25) and is applied per torrent via
+	// torrent_handle::set_max_connections on add. settings_pack's
+	// connections_limit is the SESSION-WIDE cap (libtorrent default 200) —
+	// mapping the per-torrent value straight into it used to throttle the whole
+	// session to 25 peers, the single biggest speed killer after the LT port.
+	// Keep the session cap comfortably above a few concurrent torrents' worth.
 	if s.ConnectionsLimit > 0 {
-		cfg["connections_limit"] = s.ConnectionsLimit
+		sessionConns := s.ConnectionsLimit * 4
+		if sessionConns < 200 {
+			sessionConns = 200
+		}
+		cfg["connections_limit"] = sessionConns
 		cfg["connections_slack"] = 10
 	}
 

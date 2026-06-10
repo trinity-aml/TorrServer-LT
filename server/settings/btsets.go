@@ -127,7 +127,7 @@ func SetBTSets(sets *BTSets) {
 		sets.CacheSize = 64 * 1024 * 1024
 	}
 	if sets.ConnectionsLimit == 0 {
-		sets.ConnectionsLimit = 25
+		sets.ConnectionsLimit = 50
 	}
 	if sets.DHTConnectionsLimit <= 0 {
 		sets.DHTConnectionsLimit = 500
@@ -189,7 +189,10 @@ func SetDefaultConfig() {
 	sets.CacheSize = 64 * 1024 * 1024 // 64 MB
 	sets.PreloadCache = 50
 	sets.PreloadBufferEnd = 4 * 1024 * 1024 // 4 MB tail buffer
-	sets.ConnectionsLimit = 25
+	// Per-torrent peer cap (see torr.buildSessionConfig). 50 matches
+	// Transmission's default; 25 (the anacrolix-era default) measurably
+	// caps single-torrent speed on fast links.
+	sets.ConnectionsLimit = 50
 	sets.DHTConnectionsLimit = 500
 	sets.RetrackersMode = 1
 	sets.TorrentDisconnectTimeout = 30

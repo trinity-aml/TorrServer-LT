@@ -727,6 +727,15 @@ int lt_torrent_force_dht_announce(lt_torrent tid) {
     WRAP_END(LT_ERR_INTERNAL)
 }
 
+int lt_torrent_set_max_connections(lt_torrent tid, int n) {
+    WRAP_BEGIN
+    auto h = get_torrent(tid);
+    if (!h.is_valid()) return set_err(LT_ERR_NOT_FOUND, "torrent not found");
+    h.set_max_connections(n);
+    return LT_OK;
+    WRAP_END(LT_ERR_INTERNAL)
+}
+
 // ----- metadata accessors -----
 
 int lt_torrent_have_metadata(lt_torrent tid) {

@@ -125,6 +125,13 @@ func NewTorrent(spec *TorrentSpec, bt *BTServer) (*Torrent, error) {
 		return nil, err
 	}
 
+	// BTsets.ConnectionsLimit is a per-torrent peer cap (anacrolix legacy);
+	// the session-wide connections_limit is set separately in
+	// buildSessionConfig. See lt_shim.h on lt_torrent_set_max_connections.
+	if lh != nil && settings.BTsets() != nil && settings.BTsets().ConnectionsLimit > 0 {
+		_ = lh.SetMaxConnections(settings.BTsets().ConnectionsLimit)
+	}
+
 	timeout := torrentExpireTimeout()
 	t := &Torrent{
 		TorrentSpec:   spec,
