@@ -178,7 +178,17 @@ std::unordered_map<int64_t, std::shared_ptr<session_slot>> g_sessions;
 std::atomic<int64_t> g_next_sess{1};
 
 std::shared_mutex g_torr_mu;
-std::unordered_map<int64_t, lt::torrent_handle> g_torrents;
+// The hex key is captured at registration time so unregistering never
+// depends on the handle still being valid: remove_torrent is async, and a
+// handle can expire between remove and unregister. Erasing by the stored key
+// keeps g_hash2id from retaining a stale hash -> dead-id mapping, which would
+// make every future add of the same info-hash return the dead id ("torrent
+// not found" forever).
+struct torrent_entry {
+    lt::torrent_handle h;
+    std::string hex; // 40-char lowercase v1 info-hash
+};
+std::unordered_map<int64_t, torrent_entry> g_torrents;
 std::unordered_map<std::string, int64_t> g_hash2id;
 std::atomic<int64_t> g_next_torr{1};
 
@@ -193,7 +203,7 @@ lt::torrent_handle get_torrent(lt_torrent id) {
     std::shared_lock<std::shared_mutex> lk(g_torr_mu);
     auto it = g_torrents.find(id);
     if (it == g_torrents.end()) return lt::torrent_handle();
-    return it->second;
+    return it->second.h;
 }
 
 int64_t register_torrent(lt::torrent_handle const& h) {
@@ -202,9 +212,20 @@ int64_t register_torrent(lt::torrent_handle const& h) {
     std::string hex = sha1_hex(hashes.v1);
     std::unique_lock<std::shared_mutex> lk(g_torr_mu);
     auto exist = g_hash2id.find(hex);
-    if (exist != g_hash2id.end()) return exist->second;
+    if (exist != g_hash2id.end()) {
+        // Same info-hash re-added. If the old entry's handle is dead (torrent
+        // removed, then re-added), replace it with the fresh handle under the
+        // same id; returning the dead id would break the new torrent.
+        auto told = g_torrents.find(exist->second);
+        if (told == g_torrents.end()) {
+            g_torrents.emplace(exist->second, torrent_entry{h, hex});
+        } else if (!told->second.h.is_valid()) {
+            told->second.h = h;
+        }
+        return exist->second;
+    }
     int64_t id = g_next_torr++;
-    g_torrents.emplace(id, h);
+    g_torrents.emplace(id, torrent_entry{h, hex});
     g_hash2id.emplace(std::move(hex), id);
     return id;
 }
@@ -223,10 +244,7 @@ void unregister_torrent(lt_torrent id) {
     std::unique_lock<std::shared_mutex> lk(g_torr_mu);
     auto it = g_torrents.find(id);
     if (it == g_torrents.end()) return;
-    if (it->second.is_valid()) {
-        auto hashes = it->second.info_hashes();
-        g_hash2id.erase(sha1_hex(hashes.v1));
-    }
+    g_hash2id.erase(it->second.hex);
     g_torrents.erase(it);
 }
 
@@ -566,12 +584,8 @@ int lt_session_destroy(lt_session id) {
     // Forget all torrents — we only ever have one session at a time.
     {
         std::unique_lock<std::shared_mutex> lk(g_torr_mu);
-        for (auto it = g_torrents.begin(); it != g_torrents.end();) {
-            if (it->second.is_valid()) {
-                g_hash2id.erase(sha1_hex(it->second.info_hashes().v1));
-            }
-            it = g_torrents.erase(it);
-        }
+        g_torrents.clear();
+        g_hash2id.clear();
     }
     slot.reset();
     return LT_OK;
