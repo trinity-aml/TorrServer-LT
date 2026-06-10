@@ -20,9 +20,11 @@ B2_TOOLSET_CXX="$CXX"
 B2_FLAGS="target-os=android address-model=32 architecture=arm"
 # See android-arm64.sh: anet's //go:linkname needs Go's checklinkname off.
 EXTRA_GO_LDFLAGS="-checklinkname=0"
+# See android-arm64.sh: link libc++ statically, the app ships no libc++_shared.
+EXTRA_CGO_LDFLAGS="-static-libstdc++"
 
 export TARGET GOOS GOARCH GOARM CC CXX B2_COMPILER B2_VARIANT B2_TOOLSET_CXX \
-       B2_FLAGS EXTRA_GO_LDFLAGS
+       B2_FLAGS EXTRA_GO_LDFLAGS EXTRA_CGO_LDFLAGS
 
 # shellcheck source=_deps.sh
 . "$(dirname "$0")/_deps.sh"

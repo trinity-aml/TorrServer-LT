@@ -22,9 +22,13 @@ B2_FLAGS="target-os=android address-model=64 architecture=arm"
 # rejects that by default. Its code only compiles on android, so the escape
 # hatch is only needed here.
 EXTRA_GO_LDFLAGS="-checklinkname=0"
+# NDK clang++ links libc++_shared.so by default, but the TorrServe app only
+# ships the bare binary — no libc++_shared alongside — so the executable dies
+# at load time ("cannot locate symbol ... __ndk1..."). Link libc++ statically.
+EXTRA_CGO_LDFLAGS="-static-libstdc++"
 
 export TARGET GOOS GOARCH CC CXX B2_COMPILER B2_VARIANT B2_TOOLSET_CXX B2_FLAGS \
-       EXTRA_GO_LDFLAGS
+       EXTRA_GO_LDFLAGS EXTRA_CGO_LDFLAGS
 
 # shellcheck source=_deps.sh
 . "$(dirname "$0")/_deps.sh"

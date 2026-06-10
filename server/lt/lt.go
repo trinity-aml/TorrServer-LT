@@ -21,7 +21,12 @@ package lt
 #cgo CFLAGS: -I${SRCDIR}
 #cgo CXXFLAGS: -std=c++17 -I${SRCDIR} -I${SRCDIR}/third_party
 #cgo pkg-config: libtorrent-rasterbar
-#cgo LDFLAGS: -lstdc++
+#cgo !android LDFLAGS: -lstdc++
+// No -lstdc++ on android: NDK clang++ rewrites it to the SHARED libc++ even
+// when -static-libstdc++ is passed, leaving the binary needing a
+// libc++_shared.so that the TorrServe app never ships ("cannot locate symbol
+// __ndk1..." at startup). There the C++ runtime comes from -static-libstdc++
+// in build/android-*.sh (extld is clang++, which then picks libc++_static.a).
 
 #include <stdlib.h>
 #include "lt_shim.h"
