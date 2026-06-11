@@ -12,7 +12,7 @@ set -euo pipefail
 
 # --- pinned versions -------------------------------------------------
 BOOST_VERSION=${BOOST_VERSION:-1.85.0}
-LIBTORRENT_TAG=${LIBTORRENT_TAG:-v2.0.10}
+LIBTORRENT_TAG=${LIBTORRENT_TAG:-v2.0.13}
 TS_VERSION=${TS_VERSION:-MatriX.LT-001}
 
 # --- paths -----------------------------------------------------------

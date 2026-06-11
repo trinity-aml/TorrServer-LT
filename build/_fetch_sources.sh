@@ -31,7 +31,18 @@ if [[ ! -d "$LT_DIR" ]]; then
     git clone --branch "$LIBTORRENT_TAG" --depth 1 --recurse-submodules \
         https://github.com/arvidn/libtorrent.git "$LT_DIR"
 else
-    log "libtorrent already in $LT_DIR (tag: $LIBTORRENT_TAG)"
+    # An existing clone may sit on an older pin (LIBTORRENT_TAG was bumped):
+    # verify HEAD matches the tag and switch if it doesn't, so a version bump
+    # in _common.sh actually takes effect on cached/local trees.
+    have=$(git -C "$LT_DIR" describe --tags --exact-match 2>/dev/null || echo none)
+    if [[ "$have" == "$LIBTORRENT_TAG" ]]; then
+        log "libtorrent already at $LIBTORRENT_TAG in $LT_DIR"
+    else
+        log "switching libtorrent $have -> $LIBTORRENT_TAG"
+        git -C "$LT_DIR" fetch --depth 1 origin "refs/tags/$LIBTORRENT_TAG:refs/tags/$LIBTORRENT_TAG"
+        git -C "$LT_DIR" checkout -f "$LIBTORRENT_TAG"
+        git -C "$LT_DIR" submodule update --init --recursive --depth 1
+    fi
 fi
 # Always make sure submodules are checked out (a bare clone won't have them).
 if [[ ! -f "$LT_DIR/deps/try_signal/Jamfile" ]]; then
