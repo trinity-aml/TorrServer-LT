@@ -147,15 +147,49 @@ func (t *Torrent) Preload(index int, size int64) {
 		}
 	}()
 
-	for _, p := range order {
-		if !cache.WaitForPiece(ctx, p) {
-			break // timeout or torrent closed
+	// Wait until every buffer piece is resident, recomputing PreloadedBytes
+	// from the actual cache state (partial pieces included) on a short tick.
+	// Pieces complete out of playback order (rarest-first, different peers), so
+	// the old sequential wait-and-increment accounting froze the progress bar
+	// on the slowest leading piece and then burst-jumped at the very end — the
+	// UI showed ~50-70% at the moment the preload finished and the player
+	// launched, which read as "player starts on a half-filled buffer".
+	total := int64(len(order)) * plen
+	tick := time.NewTicker(200 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		snap := cache.PiecesSnapshot()
+		var got int64
+		done := 0
+		for _, p := range order {
+			st, ok := snap[p]
+			if !ok {
+				continue
+			}
+			sz := st.Size
+			if st.Completed || sz > plen {
+				sz = plen
+			}
+			if st.Completed {
+				done++
+			}
+			got += sz
+		}
+		if got > total {
+			got = total
 		}
 		t.mu.Lock()
-		if t.PreloadedBytes += plen; t.PreloadedBytes > t.PreloadSize {
-			t.PreloadedBytes = t.PreloadSize
-		}
+		t.PreloadedBytes = got
 		t.mu.Unlock()
+		if done == len(order) {
+			break
+		}
+		select {
+		case <-ctx.Done(): // timeout or torrent closed
+		case <-tick.C:
+			continue
+		}
+		break
 	}
 
 	t.mu.Lock()
