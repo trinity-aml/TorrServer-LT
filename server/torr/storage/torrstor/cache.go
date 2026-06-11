@@ -272,6 +272,21 @@ func (c *Cache) evictIfOverCapacity() {
 		if sz <= 0 {
 			continue
 		}
+		if !p.Complete() {
+			// NEVER evict a piece libtorrent hasn't finished and hash-checked.
+			// Its blocks live only in this cache, and libtorrent may finish the
+			// piece at any later moment (end-game, an unchoke, a re-prioritised
+			// window) — the hash check then reads the piece back through us, the
+			// wiped blocks come back as garbage, the hash fails, and libtorrent
+			// bans the innocent peers that sent the remaining blocks ("too many
+			// corrupt pieces"). On a small swarm that bans the only seed and the
+			// stream dies at 0 peers. Verified live on a seek-away scenario:
+			// abandoned half-downloaded window piece → evicted → opportunistic
+			// completion minutes later → hash_failed → peer_ban → dead torrent.
+			// Incomplete leftovers are bounded (a few per abandoned window) and
+			// complete normally if the piece is ever wanted again.
+			continue
+		}
 		if pieceInRanges(p.Id, protect) {
 			continue // keep a reader's working set resident
 		}
@@ -303,6 +318,23 @@ func (c *Cache) readerProtectRanges() [][2]int {
 	for _, r := range rs {
 		lo, hi := r.protectRange()
 		out = append(out, [2]int{lo, hi})
+	}
+	return out
+}
+
+// readerWindows returns the prioritised [winFirst, winLast] piece window of
+// every active reader. A closing reader uses this (after unregistering itself)
+// to avoid zeroing priorities inside a window another stream still plays from.
+func (c *Cache) readerWindows() [][2]int {
+	c.readersMu.Lock()
+	defer c.readersMu.Unlock()
+	out := make([][2]int, 0, len(c.readers))
+	for r := range c.readers {
+		wf := int(r.winFirst.Load())
+		if wf < 0 {
+			continue
+		}
+		out = append(out, [2]int{wf, int(r.winLast.Load())})
 	}
 	return out
 }

@@ -156,14 +156,21 @@ func TestCache_LRUEvictsOldestWhenOverCapacity(t *testing.T) {
 	s.callbackOpen(1, h, 8, pieceLen)
 
 	payload := func(b byte) []byte { return bytes.Repeat([]byte{b}, int(pieceLen)) }
+	c := s.CacheByHash(h)
 	for i, b := range []byte{0xAA, 0xBB, 0xCC, 0xDD} {
 		if _, err := s.callbackWrite(1, i, 0, payload(b)); err != nil {
 			t.Fatalf("write %d: %v", i, err)
 		}
+		// Only hash-verified pieces are evictable (incomplete ones must stay,
+		// or finishing them later corrupts the hash check) — mark each piece
+		// complete as the "piece_finished" alert would.
+		c.MarkComplete(i)
 	}
+	// The async evictions raced the MarkComplete calls; run one deterministic
+	// pass now that completeness is settled.
+	c.evictIfOverCapacity()
 
-	// Eviction runs in a goroutine; wait up to 2s for convergence.
-	c := s.CacheByHash(h)
+	// Eviction may also still be running in a goroutine; wait up to 2s.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if c.Filled() <= 2*pieceLen {
@@ -203,6 +210,7 @@ func TestCache_EvictionSparesReaderWindow(t *testing.T) {
 			c.mu.Unlock()
 			t.Fatalf("write %d: %v", i, err)
 		}
+		p.setComplete(true) // only hash-verified pieces are evictable
 		p.accessed.Store(int64(i))
 		c.pieces[i] = p
 	}

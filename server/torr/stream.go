@@ -75,6 +75,11 @@ func (t *Torrent) Stream(fileID int, req *http.Request, resp http.ResponseWriter
 		return errors.New("torr.Stream: NewReader returned nil")
 	}
 	defer t.CloseReader(reader)
+	// Tear the reader down the moment the client disconnects: a player seek
+	// aborts this request and opens a new range — the old reader must not sit
+	// in a 60s piece wait keeping its stale window prioritised against the new
+	// playback position.
+	reader.SetContext(req.Context())
 
 	// Mark file as viewed (so /m3u?fromlast and the snake command
 	// reflect the latest playback position).
