@@ -58,6 +58,7 @@ type Torrent struct {
 
 	gotInfoCh   chan struct{}
 	gotInfoOnce sync.Once
+	posterOnce  sync.Once
 
 	closeCh   chan struct{}
 	closeOnce sync.Once
@@ -283,6 +284,10 @@ func (t *Torrent) GotInfo() bool {
 	if t.WaitInfo() {
 		t.Stat = state.TorrentWorking
 		t.AddExpiredTime(torrentExpireTimeout())
+		// Metadata (and so the release name) is now known — backfill a TMDB
+		// poster for torrents that came in without one (bare magnets, tgbot,
+		// autoload). No-op unless a TMDB API key is configured.
+		go t.posterOnce.Do(t.fetchPosterIfMissing)
 		return true
 	}
 	// Deregister before closing: expired() skips TorrentClosed, so a closed
