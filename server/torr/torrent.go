@@ -211,6 +211,17 @@ func (t *Torrent) signalGotInfo() {
 		// Switch to lazy/streaming mode: download nothing until a Reader's
 		// window or Preload bumps the specific pieces it needs.
 		_ = t.lh.SetAllPiecesPriority(0)
+		// Backfill the spec with the just-received info-dict: a magnet-added
+		// torrent's spec has no InfoBytes, so without this every DB save stores
+		// the bare magnet and every server restart re-fetches metadata from the
+		// swarm (slow playlists / slow first play after restart).
+		if t.TorrentSpec != nil && len(t.TorrentSpec.InfoBytes) == 0 {
+			if mb, err := t.lh.Metadata(); err == nil && len(mb) > 0 {
+				t.mu.Lock()
+				t.TorrentSpec.InfoBytes = mb
+				t.mu.Unlock()
+			}
+		}
 		if t.gotInfoCh != nil {
 			close(t.gotInfoCh)
 		}
@@ -447,6 +458,10 @@ func (t *Torrent) Status() *state.TorrentStatus {
 	}
 
 	if t.lh == nil {
+		// DB-resident torrent (not in the session): recover the file list from
+		// the record's cached Data so playlists and the web file tree work
+		// without waking the torrent (= without a swarm metadata fetch).
+		st.FileStats = fileStatsFromData(t.Data)
 		return st
 	}
 	lst, err := t.lh.Status()
@@ -484,7 +499,11 @@ func (t *Torrent) Status() *state.TorrentStatus {
 	st.PiecesDirtiedGood = t.piecesDirtiedGood
 	st.PiecesDirtiedBad = t.piecesDirtiedBad
 
-	if lst.HasMetadata {
+	if !lst.HasMetadata {
+		// Metadata still in flight — fall back to the DB-cached file list (if
+		// this torrent was ever saved) so the UI isn't blank meanwhile.
+		st.FileStats = fileStatsFromData(t.Data)
+	} else {
 		st.TorrentSize = lst.TotalSize
 		st.FileStats = nil
 		if files := t.Files(); len(files) > 0 {

@@ -17,6 +17,23 @@ type tsFiles struct {
 	} `json:"TorrServer"`
 }
 
+// fileStatsFromData recovers the cached file list embedded in a DB record's
+// Data field (tsFiles JSON, written by AddTorrentDB). Returns nil when Data is
+// empty or carries no file cache. Lets consumers that only need the file list
+// (playlists, the web UI file tree) serve a DB-resident torrent without waking
+// it in the session — a magnet-only record would otherwise block on a swarm
+// metadata fetch.
+func fileStatsFromData(data string) []*state.TorrentFileStat {
+	if data == "" {
+		return nil
+	}
+	var f tsFiles
+	if err := json.Unmarshal([]byte(data), &f); err != nil {
+		return nil
+	}
+	return f.TorrServer.Files
+}
+
 // AddTorrentDB serialises a torrent record into the persistent DB.
 func AddTorrentDB(torr *Torrent) {
 	t := new(settings.TorrentDB)

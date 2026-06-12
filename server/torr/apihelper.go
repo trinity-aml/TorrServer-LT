@@ -23,6 +23,7 @@ func LoadTorrent(tor *Torrent) *Torrent {
 	if tor == nil || tor.TorrentSpec == nil {
 		return nil
 	}
+	hadInfo := len(tor.TorrentSpec.InfoBytes) > 0
 	out, err := NewTorrent(tor.TorrentSpec, bts)
 	if err != nil {
 		log.TLogln("torr.LoadTorrent:", err)
@@ -35,6 +36,18 @@ func LoadTorrent(tor *Torrent) *Torrent {
 	out.Poster = tor.Poster
 	out.Data = tor.Data
 	out.Category = tor.Category
+	if tor.Timestamp != 0 {
+		out.Timestamp = tor.Timestamp
+	}
+	if tor.Size > 0 {
+		out.Size = tor.Size
+	}
+	// A magnet-only DB record just produced its info-dict (backfilled into the
+	// spec by signalGotInfo): persist it so the next server start serves this
+	// torrent instantly instead of re-fetching metadata from the swarm.
+	if !hadInfo && len(out.TorrentSpec.InfoBytes) > 0 && GetTorrentDB(out.Hash()) != nil {
+		AddTorrentDB(out)
+	}
 	return out
 }
 
@@ -106,8 +119,10 @@ func GetTorrent(hashHex string) *Torrent {
 	tor = dbt
 	go func() {
 		log.TLogln("torr.GetTorrent: promoting DB torrent", tor.Hash().HexString())
+		hadInfo := len(tor.TorrentSpec.InfoBytes) > 0
 		fresh, err := NewTorrent(tor.TorrentSpec, bts)
 		if err != nil || fresh == nil {
+			log.TLogln("torr.GetTorrent: promote failed:", tor.Hash().HexString(), err)
 			return
 		}
 		fresh.Title = tor.Title
@@ -116,7 +131,11 @@ func GetTorrent(hashHex string) *Torrent {
 		fresh.Size = tor.Size
 		fresh.Timestamp = tor.Timestamp
 		fresh.Category = tor.Category
-		fresh.GotInfo()
+		if fresh.GotInfo() && !hadInfo && len(fresh.TorrentSpec.InfoBytes) > 0 {
+			// Magnet-only record just got its info-dict — persist it so future
+			// server starts don't re-fetch metadata from the swarm.
+			AddTorrentDB(fresh)
+		}
 	}()
 	return tor
 }

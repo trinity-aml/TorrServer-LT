@@ -79,7 +79,12 @@ func playList(c *gin.Context) {
 		return
 	}
 
-	if tor.Stat == state.TorrentInDB {
+	// A playlist only needs the file list. For a DB-resident torrent that list
+	// is cached in the record (Status falls back to it), so serve instantly;
+	// only wake the torrent in the session — which for a magnet-only record
+	// means a swarm metadata fetch that can take minutes right after a server
+	// start — when there is no cache to serve from.
+	if tor.Stat == state.TorrentInDB && len(tor.Status().FileStats) == 0 {
 		tor = torr.LoadTorrent(tor)
 		if tor == nil {
 			c.AbortWithError(http.StatusInternalServerError, errors.New("error get torrent info"))

@@ -594,6 +594,30 @@ int lt_session_destroy(lt_session id) {
 
 // ----- torrent lifecycle -----
 
+// Parse torrent bytes that may be either a full .torrent metainfo or a bare
+// info-dict. The bare form is what lt_torrent_metadata_alloc returns
+// (ti->info_section()) and what legacy anacrolix-era TorrServer DB records
+// store as InfoBytes, so round-tripping metadata through the DB must accept
+// it: wrap it into a minimal metainfo dict and re-parse. On failure returns
+// nullptr with ec holding the original (full-metainfo) parse error.
+static std::shared_ptr<lt::torrent_info> parse_torrent_or_info(
+    char const* buf, int len, lt::error_code& ec)
+{
+    ec.clear();
+    auto ti = std::make_shared<lt::torrent_info>(buf, len, ec);
+    if (!ec) return ti;
+    std::string wrapped;
+    wrapped.reserve(static_cast<size_t>(len) + 8);
+    wrapped += "d4:info";
+    wrapped.append(buf, static_cast<size_t>(len));
+    wrapped += 'e';
+    lt::error_code ec2;
+    auto ti2 = std::make_shared<lt::torrent_info>(
+        wrapped.data(), static_cast<int>(wrapped.size()), ec2);
+    if (!ec2) { ec.clear(); return ti2; }
+    return nullptr;
+}
+
 lt_torrent lt_session_add_torrent(
     lt_session sid,
     const char* link,
@@ -613,9 +637,9 @@ lt_torrent lt_session_add_torrent(
 
         if (info_bytes && info_len > 0) {
             lt::error_code ec;
-            atp.ti = std::make_shared<lt::torrent_info>(
+            atp.ti = parse_torrent_or_info(
                 reinterpret_cast<char const*>(info_bytes), static_cast<int>(info_len), ec);
-            if (ec) { set_err_ec(LT_ERR_PARSE, ec); return 0; }
+            if (ec || !atp.ti) { set_err_ec(LT_ERR_PARSE, ec); return 0; }
         } else if (link && *link) {
             std::string l(link);
             if (l.size() == 40) {
@@ -1147,9 +1171,9 @@ char* lt_parse_torrent_bytes_alloc(const uint8_t* buf, size_t len, size_t* out_l
     try {
         if (!buf || len == 0) { set_err(LT_ERR_INVALID, "empty bytes"); return nullptr; }
         lt::error_code ec;
-        auto ti = std::make_shared<lt::torrent_info>(
+        auto ti = parse_torrent_or_info(
             reinterpret_cast<char const*>(buf), static_cast<int>(len), ec);
-        if (ec) { set_err_ec(LT_ERR_PARSE, ec); return nullptr; }
+        if (ec || !ti) { set_err_ec(LT_ERR_PARSE, ec); return nullptr; }
         lt::add_torrent_params atp;
         atp.ti = ti;
         atp.info_hashes = ti->info_hashes();

@@ -133,6 +133,27 @@ func stream(c *gin.Context) {
 		data = tor.Data
 		category = tor.Category
 	}
+	// A playlist needs only the file list; a DB-resident torrent caches it in
+	// its record (Status falls back to it). Serve instantly without waking the
+	// torrent — a magnet-only record would otherwise block on a swarm metadata
+	// fetch, which takes minutes (or never finishes) right after server start.
+	if m3u && tor != nil && tor.Stat == state.TorrentInDB {
+		if st := tor.Status(); len(st.FileStats) > 0 {
+			name := strings.ReplaceAll(c.Param("fname"), `/`, "")
+			if name == "" {
+				if name = tor.Name(); name == "" {
+					name = tor.Title
+				}
+				name += ".m3u"
+			} else if !strings.HasSuffix(strings.ToLower(name), ".m3u") && !strings.HasSuffix(strings.ToLower(name), ".m3u8") {
+				name += ".m3u"
+			}
+			m3ulist := "#EXTM3U\n" + getM3uList(st, utils2.GetScheme(c)+"://"+utils2.GetHost(c), fromlast)
+			sendM3U(c, name, st.Hash, m3ulist)
+			return
+		}
+	}
+
 	if tor == nil || tor.Stat == state.TorrentInDB {
 		tor, err = torr.AddTorrent(spec, title, poster, data, category)
 		if err != nil {
@@ -267,6 +288,26 @@ func streamNoAuth(c *gin.Context) {
 	}
 
 	data := tor.Data
+
+	// Same DB-cache fast path as the authenticated handler: a playlist for a
+	// DB-resident torrent is served from the cached file list, not by waking
+	// the torrent and waiting for swarm metadata.
+	if m3u && tor.Stat == state.TorrentInDB {
+		if st := tor.Status(); len(st.FileStats) > 0 {
+			name := strings.ReplaceAll(c.Param("fname"), `/`, "")
+			if name == "" {
+				if name = tor.Name(); name == "" {
+					name = tor.Title
+				}
+				name += ".m3u"
+			} else if !strings.HasSuffix(strings.ToLower(name), ".m3u") && !strings.HasSuffix(strings.ToLower(name), ".m3u8") {
+				name += ".m3u"
+			}
+			m3ulist := "#EXTM3U\n" + getM3uList(st, utils2.GetScheme(c)+"://"+utils2.GetHost(c), fromlast)
+			sendM3U(c, name, st.Hash, m3ulist)
+			return
+		}
+	}
 
 	if tor.Stat == state.TorrentInDB {
 		tor, err = torr.AddTorrent(spec, title, poster, data, category)
