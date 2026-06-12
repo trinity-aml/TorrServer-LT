@@ -156,6 +156,10 @@ var (
 	yearRe    = regexp.MustCompile(`\b(19|20)\d{2}\b`)
 	episodeRe = regexp.MustCompile(`(?i)^s\d{1,2}(e\d{1,3})?$|^сезон$|^серии?$`)
 	extRe     = regexp.MustCompile(`(?i)\.(mkv|mp4|avi|m4v|mov|webm|torrent)$`)
+	// Tracker site prefix glued to the release name ("rutor.info_Майкл / …").
+	// Requires an explicit _/space separator after a known TLD so dotted scene
+	// names ("What.Is.Love.2010") are never mistaken for a domain.
+	domainPrefixRe = regexp.MustCompile(`(?i)^(?:www\.)?[a-zа-я0-9-]+(?:\.[a-zа-я0-9-]+)*\.(?:info|is|org|net|com|co|tv|me|cc|to|ws|fm|lt|la|su|ru|by|ua|eu|io|in|club|life|pro|fun|site|online|top)[_\s]+`)
 )
 
 // releaseTags are tokens that always mark the start of the technical tail of
@@ -187,6 +191,7 @@ func CleanPosterQuery(name string) (string, int) {
 		return "", 0
 	}
 	s = extRe.ReplaceAllString(s, "")
+	s = domainPrefixRe.ReplaceAllString(s, "")
 
 	// Scene names use dots/underscores as separators.
 	if !strings.Contains(s, " ") {
@@ -205,8 +210,8 @@ func CleanPosterQuery(name string) (string, int) {
 	}
 
 	// "Русское название / Original Title [..." — the part before the first
-	// bracket/slash separator is the (localized) title.
-	for _, sep := range []string{" / ", "[", "("} {
+	// bracket/slash/pipe separator is the (localized) title.
+	for _, sep := range []string{" / ", "[", "(", "|"} {
 		if i := strings.Index(s, sep); i > 0 {
 			s = s[:i]
 		}
