@@ -426,6 +426,18 @@ json alert_to_json(lt::alert const* a) {
     } else if (auto const* fa = lt::alert_cast<lt::file_error_alert>(a)) {
         j["error"] = fa->error.message();
         j["file"]  = std::string(fa->filename());
+    } else if (auto const* fa = lt::alert_cast<lt::session_stats_alert>(a)) {
+        // The default message() is a bare line of numbers; map them to their
+        // metric names so the Go side gets a usable counters snapshot.
+        static auto const metrics = lt::session_stats_metrics();
+        auto const counters = fa->counters();
+        json c = json::object();
+        for (auto const& m : metrics) {
+            if (m.value_index >= 0
+                && static_cast<std::size_t>(m.value_index) < counters.size())
+                c[m.name] = counters[m.value_index];
+        }
+        j["counters"] = std::move(c);
     }
     return j;
 }

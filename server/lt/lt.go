@@ -569,7 +569,10 @@ type Alert struct {
 	URL         string          `json:"url,omitempty"`
 	Peers       int             `json:"peers,omitempty"`
 	Error       string          `json:"error,omitempty"`
-	Raw         json.RawMessage `json:"-"`
+	// Counters is only set on session_stats alerts: metric name → value,
+	// as serialized by the shim from lt::session_stats_metrics().
+	Counters map[string]int64 `json:"counters,omitempty"`
+	Raw      json.RawMessage  `json:"-"`
 }
 
 // WaitAlert blocks until at least one alert is available, or timeout elapses.

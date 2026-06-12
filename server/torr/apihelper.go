@@ -1,6 +1,7 @@
 package torr
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -8,7 +9,9 @@ import (
 	"time"
 
 	"server/log"
+	"server/lt"
 	sets "server/settings"
+	"server/version"
 )
 
 // bts is the package-level engine handle initialised by BTServer.Connect.
@@ -316,14 +319,59 @@ func Shutdown() {
 	os.Exit(0)
 }
 
-// WriteStatus dumps libtorrent's stats to an io.Writer. With the new
-// engine this is a one-shot per call (session_stats arrives via the
-// alert pump and is not yet exposed); we emit a minimal placeholder so
-// /stat still responds with HTTP 200.
+// WriteStatus dumps server, per-torrent and libtorrent session stats to an
+// io.Writer (the /stat page). Session counters are a fresh session_stats
+// snapshot fetched through the alert pump (bounded wait, so /stat cannot
+// hang); torrent details come from the same state the web UI uses.
 func WriteStatus(w io.Writer) {
 	if bts == nil || bts.session == nil {
 		w.Write([]byte("session not running\n"))
 		return
 	}
-	w.Write([]byte("libtorrent session stats: see /cache and /torrents for per-torrent details.\n"))
+
+	fmt.Fprintf(w, "TorrServer-LT %s (libtorrent %s)\n", version.Version, lt.Version())
+
+	live := bts.ListTorrents()
+	fmt.Fprintf(w, "Torrents: %d in session, %d in DB\n", len(live), len(ListTorrentsDB()))
+
+	hashes := make([]Hash, 0, len(live))
+	for h := range live {
+		hashes = append(hashes, h)
+	}
+	sort.Slice(hashes, func(i, j int) bool {
+		return live[hashes[i]].Timestamp < live[hashes[j]].Timestamp
+	})
+	for _, h := range hashes {
+		t := live[h]
+		st := t.Status()
+		title := st.Title
+		if title == "" {
+			title = st.Name
+		}
+		fmt.Fprintf(w, "\n%s  %s\n", h.HexString(), title)
+		fmt.Fprintf(w, "  status: %s, peers: %d/%d (active/known), seeders: %d\n",
+			st.StatString, st.ActivePeers, st.TotalPeers, st.ConnectedSeeders)
+		fmt.Fprintf(w, "  speed down/up: %.1f / %.1f KB/s, size: %d, preloaded: %d/%d\n",
+			st.DownloadSpeed/1024, st.UploadSpeed/1024,
+			st.TorrentSize, st.PreloadedBytes, st.PreloadSize)
+		if cs := t.CacheState(); cs != nil {
+			fmt.Fprintf(w, "  cache: %d/%d bytes (%d pieces), readers: %d\n",
+				cs.Filled, cs.Capacity, cs.PiecesCount, len(cs.Readers))
+		}
+	}
+
+	counters := bts.SessionStats(2 * time.Second)
+	if len(counters) == 0 {
+		w.Write([]byte("\nlibtorrent session counters: not available\n"))
+		return
+	}
+	w.Write([]byte("\nlibtorrent session counters:\n"))
+	names := make([]string, 0, len(counters))
+	for name := range counters {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fmt.Fprintf(w, "  %s: %d\n", name, counters[name])
+	}
 }

@@ -31,6 +31,12 @@ type BTServer struct {
 	torrents  map[Hash]*Torrent
 	stopAlert chan struct{}
 	alertDone chan struct{}
+
+	// Latest session_stats counters snapshot, refreshed by the alert pump
+	// whenever a session_stats alert arrives (requested via SessionStats).
+	statsMu     sync.Mutex
+	lastStats   map[string]int64
+	lastStatsAt time.Time
 }
 
 // NewBTS constructs an empty BTServer (no session yet — call Connect).
@@ -150,6 +156,38 @@ func (bt *BTServer) RemoveTorrent(h Hash) bool {
 	return t.Close()
 }
 
+// SessionStats requests a fresh session_stats post from libtorrent and waits
+// (bounded by wait) for the alert pump to deliver it. Returns the most recent
+// counters snapshot — possibly a stale one, or nil if none ever arrived.
+func (bt *BTServer) SessionStats(wait time.Duration) map[string]int64 {
+	bt.statsMu.Lock()
+	before := bt.lastStatsAt
+	bt.statsMu.Unlock()
+
+	bt.mu.Lock()
+	s := bt.session
+	bt.mu.Unlock()
+	if s == nil {
+		return nil
+	}
+	if err := s.RequestSessionStats(); err == nil {
+		deadline := time.Now().Add(wait)
+		for time.Now().Before(deadline) {
+			bt.statsMu.Lock()
+			fresh := bt.lastStatsAt.After(before)
+			bt.statsMu.Unlock()
+			if fresh {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+
+	bt.statsMu.Lock()
+	defer bt.statsMu.Unlock()
+	return bt.lastStats
+}
+
 // dropInstance deregisters t — but only if t is still the instance registered
 // for its hash — then closes it. Unlike RemoveTorrent (which operates by hash)
 // it can never remove a different live Torrent that replaced t in the registry.
@@ -225,6 +263,13 @@ func (bt *BTServer) expireWatch(stop <-chan struct{}) {
 func (bt *BTServer) handleAlert(a *lt.Alert) {
 	if settings.BTsets() != nil && settings.BTsets().EnableDebug && a.Type != "" {
 		log.Printf("lt: %s — %s", a.Type, a.Message)
+	}
+	if len(a.Counters) > 0 && (a.Type == "session_stats" || a.Type == "session_stats_alert") {
+		bt.statsMu.Lock()
+		bt.lastStats = a.Counters
+		bt.lastStatsAt = time.Now()
+		bt.statsMu.Unlock()
+		return
 	}
 	if a.TorrentHash == "" {
 		return
