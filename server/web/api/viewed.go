@@ -1,12 +1,15 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 
 	sets "server/settings"
 
 	"github.com/gin-gonic/gin"
 )
+
+var errEmptyHash = errors.New("hash is empty")
 
 /*
 file index starts from 1
@@ -39,13 +42,27 @@ func viewed(c *gin.Context) {
 		return
 	}
 
+	// The embedded *sets.Viewed stays nil when the body has no hash/file_index
+	// (a bare {"action":"list"} is valid — it lists everything).
+	if req.Viewed == nil {
+		req.Viewed = &sets.Viewed{}
+	}
+
 	switch req.Action {
 	case "set":
 		{
+			if req.Hash == "" {
+				c.AbortWithError(http.StatusBadRequest, errEmptyHash)
+				return
+			}
 			setViewed(req, c)
 		}
 	case "rem":
 		{
+			if req.Hash == "" {
+				c.AbortWithError(http.StatusBadRequest, errEmptyHash)
+				return
+			}
 			remViewed(req, c)
 		}
 	case "list":
@@ -67,5 +84,8 @@ func remViewed(req viewedReqJS, c *gin.Context) {
 
 func listViewed(req viewedReqJS, c *gin.Context) {
 	list := sets.ListViewed(req.Hash)
+	if list == nil {
+		list = []*sets.Viewed{}
+	}
 	c.JSON(200, list)
 }

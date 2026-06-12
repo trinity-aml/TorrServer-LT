@@ -296,10 +296,22 @@ func dropAllTorrent() {
 	}
 }
 
-// Shutdown closes the engine and the DB, then exits the process.
+// Shutdown closes the engine and the DB, then exits the process. Teardown is
+// bounded: libtorrent session destruction can stall on tracker/DHT stop
+// announces, and a wedged teardown must not leave a half-dead server that
+// still answers HTTP but can never be stopped via the API.
 func Shutdown() {
-	bts.Disconnect()
-	sets.CloseDB()
+	done := make(chan struct{})
+	go func() {
+		bts.Disconnect()
+		sets.CloseDB()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		log.TLogln("torr.Shutdown: teardown timed out — forcing exit")
+	}
 	log.TLogln("torr.Shutdown: received shutdown — quit")
 	os.Exit(0)
 }

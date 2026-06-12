@@ -115,8 +115,16 @@ func NewTorrent(spec *TorrentSpec, bt *BTServer) (*Torrent, error) {
 	// shared lt torrent out from under an active stream.
 	bt.mu.Lock()
 	if existing := bt.torrents[spec.InfoHash]; existing != nil {
-		bt.mu.Unlock()
-		return existing, nil
+		if existing.Stat != state.TorrentClosed {
+			bt.mu.Unlock()
+			return existing, nil
+		}
+		// A closed instance left in the registry (e.g. a magnet whose metadata
+		// fetch timed out: GotInfo's failure path Close()s without deregistering,
+		// and expired() skips TorrentClosed so expireWatch never reaps it) must
+		// not shadow the hash forever — every re-add would get the zombie back
+		// and insta-fail. Its lt torrent is already removed; replace the entry.
+		delete(bt.torrents, spec.InfoHash)
 	}
 
 	lh, err := bt.session.AddTorrent(lt.AddTorrentParams{
@@ -277,7 +285,15 @@ func (t *Torrent) GotInfo() bool {
 		t.AddExpiredTime(torrentExpireTimeout())
 		return true
 	}
-	t.Close()
+	// Deregister before closing: expired() skips TorrentClosed, so a closed
+	// instance left in the registry is never reaped and shadows its hash —
+	// every later add of the same magnet returns the zombie and fails
+	// instantly instead of retrying the metadata fetch.
+	if t.bt != nil {
+		t.bt.dropInstance(t)
+	} else {
+		t.Close()
+	}
 	return false
 }
 

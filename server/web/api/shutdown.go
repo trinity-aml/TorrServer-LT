@@ -27,7 +27,8 @@ func shutdown(c *gin.Context) {
 	}
 	c.Status(200)
 	go func() {
-		time.Sleep(1000)
+		// A bare 1000 is nanoseconds — the response would race teardown.
+		time.Sleep(time.Second)
 		torr.Shutdown()
 	}()
 }

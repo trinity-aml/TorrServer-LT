@@ -84,15 +84,23 @@ func (bt *BTServer) Connect() error {
 
 // Disconnect stops the alert pump and tears down the session.
 func (bt *BTServer) Disconnect() {
+	// Stop the alert pump BEFORE taking bt.mu for teardown: handleAlert locks
+	// bt.mu for its registry lookup, so holding the lock while waiting on
+	// alertDone deadlocks whenever the pump is mid-batch — observed as
+	// /shutdown hanging forever under steady alert traffic (DHT churn).
+	bt.mu.Lock()
+	stop, done := bt.stopAlert, bt.alertDone
+	bt.stopAlert = nil
+	bt.mu.Unlock()
+	if stop != nil {
+		close(stop)
+		<-done
+	}
+
 	bt.mu.Lock()
 	defer bt.mu.Unlock()
 	if bt.session == nil {
 		return
-	}
-	if bt.stopAlert != nil {
-		close(bt.stopAlert)
-		<-bt.alertDone
-		bt.stopAlert = nil
 	}
 	for _, t := range bt.torrents {
 		t.markClosed()
@@ -140,6 +148,21 @@ func (bt *BTServer) RemoveTorrent(h Hash) bool {
 	delete(bt.torrents, h)
 	bt.mu.Unlock()
 	return t.Close()
+}
+
+// dropInstance deregisters t — but only if t is still the instance registered
+// for its hash — then closes it. Unlike RemoveTorrent (which operates by hash)
+// it can never remove a different live Torrent that replaced t in the registry.
+func (bt *BTServer) dropInstance(t *Torrent) {
+	if t == nil {
+		return
+	}
+	bt.mu.Lock()
+	if bt.torrents[t.Hash()] == t {
+		delete(bt.torrents, t.Hash())
+	}
+	bt.mu.Unlock()
+	t.Close()
 }
 
 // alertPump pulls alerts from libtorrent and dispatches them to per-
