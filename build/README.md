@@ -13,7 +13,7 @@ with `crypto=built-in`, so there is no OpenSSL cross-dependency.
 
 ```
 build/
-  _common.sh         paths + pinned versions (Boost 1.85.0, libtorrent v2.0.10)
+  _common.sh         paths + pinned versions (Boost 1.85.0, libtorrent v2.0.13)
   _fetch_sources.sh  download Boost + clone libtorrent into _src/  (idempotent)
   _deps.sh           shared engine: b2 install libtorrent → go_build
   _osxcross.sh       locate OSXCross wrappers/SDK (darwin targets)

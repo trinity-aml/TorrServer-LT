@@ -39,12 +39,14 @@ isAuthUser=""
 isAuthPass=""
 
 # Constants
-readonly REPO_URL="https://github.com/YouROK/TorrServer"
-readonly REPO_API_URL="https://api.github.com/repos/YouROK/TorrServer"
-readonly VERSION_PREFIX="MatriX"
-readonly BINARY_NAME_PREFIX="TorrServer-linux"
-readonly MIN_GLIBC_VERSION="2.32"
-readonly MIN_VERSION_REQUIRING_GLIBC=136
+readonly REPO_URL="https://github.com/trinity-aml/TorrServer-LT"
+readonly REPO_API_URL="https://api.github.com/repos/trinity-aml/TorrServer-LT"
+readonly VERSION_PREFIX="MatriX.LT"
+readonly BINARY_NAME_PREFIX="TorrServer-LT-linux"
+# All TorrServer-LT builds link libtorrent (C++) against the build host's
+# glibc/libstdc++, so every release carries the same floor.
+readonly MIN_GLIBC_VERSION="2.38"
+readonly MIN_VERSION_REQUIRING_GLIBC=1
 readonly SYSCTL_BBR_FILE="/etc/sysctl.d/90-torrserver.conf"
 
 # Color support
@@ -74,7 +76,7 @@ declare -A MSG_EN=(
   [have_fun]="Have Fun!"
 
   # Script info
-  [script_title]="TorrServer install and configuration script for Linux"
+  [script_title]="TorrServer-LT install and configuration script for Linux"
 
   # Checks
   [need_root]="Script must run as root or user with sudo privileges. Example: sudo $scriptname"
@@ -164,7 +166,7 @@ declare -A MSG_EN=(
   # glibc
   [glibc_error]="ERROR: TorrServer version %s requires glibc >= $MIN_GLIBC_VERSION"
   [glibc_current]="Your system has glibc %s"
-  [glibc_upgrade]="Please install a version < $MIN_VERSION_REQUIRING_GLIBC or upgrade your system"
+  [glibc_upgrade]="All TorrServer-LT builds require glibc >= $MIN_GLIBC_VERSION - please upgrade your system"
   [glibc_detected]="Detected glibc version: %s"
   [glibc_ok]="OK: glibc version meets requirements for TorrServer %s"
   [glibc_no_requirement]="TorrServer version %s: no special glibc requirements"
@@ -185,7 +187,7 @@ declare -A MSG_EN=(
   # Error messages
   [error_username_required]="Error: Username required for --change-user"
   [error_version_required]="Error: Version number required for downgrade"
-  [error_version_example]="Example: %s -d 101"
+  [error_version_example]="Example: %s -d 1"
   [error_unknown_option]="Unknown option: %s"
   [installing_specific_version]="Installing specific version: %s"
   [service_reconfigured_user]="Service reconfigured for user: %s"
@@ -201,7 +203,7 @@ declare -A MSG_RU=(
   [have_fun]="Have Fun!"
 
   # Script info
-  [script_title]="Скрипт установки, удаления и настройки TorrServer для Linux"
+  [script_title]="Скрипт установки, удаления и настройки TorrServer-LT для Linux"
 
   # Checks
   [need_root]="Вам нужно запустить скрипт от root или пользователя с правами sudo. Пример: sudo $scriptname"
@@ -291,7 +293,7 @@ declare -A MSG_RU=(
   # glibc
   [glibc_error]="ОШИБКА: TorrServer версии %s требует glibc >= $MIN_GLIBC_VERSION"
   [glibc_current]="В вашей системе установлена glibc %s"
-  [glibc_upgrade]="Пожалуйста, установите версию < $MIN_VERSION_REQUIRING_GLIBC или обновите систему"
+  [glibc_upgrade]="Все сборки TorrServer-LT требуют glibc >= $MIN_GLIBC_VERSION - пожалуйста, обновите систему"
   [glibc_detected]="Обнаружена версия glibc: %s"
   [glibc_ok]="OK: версия glibc соответствует требованиям для TorrServer %s"
   [glibc_no_requirement]="TorrServer версии %s: нет особых требований к glibc"
@@ -312,7 +314,7 @@ declare -A MSG_RU=(
   # Error messages
   [error_username_required]="Ошибка: Требуется имя пользователя для --change-user"
   [error_version_required]="Ошибка: Требуется номер версии для понижения версии"
-  [error_version_example]="Пример: %s -d 101"
+  [error_version_example]="Пример: %s -d 1"
   [error_unknown_option]="Неизвестная опция: %s"
   [installing_specific_version]="Установка конкретной версии: %s"
   [service_reconfigured_user]="Служба перенастроена для пользователя: %s"
@@ -370,8 +372,9 @@ getBinaryName() {
 }
 
 getVersionTag() {
+  # Release tags look like MatriX.LT-001; accept "1", "01" or "001".
   local version="$1"
-  echo "${VERSION_PREFIX}.${version}"
+  printf '%s-%03d\n' "$VERSION_PREFIX" "$((10#$version))"
 }
 
 buildDownloadUrl() {
@@ -673,11 +676,11 @@ checkGlibcCompatibility() {
   local target_version="$1"
   local version_number
 
-  # Extract numeric version
-  if [[ "$target_version" =~ ${VERSION_PREFIX}\.([0-9]+) ]]; then
-    version_number="${BASH_REMATCH[1]}"
+  # Extract numeric version (zero-padded in tags: MatriX.LT-001 — force base 10)
+  if [[ "$target_version" =~ ${VERSION_PREFIX}-([0-9]+) ]]; then
+    version_number="$((10#${BASH_REMATCH[1]}))"
   elif [[ "$target_version" =~ ^[0-9]+$ ]]; then
-    version_number="$target_version"
+    version_number="$((10#$target_version))"
   else
     if [[ $SILENT_MODE -eq 0 ]]; then
       echo " - $(msg glibc_warning)"
@@ -685,7 +688,7 @@ checkGlibcCompatibility() {
     return 0
   fi
 
-  # Check if version requires glibc 2.32+
+  # Check if version requires the glibc floor (all LT releases do)
   if [[ $version_number -ge $MIN_VERSION_REQUIRING_GLIBC ]]; then
   local current_glibc
   current_glibc=$(getGlibcVersion)
@@ -950,12 +953,12 @@ checkOS() {
 }
 
 checkArch() {
+  # TorrServer-LT ships linux builds for amd64, arm64 and armv7 only
+  # (libtorrent is cross-built per target; no 386/armv6/mips assets).
   case $(uname -m) in
-    i386|i686) architecture="386" ;;
     x86_64) architecture="amd64" ;;
     aarch64) architecture="arm64" ;;
-    armv7|armv7l) architecture="arm7" ;;
-    armv6|armv6l) architecture="arm5" ;;
+    armv7|armv7l) architecture="armv7" ;;
     *)
       echo " $(msg unsupported_arch)"
       exit 1
@@ -1044,7 +1047,7 @@ checkInstalledVersion() {
 createServiceFile() {
   cat << EOF > "$dirInstall/$serviceName.service"
 [Unit]
-Description=TorrServer - stream torrent to http
+Description=TorrServer-LT - stream torrent to http (libtorrent engine)
 Wants=network-online.target
 After=network.target
 
@@ -1826,7 +1829,7 @@ reconfigureTorrServer() {
 
 helpUsage() {
   cat << EOF
-$scriptname - TorrServer Installation Script
+$scriptname - TorrServer-LT Installation Script
 
 Usage: $scriptname [COMMAND] [OPTIONS]
 
@@ -1857,7 +1860,7 @@ Examples:
   sudo $scriptname --install
 
   # Install specific version as root user silently
-  sudo $scriptname --install 135 --root --silent
+  sudo $scriptname --install 1 --root --silent
 
   # Update with silent mode
   sudo $scriptname --update --silent

@@ -36,10 +36,10 @@ isAuthPass=""
 sysPath=""
 
 # Constants
-readonly REPO_URL="https://github.com/YouROK/TorrServer"
-readonly REPO_API_URL="https://api.github.com/repos/YouROK/TorrServer"
-readonly VERSION_PREFIX="MatriX"
-readonly BINARY_NAME_PREFIX="TorrServer-darwin"
+readonly REPO_URL="https://github.com/trinity-aml/TorrServer-LT"
+readonly REPO_API_URL="https://api.github.com/repos/trinity-aml/TorrServer-LT"
+readonly VERSION_PREFIX="MatriX.LT"
+readonly BINARY_NAME_PREFIX="TorrServer-LT-darwin"
 
 # Color support
 getColorCode() {
@@ -78,7 +78,7 @@ MSG_EN_lang_english="English"
 MSG_EN_lang_russian="Русский"
 MSG_EN_your_lang="Your language (Ваш язык): "
 MSG_EN_have_fun="Have Fun!"
-MSG_EN_script_title="TorrServer install and configuration script for macOS"
+MSG_EN_script_title="TorrServer-LT install and configuration script for macOS"
 MSG_EN_unsupported_arch="Unsupported Arch. Can't continue."
 MSG_EN_unsupported_os="It looks like you are running this installer on a system other than macOS."
 MSG_EN_downloading="Downloading TorrServer"
@@ -128,7 +128,7 @@ MSG_EN_launchctl_missing="launchctl is not available. Skipping service managemen
 MSG_EN_launchctl_failed="Warning: launchctl %s failed"
 MSG_EN_service_start_failed="Warning: TorrServer service failed to start. Check launchctl list for details."
 MSG_EN_error_version_required="Error: Version number required for downgrade"
-MSG_EN_error_version_example="Example: %s -d 101"
+MSG_EN_error_version_example="Example: %s -d 1"
 MSG_EN_error_unknown_option="Unknown option: %s"
 MSG_EN_installing_specific_version="Installing specific version: %s"
 MSG_EN_install_first_required="Please install TorrServer first using: %s --install"
@@ -139,7 +139,7 @@ MSG_RU_lang_english="English"
 MSG_RU_lang_russian="Русский"
 MSG_RU_your_lang="Your language (Ваш язык): "
 MSG_RU_have_fun="Have Fun!"
-MSG_RU_script_title="Скрипт установки, удаления и настройки TorrServer для macOS"
+MSG_RU_script_title="Скрипт установки, удаления и настройки TorrServer-LT для macOS"
 MSG_RU_unsupported_arch="Не поддерживаемая архитектура. Продолжение невозможно."
 MSG_RU_unsupported_os="Похоже, что вы запускаете этот установщик в системе отличной от macOS."
 MSG_RU_downloading="Загружаем TorrServer"
@@ -189,7 +189,7 @@ MSG_RU_launchctl_missing="launchctl недоступен. Пропускаем �
 MSG_RU_launchctl_failed="Предупреждение: команда launchctl %s завершилась ошибкой"
 MSG_RU_service_start_failed="Предупреждение: служба TorrServer не запустилась. Проверьте launchctl list для деталей."
 MSG_RU_error_version_required="Ошибка: Требуется номер версии для понижения версии"
-MSG_RU_error_version_example="Пример: %s -d 101"
+MSG_RU_error_version_example="Пример: %s -d 1"
 MSG_RU_error_unknown_option="Неизвестная опция: %s"
 MSG_RU_installing_specific_version="Установка конкретной версии: %s"
 MSG_RU_install_first_required="Пожалуйста, сначала установите TorrServer используя: %s --install"
@@ -247,8 +247,9 @@ getBinaryName() {
 }
 
 getVersionTag() {
+  # Release tags look like MatriX.LT-001; accept "1", "01" or "001".
   local version="$1"
-  echo "${VERSION_PREFIX}.${version}"
+  printf '%s-%03d\n' "$VERSION_PREFIX" "$((10#$version))"
 }
 
 buildDownloadUrl() {
@@ -525,8 +526,8 @@ checkOS() {
 }
 
 checkArch() {
+  # TorrServer-LT ships darwin builds for amd64 and arm64 only.
   case $(uname -m) in
-    i386|i686) architecture="386" ;;
     x86_64) architecture="amd64" ;;
     aarch64|arm64) architecture="arm64" ;;
     *)
@@ -631,7 +632,7 @@ createPlistFile() {
   <key>Label</key>
   <string>${serviceName}</string>
   <key>ServiceDescription</key>
-  <string>TorrServer service for macOS</string>
+  <string>TorrServer-LT service for macOS</string>
   <key>ProgramArguments</key>
   <array>
     <string>${dirInstall}/$(getBinaryName)</string>
@@ -1105,7 +1106,7 @@ reconfigureTorrServer() {
 
 helpUsage() {
   cat << EOF
-$scriptname - TorrServer Installation Script
+$scriptname - TorrServer-LT Installation Script
 
 Usage: $scriptname [COMMAND] [OPTIONS]
 
@@ -1133,7 +1134,7 @@ Examples:
   $scriptname --install
 
   # Install specific version silently
-  $scriptname --install 135 --silent
+  $scriptname --install 1 --silent
 
   # Update with silent mode
   $scriptname --update --silent
