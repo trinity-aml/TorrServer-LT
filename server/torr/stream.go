@@ -48,7 +48,9 @@ func (t *Torrent) Stream(fileID int, req *http.Request, resp http.ResponseWriter
 		}
 	}
 	if stFile == nil {
-		return fmt.Errorf("torr.Stream: file id %d not found", fileID)
+		err := fmt.Errorf("torr.Stream: file id %d not found", fileID)
+		http.Error(resp, err.Error(), http.StatusNotFound)
+		return err
 	}
 
 	var file *File
@@ -59,7 +61,12 @@ func (t *Torrent) Stream(fileID int, req *http.Request, resp http.ResponseWriter
 		}
 	}
 	if file == nil {
-		return fmt.Errorf("torr.Stream: file path %q not in torrent", stFile.Path)
+		// Seen with a zombie Torrent whose lt handle is gone: Status() serves
+		// FileStats from the DB cache but Files() is empty. Without an explicit
+		// error the client gets a silent empty 200 and players just stop.
+		err := fmt.Errorf("torr.Stream: file path %q not in torrent", stFile.Path)
+		http.Error(resp, err.Error(), http.StatusInternalServerError)
+		return err
 	}
 
 	if int64(sets.MaxSize) > 0 && file.Length > int64(sets.MaxSize) {

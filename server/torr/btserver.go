@@ -142,12 +142,6 @@ func (bt *BTServer) RemoveTorrent(h Hash) bool {
 	return t.Close()
 }
 
-func (bt *BTServer) registerTorrent(t *Torrent) {
-	bt.mu.Lock()
-	defer bt.mu.Unlock()
-	bt.torrents[t.Hash()] = t
-}
-
 // alertPump pulls alerts from libtorrent and dispatches them to per-
 // torrent notification channels. One goroutine per BTServer.
 func (bt *BTServer) alertPump(stop <-chan struct{}, done chan<- struct{}) {

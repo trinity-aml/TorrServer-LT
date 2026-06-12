@@ -90,13 +90,6 @@ func NewTorrent(spec *TorrentSpec, bt *BTServer) (*Torrent, error) {
 		spec.Trackers = append(spec.Trackers, fileTrackers)
 	}
 
-	bt.mu.Lock()
-	if existing := bt.torrents[spec.InfoHash]; existing != nil {
-		bt.mu.Unlock()
-		return existing, nil
-	}
-	bt.mu.Unlock()
-
 	// If metadata is known at add time (InfoBytes present), scan the
 	// per-piece cache dir for resume bits. Without metadata we don't
 	// know the piece geometry yet; libtorrent will start downloading
@@ -112,6 +105,20 @@ func NewTorrent(spec *TorrentSpec, bt *BTServer) (*Torrent, error) {
 		}
 	}
 
+	// Hold the registry lock across check + session add + register. The
+	// check-then-register used to be two separate critical sections, so two
+	// concurrent adds of the same hash (e.g. an HTTP handler re-adding an
+	// idle-dropped torrent racing GetTorrent's async promotion) both passed
+	// the check and produced two Go Torrents over one libtorrent torrent.
+	// The loser was orphaned — alerts route by hash to the registered
+	// instance only — so its GotInfo timed out 90s later and Close()d the
+	// shared lt torrent out from under an active stream.
+	bt.mu.Lock()
+	if existing := bt.torrents[spec.InfoHash]; existing != nil {
+		bt.mu.Unlock()
+		return existing, nil
+	}
+
 	lh, err := bt.session.AddTorrent(lt.AddTorrentParams{
 		Link:       magnetFromSpec(spec),
 		InfoBytes:  spec.InfoBytes,
@@ -122,14 +129,8 @@ func NewTorrent(spec *TorrentSpec, bt *BTServer) (*Torrent, error) {
 		PieceCount: pieceCount,
 	})
 	if err != nil {
+		bt.mu.Unlock()
 		return nil, err
-	}
-
-	// BTsets.ConnectionsLimit is a per-torrent peer cap (anacrolix legacy);
-	// the session-wide connections_limit is set separately in
-	// buildSessionConfig. See lt_shim.h on lt_torrent_set_max_connections.
-	if lh != nil && settings.BTsets() != nil && settings.BTsets().ConnectionsLimit > 0 {
-		_ = lh.SetMaxConnections(settings.BTsets().ConnectionsLimit)
 	}
 
 	timeout := torrentExpireTimeout()
@@ -143,7 +144,17 @@ func NewTorrent(spec *TorrentSpec, bt *BTServer) (*Torrent, error) {
 		gotInfoCh:     make(chan struct{}),
 		closeCh:       make(chan struct{}),
 	}
+	bt.torrents[spec.InfoHash] = t
+	bt.mu.Unlock()
+
 	t.AddExpiredTime(timeout)
+
+	// BTsets.ConnectionsLimit is a per-torrent peer cap (anacrolix legacy);
+	// the session-wide connections_limit is set separately in
+	// buildSessionConfig. See lt_shim.h on lt_torrent_set_max_connections.
+	if lh != nil && settings.BTsets() != nil && settings.BTsets().ConnectionsLimit > 0 {
+		_ = lh.SetMaxConnections(settings.BTsets().ConnectionsLimit)
+	}
 
 	// If the .torrent payload was provided up-front, metadata is already
 	// known — signal immediately. Otherwise this is a magnet and we must pull
@@ -164,7 +175,6 @@ func NewTorrent(spec *TorrentSpec, bt *BTServer) (*Torrent, error) {
 		}()
 	}
 
-	bt.registerTorrent(t)
 	go t.watch()
 	return t, nil
 }
@@ -356,7 +366,15 @@ func (t *Torrent) Close() bool {
 	t.Stat = state.TorrentClosed
 	t.markClosed()
 	if t.lh != nil && t.bt != nil && t.bt.session != nil {
-		_ = t.lh.Remove(false)
+		// Only remove the libtorrent torrent if no OTHER live instance owns
+		// it. A duplicate Torrent that lost an add race (or any stale copy)
+		// shares the same underlying lt torrent with the registered one;
+		// removing it here would kill an active stream. The registry entry
+		// is either us or already deleted (RemoveTorrent deletes before
+		// closing) — both mean we own the removal.
+		if cur := t.bt.GetTorrent(t.Hash()); cur == nil || cur == t {
+			_ = t.lh.Remove(false)
+		}
 	}
 	t.lh = nil
 	return true

@@ -54,13 +54,21 @@ func LoadTorrent(tor *Torrent) *Torrent {
 // AddTorrent installs a torrent (creating or re-using the in-memory
 // handle), backfilling user metadata from the DB if needed.
 func AddTorrent(spec *TorrentSpec, title, poster, data, category string) (*Torrent, error) {
+	dbt := GetTorrentDB(spec.InfoHash)
+
+	// A spec parsed from a request link is usually hash-only; if the DB record
+	// carries the info-dict, add with it so the torrent comes up with metadata
+	// instantly instead of re-fetching it from the swarm (slow first play /
+	// playlist after restart).
+	if dbt != nil && dbt.TorrentSpec != nil && len(spec.InfoBytes) == 0 && len(dbt.TorrentSpec.InfoBytes) > 0 {
+		spec.InfoBytes = dbt.TorrentSpec.InfoBytes
+	}
+
 	t, err := NewTorrent(spec, bts)
 	if err != nil {
 		log.TLogln("torr.AddTorrent:", err)
 		return nil, err
 	}
-
-	dbt := GetTorrentDB(spec.InfoHash)
 
 	if t.Title == "" {
 		t.Title = title
