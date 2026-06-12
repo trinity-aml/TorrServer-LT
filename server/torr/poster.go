@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"server/log"
 	sets "server/settings"
+	"server/torr/state"
 )
 
 // Server-side poster auto-search. The web UI only looks a poster up while the
@@ -42,26 +44,28 @@ func (t *Torrent) fetchPosterIfMissing() {
 		return
 	}
 
-	name := t.Title
-	if name == "" {
-		name = t.Name()
-	}
-	query, year := CleanPosterQuery(name)
-	if query == "" {
-		return
-	}
-	lang := "en"
-	if hasCyrillic(query) {
-		lang = "ru"
-	}
-
-	poster, err := searchTMDBPoster(cfg, query, year, lang)
-	if err != nil {
-		log.TLogln("torr.poster: tmdb search failed:", err)
-		return
+	// Several name sources, most curated first: the title (user-typed or
+	// dn=-derived), the torrent name from the metadata, the largest file.
+	// dn= is whatever the magnet author wrote and may be junk; the metadata
+	// name and the movie file are ground truth the swarm agrees on.
+	poster, query := "", ""
+	for _, cand := range t.posterQueryCandidates() {
+		lang := "en"
+		if hasCyrillic(cand.query) {
+			lang = "ru"
+		}
+		p, err := searchTMDBPoster(cfg, cand.query, cand.year, lang)
+		if err != nil {
+			log.TLogln("torr.poster: tmdb search failed:", err)
+			return
+		}
+		if p != "" {
+			poster, query = p, cand.query
+			break
+		}
+		log.TLogln("torr.poster: no poster found for", strconv.Quote(cand.query))
 	}
 	if poster == "" {
-		log.TLogln("torr.poster: no poster found for", strconv.Quote(query))
 		return
 	}
 
@@ -72,6 +76,58 @@ func (t *Torrent) fetchPosterIfMissing() {
 	if GetTorrentDB(t.Hash()) != nil {
 		SaveTorrentToDB(t)
 	}
+}
+
+type posterQuery struct {
+	query string
+	year  int
+}
+
+// posterQueryCandidates builds the deduplicated list of TMDB queries for this
+// torrent, in decreasing order of curation: Title (user input or magnet dn),
+// metadata torrent name, name of the largest file.
+func (t *Torrent) posterQueryCandidates() []posterQuery {
+	var names []string
+	if t.Title != "" {
+		names = append(names, t.Title)
+	}
+	if n := t.Name(); n != "" {
+		names = append(names, n)
+	}
+	if f := t.largestFileName(); f != "" {
+		names = append(names, f)
+	}
+
+	seen := map[string]struct{}{}
+	out := make([]posterQuery, 0, len(names))
+	for _, n := range names {
+		q, y := CleanPosterQuery(n)
+		if q == "" {
+			continue
+		}
+		if _, dup := seen[q]; dup {
+			continue
+		}
+		seen[q] = struct{}{}
+		out = append(out, posterQuery{q, y})
+	}
+	return out
+}
+
+func (t *Torrent) largestFileName() string {
+	var best *state.TorrentFileStat
+	for _, f := range t.Status().FileStats {
+		if f == nil {
+			continue
+		}
+		if best == nil || f.Length > best.Length {
+			best = f
+		}
+	}
+	if best == nil {
+		return ""
+	}
+	return filepath.Base(best.Path)
 }
 
 // ----- TMDB client -----
@@ -160,6 +216,8 @@ var (
 	// Requires an explicit _/space separator after a known TLD so dotted scene
 	// names ("What.Is.Love.2010") are never mistaken for a domain.
 	domainPrefixRe = regexp.MustCompile(`(?i)^(?:www\.)?[a-zа-я0-9-]+(?:\.[a-zа-я0-9-]+)*\.(?:info|is|org|net|com|co|tv|me|cc|to|ws|fm|lt|la|su|ru|by|ua|eu|io|in|club|life|pro|fun|site|online|top)[_\s]+`)
+	// A dn-less magnet's display name is its hex info-hash — not a title.
+	hexHashRe = regexp.MustCompile(`(?i)^[0-9a-f]{32}$|^[0-9a-f]{40}$|^[0-9a-f]{64}$`)
 )
 
 // releaseTags are tokens that always mark the start of the technical tail of
@@ -187,7 +245,7 @@ func init() {
 // shortenTitleForPosterSearch + parse-torrent-title.
 func CleanPosterQuery(name string) (string, int) {
 	s := strings.TrimSpace(name)
-	if s == "" {
+	if s == "" || hexHashRe.MatchString(s) {
 		return "", 0
 	}
 	s = extRe.ReplaceAllString(s, "")

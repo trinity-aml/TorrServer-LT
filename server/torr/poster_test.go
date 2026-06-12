@@ -21,6 +21,7 @@ func TestCleanPosterQuery(t *testing.T) {
 		{"simple name", "simple name", 0},
 		{"", "", 0},
 		{"1080p x264", "", 0},
+		{"38cef0b40f595e22f47e33de0acfef44a554c3b8", "", 0},
 	}
 	for _, c := range cases {
 		q, y := CleanPosterQuery(c.in)
