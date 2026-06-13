@@ -9,7 +9,7 @@ import (
 func RouteWebPages(route gin.IRouter) {
 	route.GET("/", func(c *gin.Context) {
 		etag := fmt.Sprintf("%x", md5.Sum(Indexhtml))
-		c.Header("Cache-Control", "public, max-age=31536000")
+		c.Header("Cache-Control", "no-cache")
 		c.Header("ETag", etag)
 		c.Data(200, "text/html; charset=utf-8", Indexhtml)
 	})
@@ -254,7 +254,7 @@ func RouteWebPages(route gin.IRouter) {
 
 	route.GET("/index.html", func(c *gin.Context) {
 		etag := fmt.Sprintf("%x", md5.Sum(Indexhtml))
-		c.Header("Cache-Control", "public, max-age=31536000")
+		c.Header("Cache-Control", "no-cache")
 		c.Header("ETag", etag)
 		c.Data(200, "text/html; charset=utf-8", Indexhtml)
 	})

@@ -139,7 +139,7 @@ import (
 func RouteWebPages(route gin.IRouter) {
 	route.GET("/", func(c *gin.Context) {
 		etag := fmt.Sprintf("%x", md5.Sum(Indexhtml))
-		c.Header("Cache-Control", "public, max-age=31536000")
+		c.Header("Cache-Control", "no-cache")
 		c.Header("ETag", etag)
 		c.Data(200, "text/html; charset=utf-8", Indexhtml)
 	})
@@ -160,10 +160,20 @@ func RouteWebPages(route gin.IRouter) {
 		if fmime == "image/x-icon" {
 			fmime = "image/vnd.microsoft.icon"
 		}
+		// Hashed assets (chunks, images) are immutable — their filename changes
+		// when their content does — so cache them for a year. The HTML entry
+		// point is NOT hashed and references the current chunk names; it must be
+		// revalidated, otherwise a browser keeps a stale index.html after a
+		// bundle update and requests the now-deleted old chunks (a white screen
+		// / "the app stopped working"). no-cache still uses the ETag for 304s.
+		cacheHdr := "public, max-age=31536000"
+		if strings.HasSuffix(link, ".html") {
+			cacheHdr = "no-cache"
+		}
 		embedStr += `
 	route.GET("` + link + `", func(c *gin.Context) {
 		etag := fmt.Sprintf("%x", md5.Sum(` + fmap[link] + `))
-		c.Header("Cache-Control", "public, max-age=31536000")
+		c.Header("Cache-Control", "` + cacheHdr + `")
 		c.Header("ETag", etag)
 		c.Data(200, "` + fmime + `", ` + fmap[link] + `)
 	})
