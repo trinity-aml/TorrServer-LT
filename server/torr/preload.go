@@ -59,17 +59,6 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 	if headBytes > f.Length {
 		headBytes = f.Length
 	}
-	// Tail buffer: many containers keep their index (MP4 moov atom, MKV cues)
-	// at the END of the file, and players read it before playback can start or
-	// seek. Buffer it too, not just the head. Size is the PreloadBufferEnd
-	// setting (UI/API tunable), falling back to the built-in default.
-	tailBytes := int64(tailPreloadBytes)
-	if settings.BTsets() != nil && settings.BTsets().PreloadBufferEnd > 0 {
-		tailBytes = settings.BTsets().PreloadBufferEnd
-	}
-	if tailBytes > f.Length {
-		tailBytes = f.Length
-	}
 
 	clamp := func(p int) int {
 		if p < 0 {
@@ -82,8 +71,32 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 	}
 	headFirst := clamp(int(f.Offset / plen))
 	headLast := clamp(int((f.Offset + headBytes - 1) / plen))
-	tailFirst := clamp(int((f.Offset + f.Length - tailBytes) / plen))
-	tailLast := clamp(int((f.Offset + f.Length - 1) / plen))
+
+	// Tail buffer: the player must read the container index (MP4 moov atom, MKV
+	// cues) — usually at the END of the file — before it can start or seek.
+	// Prefer auto-detecting the exact moov range from the MP4 box structure and
+	// buffering it whole (its size depends on the video, not the torrent's piece
+	// size, so a fixed byte window either under- or over-buffers). Fall back to
+	// the PreloadBufferEnd byte window when the file isn't a parseable MP4 (MKV
+	// cues, etc.) or detection times out.
+	var tailFirst, tailLast int
+	detCtx, detCancel := context.WithTimeout(ctx, 30*time.Second)
+	if ms, me, ok := cache.LocateMoov(detCtx, t.lh, f.Offset, f.Length); ok {
+		tailFirst = clamp(int(ms / plen))
+		tailLast = clamp(int((me - 1) / plen))
+		log.TLogln("torr.Preload: moov auto-detected,", (me-ms)/1024, "KB at offset", ms-f.Offset)
+	} else {
+		tailBytes := int64(tailPreloadBytes)
+		if settings.BTsets() != nil && settings.BTsets().PreloadBufferEnd > 0 {
+			tailBytes = settings.BTsets().PreloadBufferEnd
+		}
+		if tailBytes > f.Length {
+			tailBytes = f.Length
+		}
+		tailFirst = clamp(int((f.Offset + f.Length - tailBytes) / plen))
+		tailLast = clamp(int((f.Offset + f.Length - 1) / plen))
+	}
+	detCancel()
 
 	// Ordered, de-duplicated piece list: head pieces (playback order) followed
 	// by tail pieces not already covered by the head.
