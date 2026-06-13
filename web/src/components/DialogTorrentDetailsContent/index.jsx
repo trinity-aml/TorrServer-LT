@@ -5,7 +5,7 @@ import { Button, ButtonGroup } from '@material-ui/core'
 import ptt from 'parse-torrent-title'
 import axios from 'axios'
 import { viewedHost } from 'utils/Hosts'
-import { GETTING_INFO, IN_DB } from 'torrentStates'
+import { GETTING_INFO } from 'torrentStates'
 import CircularProgress from '@material-ui/core/CircularProgress'
 import { useTranslation } from 'react-i18next'
 
@@ -85,7 +85,12 @@ export default function DialogTorrentDetailsContent({ closeDialog, torrent }) {
 
   useEffect(() => {
     const cacheLoaded = !!Object.entries(cache).length
-    const torrentLoaded = stat !== GETTING_INFO && stat !== IN_DB
+    // A dropped torrent is IN_DB (its info — title/files — still comes from the
+    // list and the cache endpoint serves it from the DB). Render it instead of
+    // spinning forever: opening the details no longer wakes the torrent into the
+    // session (so its cache can drop after playback), so we must not wait for it
+    // to leave IN_DB. Only GETTING_INFO (no metadata yet) still blocks.
+    const torrentLoaded = stat !== GETTING_INFO
 
     if (!cacheLoaded && !isLoading) setIsLoading(true)
     if (cacheLoaded && isLoading && torrentLoaded) setIsLoading(false)
