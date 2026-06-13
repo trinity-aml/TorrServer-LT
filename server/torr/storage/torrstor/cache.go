@@ -378,16 +378,17 @@ func globalCacheSize() int64 {
 }
 
 // capacity is this cache's effective eviction budget: the global CacheSize,
-// grown to fit the live streaming working set (+ a small margin) when that is
-// larger — so the head/tail preload and every active reader's window aren't
-// evicted out from under playback on a small cache (cf. elementum's
-// AdjustMemorySize).
+// grown ONLY when the live streaming working set genuinely exceeds it — i.e.
+// several concurrent viewers (each needs a full window+behind), or a preload
+// larger than the cache. A single viewer's working set is by construction
+// exactly CacheSize (readahead + behind = CacheSize), so capacity stays at the
+// configured value and falls back to it once the extra readers / preload are
+// gone (cf. elementum's AdjustMemorySize). No fixed margin is added: doing so
+// kept a single viewer's cache permanently above the configured size.
 func (c *Cache) capacity() int64 {
 	base := globalCacheSize()
-	if want := c.streamingReserve(); want > 0 {
-		if want += 2 * c.PieceLength; want > base {
-			return want
-		}
+	if want := c.streamingReserve(); want > base {
+		return want
 	}
 	return base
 }
