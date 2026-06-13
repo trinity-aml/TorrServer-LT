@@ -49,11 +49,12 @@ func getCache(req cacheReqJS, c *gin.Context) {
 		return
 	}
 	// Read-only lookup: a torrent must stay alive because it is being PLAYED
-	// (an active reader), never because its cache map is being polled. Using the
-	// deadline-pushing/promoting GetTorrent here let the dialog's 100ms /cache
-	// poll keep a torrent — and its cache — resident forever after playback
-	// ended.
-	tor := torr.GetTorrentLive(req.Hash)
+	// (an active reader), never because its cache map is being polled. The
+	// deadline-pushing/promoting GetTorrent let the dialog's 100ms /cache poll
+	// keep a torrent resident forever after playback ended; GetTorrentInfo
+	// observes without waking it, falling back to the DB record so the dialog
+	// still renders a dropped torrent's info (empty cache map) instead of 404.
+	tor := torr.GetTorrentInfo(req.Hash)
 
 	if tor != nil {
 		st := tor.CacheState()

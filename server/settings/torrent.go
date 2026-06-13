@@ -91,6 +91,27 @@ func ListTorrent() []*TorrentDB {
 	return list
 }
 
+// GetTorrent returns a single torrent record by info-hash hex, or nil. It is a
+// direct key lookup (records are stored under their InfoHash, same key RemTorrent
+// uses) — unlike ListTorrent it does not read and unmarshal the whole bucket, so
+// it is cheap enough for frequent status polling.
+func GetTorrent(hashHex string) *TorrentDB {
+	dbMigrationLock.RLock()
+	defer dbMigrationLock.RUnlock()
+	mu.Lock()
+	defer mu.Unlock()
+
+	buf := tdb.Get("Torrents", hashHex)
+	if len(buf) == 0 {
+		return nil
+	}
+	var t *TorrentDB
+	if err := json.Unmarshal(buf, &t); err != nil {
+		return nil
+	}
+	return t
+}
+
 // RemTorrent removes a torrent record by 40-hex info hash.
 func RemTorrent(hashHex string) {
 	mu.Lock()

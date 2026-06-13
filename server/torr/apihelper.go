@@ -112,18 +112,24 @@ func SaveTorrentToDB(torr *Torrent) {
 	AddTorrentDB(torr)
 }
 
-// GetTorrentLive returns the torrent only if it is currently live in the
-// session — without promoting a DB-only record and without extending the
-// auto-drop deadline. It is for read-only observation endpoints (e.g. the
-// /cache piece-map dialog, which polls every 100ms): such polling must not keep
-// a torrent resident after playback ends. A torrent that has dropped reads as
-// nil here rather than being re-promoted, so polling can't flap it back up.
-// Only actual playback (an active reader) keeps a torrent alive.
-func GetTorrentLive(hashHex string) *Torrent {
-	if bts == nil {
-		return nil
+// GetTorrentInfo returns a torrent for read-only display — the live session
+// instance if present, otherwise the DB record (cheap direct lookup) — WITHOUT
+// promoting it into the session or extending its auto-drop deadline. For
+// status/observation endpoints (e.g. the /cache piece-map dialog, which polls
+// every 100ms): such polling must not keep a torrent resident after playback
+// ends, but must still be able to render a dropped torrent's info (with an empty
+// cache map) rather than 404. Only actual playback (an active reader) keeps a
+// torrent alive. nil only when the hash is unknown to both session and DB.
+func GetTorrentInfo(hashHex string) *Torrent {
+	if bts != nil {
+		if t := bts.GetTorrent(NewHashFromHex(hashHex)); t != nil {
+			return t
+		}
 	}
-	return bts.GetTorrent(NewHashFromHex(hashHex))
+	if dbt := sets.GetTorrent(hashHex); dbt != nil {
+		return torrentFromDB(dbt)
+	}
+	return nil
 }
 
 // GetTorrent returns the in-memory torrent if present, or revives a
