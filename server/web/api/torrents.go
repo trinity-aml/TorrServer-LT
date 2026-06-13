@@ -132,11 +132,6 @@ func addTorrent(req torrReqJS, c *gin.Context) {
 			return
 		}
 
-		// Prime the swarm now so a play that follows within seconds starts on a
-		// hot peer pool (cold preload ~15-28s → ~3s). Scoped to this explicit
-		// user add — not every metadata arrival.
-		tor.WarmupSwarm()
-
 		if tor.Title == "" {
 			tor.Title = torrSpec.DisplayName // prefer dn over name
 			tor.Title = strings.ReplaceAll(tor.Title, "rutor.info", "")
