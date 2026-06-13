@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	sets "server/settings"
 	"server/torr"
 	"server/torr/state"
 	utils2 "server/utils"
@@ -214,9 +215,32 @@ func stream(c *gin.Context) {
 	} else
 	// return play if query
 	if play {
+		// Gate the START of playback on the configured preload buffer, so the
+		// player doesn't begin before PreloadCache% is buffered. Only for the
+		// initial full-playback request (open range from 0, or no range) — not a
+		// HEAD probe, a small byte probe (bytes=0-N), or a seek (bytes=M-), which
+		// the reader's own window handles. The web "Preload" button (&preload)
+		// already buffered, so skip when it ran.
+		if !preload && shouldPreloadOnPlay(c.Request) {
+			torr.Preload(c.Request.Context(), tor, index)
+		}
 		tor.Stream(index, c.Request, c.Writer)
 		return
 	}
+}
+
+// shouldPreloadOnPlay reports whether a /stream play request is an initial
+// full-file playback (so it should buffer PreloadCache% before serving the
+// first byte) rather than a HEAD probe, a small byte probe, or a seek.
+func shouldPreloadOnPlay(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+	if sets.BTsets() == nil || sets.BTsets().PreloadCache <= 0 {
+		return false
+	}
+	rng := strings.TrimSpace(r.Header.Get("Range"))
+	return rng == "" || rng == "bytes=0-"
 }
 
 func streamNoAuth(c *gin.Context) {
@@ -354,6 +378,9 @@ func streamNoAuth(c *gin.Context) {
 	} else
 	// return play if query
 	if play {
+		if !preload && shouldPreloadOnPlay(c.Request) {
+			torr.Preload(c.Request.Context(), tor, index)
+		}
 		tor.Stream(index, c.Request, c.Writer)
 		return
 	}
