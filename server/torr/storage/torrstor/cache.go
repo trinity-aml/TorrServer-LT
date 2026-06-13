@@ -34,10 +34,16 @@ type Cache struct {
 	readersMu sync.Mutex
 	readers   map[*Reader]struct{}
 
-	// reserved grows the effective capacity so a streaming buffer (preload
-	// head+tail, reader window) fits without eviction churn even when the
-	// global CacheSize is smaller. See Reserve / capacity.
-	reserved atomic.Int64
+	// Streaming working-set reservation. capacity() grows the effective cache
+	// above the global CacheSize so concurrent playheads and an in-flight
+	// preload buffer all fit without evicting each other. Readers contribute
+	// their window+behind live (summed in streamingReserve — two devices at
+	// different positions need two windows, not one); an active Preload adds
+	// its buffer (preloadReserve) and protects its piece ranges
+	// (preloadProtect) until the joining client's own reader takes over.
+	preloadMu      sync.Mutex
+	preloadProtect [][2]int
+	preloadReserve atomic.Int64
 
 	// announced is flipped once when the first Reader attaches, to kick
 	// tracker+DHT announces for this (lazily-added) torrent exactly once per
@@ -126,13 +132,11 @@ func (c *Cache) unregisterReader(r *Reader) {
 	delete(c.readers, r)
 	empty := len(c.readers) == 0
 	c.readersMu.Unlock()
-	// When the last reader detaches, drop the streaming reservation so capacity
-	// falls back to the global CacheSize and trim the now-unprotected overage
-	// right away — don't keep a readahead-sized buffer resident for a torrent
-	// nobody is streaming. (The torrent itself is dropped later by the expiry
-	// watchdog, which frees the rest.)
+	// capacity() now drops automatically as this reader leaves the live sum;
+	// trim the now-unprotected overage right away rather than keeping a
+	// readahead-sized buffer resident for a torrent nobody streams from. (The
+	// torrent itself is dropped later by the expiry watchdog, freeing the rest.)
 	if empty {
-		c.ClearReserve()
 		go c.evictIfOverCapacity()
 	}
 }
@@ -314,11 +318,17 @@ func (c *Cache) readerProtectRanges() [][2]int {
 		rs = append(rs, r)
 	}
 	c.readersMu.Unlock()
-	out := make([][2]int, 0, len(rs))
+	out := make([][2]int, 0, len(rs)+2)
 	for _, r := range rs {
 		lo, hi := r.protectRange()
 		out = append(out, [2]int{lo, hi})
 	}
+	// An in-flight preload has no reader yet, so its freshly-downloaded buffer
+	// would be evicted under an active reader's pressure before the joining
+	// client could play it — keep its ranges resident until the join finishes.
+	c.preloadMu.Lock()
+	out = append(out, c.preloadProtect...)
+	c.preloadMu.Unlock()
 	return out
 }
 
@@ -326,10 +336,20 @@ func (c *Cache) readerProtectRanges() [][2]int {
 // every active reader. A closing reader uses this (after unregistering itself)
 // to avoid zeroing priorities inside a window another stream still plays from.
 func (c *Cache) readerWindows() [][2]int {
+	return c.readerWindowsExcept(nil)
+}
+
+// readerWindowsExcept is readerWindows minus one reader — a live reader uses
+// it (passing itself) when sliding its own window, so it never demotes pieces
+// a CONCURRENT stream of the same torrent still has prioritised.
+func (c *Cache) readerWindowsExcept(skip *Reader) [][2]int {
 	c.readersMu.Lock()
 	defer c.readersMu.Unlock()
 	out := make([][2]int, 0, len(c.readers))
 	for r := range c.readers {
+		if r == skip {
+			continue
+		}
 		wf := int(r.winFirst.Load())
 		if wf < 0 {
 			continue
@@ -358,33 +378,56 @@ func globalCacheSize() int64 {
 }
 
 // capacity is this cache's effective eviction budget: the global CacheSize,
-// grown to fit a reserved streaming buffer (+ a small margin) when that buffer
-// is larger — so the head/tail preload and reader window aren't evicted out
-// from under playback on a small cache (cf. elementum's AdjustMemorySize).
+// grown to fit the live streaming working set (+ a small margin) when that is
+// larger — so the head/tail preload and every active reader's window aren't
+// evicted out from under playback on a small cache (cf. elementum's
+// AdjustMemorySize).
 func (c *Cache) capacity() int64 {
 	base := globalCacheSize()
-	if r := c.reserved.Load(); r > 0 {
-		if want := r + 2*c.PieceLength; want > base {
+	if want := c.streamingReserve(); want > 0 {
+		if want += 2 * c.PieceLength; want > base {
 			return want
 		}
 	}
 	return base
 }
 
-// Reserve raises (never lowers) the buffer reservation so eviction keeps room
-// for `bytes` of streaming working set. ClearReserve drops it back to the
-// global budget.
-func (c *Cache) Reserve(bytes int64) {
-	for {
-		cur := c.reserved.Load()
-		if bytes <= cur || c.reserved.CompareAndSwap(cur, bytes) {
-			return
-		}
+// streamingReserve is the total working set that must stay resident: every
+// active reader's window+behind margin, SUMMED (not maxed), plus an in-flight
+// preload buffer. The summing is the fix for concurrent viewers — the old
+// single high-water-mark reservation only ever fit one playhead, so a second
+// device streaming the same torrent from a different position had its pieces
+// evicted under the first's pressure and never started playing. The cost is
+// that RAM scales with the number of simultaneous independent streams, which
+// is inherent: two playheads genuinely need two buffers.
+func (c *Cache) streamingReserve() int64 {
+	var sum int64
+	c.readersMu.Lock()
+	for r := range c.readers {
+		sum += r.readahead.Load() + r.behindBytes()
 	}
+	c.readersMu.Unlock()
+	return sum + c.preloadReserve.Load()
 }
 
-// ClearReserve resets the reservation (e.g. when the last reader detaches).
-func (c *Cache) ClearReserve() { c.reserved.Store(0) }
+// SetPreloadReserve marks an in-flight preload's buffer: `bytes` grows the
+// capacity and `ranges` are protected from eviction until ClearPreloadReserve.
+func (c *Cache) SetPreloadReserve(bytes int64, ranges [][2]int) {
+	c.preloadMu.Lock()
+	c.preloadProtect = ranges
+	c.preloadMu.Unlock()
+	c.preloadReserve.Store(bytes)
+}
+
+// ClearPreloadReserve releases the preload reservation (the joining client's
+// own reader now protects the head) and trims any overage.
+func (c *Cache) ClearPreloadReserve() {
+	c.preloadMu.Lock()
+	c.preloadProtect = nil
+	c.preloadMu.Unlock()
+	c.preloadReserve.Store(0)
+	go c.evictIfOverCapacity()
+}
 
 // Have reports whether the piece has been fully written to the cache.
 func (c *Cache) Have(piece int) bool {

@@ -141,10 +141,10 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo) *Reader {
 	r.winFirst.Store(-1)
 	r.winLast.Store(-1)
 	cache.registerReader(r)
-	// Keep room in the cache for this reader's working set so eviction doesn't
-	// drop pieces we're about to play (forward window) or just played (behind
-	// margin, for small rewinds/re-seeks). See protectRange / behindBytes.
-	cache.Reserve(r.readahead.Load() + r.behindBytes())
+	// Capacity grows automatically to fit this reader's working set now that it
+	// is registered (capacity() sums every reader live), so eviction won't drop
+	// pieces we're about to play (forward window) or just played (behind margin,
+	// for small rewinds/re-seeks). See protectRange / behindBytes.
 	// Find peers fast at stream start: a lazily-added torrent announces lightly,
 	// so kick trackers + DHT once when streaming actually begins (CAS keeps it
 	// to one announce per session despite per-range-request readers).
@@ -354,8 +354,8 @@ func (r *Reader) SetContext(ctx context.Context) {
 // SetReadahead implements torr.Reader.
 func (r *Reader) SetReadahead(n int64) {
 	r.readahead.Store(n)
-	// Grow the reservation to fit the new working set (Reserve never shrinks).
-	r.cache.Reserve(n + r.behindBytes())
+	// capacity() picks up the new working set live (it sums readers' readahead
+	// each call), so no explicit reservation bump is needed.
 	r.mu.Lock()
 	r.scheduleWindow()
 	r.mu.Unlock()
@@ -399,10 +399,17 @@ func (r *Reader) scheduleWindow() {
 
 	prevF, prevL := int(r.winFirst.Load()), int(r.winLast.Load())
 
-	// Drop pieces that left the window back to "don't download".
+	// Drop pieces that left the window back to "don't download" — except
+	// pieces inside ANOTHER reader's window. With two clients streaming the
+	// same torrent (second device trailing the first within a window-width),
+	// the leader's slide would otherwise keep zeroing priorities the trailing
+	// stream just asked for: its reprioritize pass only re-asserts the graded
+	// head (priorities are sticky inside the window), so its far readahead
+	// stopped downloading and the trailing buffer collapsed to a few pieces.
 	if prevF >= 0 {
+		others := r.cache.readerWindowsExcept(r)
 		for i := prevF; i <= prevL; i++ {
-			if i < first || i > last {
+			if (i < first || i > last) && !pieceInRanges(i, others) {
 				_ = r.handle.SetPiecePriority(i, 0)
 			}
 		}

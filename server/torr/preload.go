@@ -21,9 +21,12 @@ const tailPreloadBytes = 4 << 20
 // the head of the file: it raises priority + ordered deadlines on the piece
 // range and blocks until they arrive (or the torrent closes / 2 min elapses),
 // updating PreloadedBytes/PreloadSize for the UI to poll.
-func (t *Torrent) Preload(index int, size int64) {
+func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 	if t == nil || t.lh == nil || size <= 0 {
 		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	// Resolve the file the same way Stream does: `index` is the 1-based API
@@ -107,14 +110,29 @@ func (t *Torrent) Preload(index int, size int64) {
 	t.Stat = state.TorrentPreload
 	t.mu.Unlock()
 
-	// Grow the cache (if needed) so the whole head+tail buffer fits without
-	// eviction kicking pieces out before they're played.
-	cache.Reserve(t.PreloadSize)
+	// Grow the cache (if needed) so the whole head+tail buffer fits, AND protect
+	// the buffer's piece ranges from eviction for the duration of the wait. This
+	// torrent may already have an active reader (a first viewer playing past the
+	// head); without protection that reader's pressure evicts these freshly
+	// downloaded pieces before this client starts, so the preload progress goes
+	// backwards and never completes (a second device stuck buffering). The
+	// joining client's own reader takes over protection once it streams.
+	cache.SetPreloadReserve(t.PreloadSize, [][2]int{{headFirst, headLast}, {tailFirst, tailLast}})
+	defer cache.ClearPreloadReserve()
 
 	// Priority 7 on every buffer piece; head gets playback-ordered deadlines,
-	// tail pieces are urgent (the player needs the index to begin).
+	// tail pieces are urgent (the player needs the index to begin). A piece
+	// libtorrent believes it HAS but the cache evicted (a second viewer joins
+	// after the first played past the head) must be un-haved first or the
+	// picker never re-downloads it and the wait below sits out its full
+	// 2 minutes — the second device hangs in "buffering" forever while the
+	// first keeps playing. Same reconciliation the Reader does on seek-back.
 	for n, p := range order {
-		_ = t.lh.SetPiecePriority(p, 7)
+		if !cache.Have(p) && t.lh.HasPiece(p) {
+			_ = t.lh.WeDontHave(p, 7) // un-have + top priority, atomically
+		} else {
+			_ = t.lh.SetPiecePriority(p, 7)
+		}
 		if n < headCount {
 			_ = t.lh.SetPieceDeadline(p, n*10, false)
 		} else {
@@ -125,9 +143,14 @@ func (t *Torrent) Preload(index int, size int64) {
 	// libtorrent hack (cf. elementum): pause+resume kicks the piece picker so it
 	// re-evaluates and starts requesting the freshly-prioritised buffer pieces
 	// immediately, instead of waiting for its next tick. Only done here, at
-	// buffer startup — never per scheduleWindow (that would churn peers).
-	_ = t.lh.Pause()
-	_ = t.lh.Resume()
+	// buffer startup — never per scheduleWindow (that would churn peers). And
+	// never while another client is actively streaming this torrent: pausing
+	// drops every peer connection, hiccuping the running stream, and the swarm
+	// is already hot — the picker will pull the new buffer without the kick.
+	if cache.ActiveReaders() == 0 {
+		_ = t.lh.Pause()
+		_ = t.lh.Resume()
+	}
 
 	// Find peers fast: kick trackers + DHT now (the torrent was lazy and lightly
 	// announced until this preload).
@@ -136,8 +159,9 @@ func (t *Torrent) Preload(index int, size int64) {
 		_ = t.lh.ForceDhtAnnounce()
 	}
 
-	// Cancel the wait if the torrent is closed; cap the total at 2 minutes.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	// Cancel the wait if the torrent is closed or the requesting client goes
+	// away (ctx is the HTTP request's context); cap the total at 2 minutes.
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	go func() {
 		select {
@@ -202,8 +226,9 @@ func (t *Torrent) Preload(index int, size int64) {
 }
 
 // Preload (free function) keeps API parity with the legacy call sites
-// (web/api/stream.go) that do `torr.Preload(tor, index)`.
-func Preload(torr *Torrent, index int) {
+// (web/api/stream.go) that do `torr.Preload(ctx, tor, index)`. ctx should be
+// the HTTP request's context so an abandoned preload stops blocking.
+func Preload(ctx context.Context, torr *Torrent, index int) {
 	if torr == nil || settings.BTsets() == nil {
 		return
 	}
@@ -213,5 +238,5 @@ func Preload(torr *Torrent, index int) {
 	if size <= 0 {
 		return
 	}
-	torr.Preload(index, size)
+	torr.Preload(ctx, index, size)
 }

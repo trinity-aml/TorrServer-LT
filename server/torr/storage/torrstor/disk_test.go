@@ -185,10 +185,12 @@ func TestCache_LRUEvictsOldestWhenOverCapacity(t *testing.T) {
 }
 
 func TestCache_EvictionSparesReaderWindow(t *testing.T) {
-	// 12 pieces written, budget shrunk to 6 → 6 must be evicted. A reader pins a
-	// forward window [0..2] at the file head; those are the OLDEST pieces, so
-	// plain LRU would evict them first. Window protection must keep them and
-	// evict the next-oldest unprotected pieces instead.
+	// 12 pieces written, global budget 6. A reader pins a forward window [0..2]
+	// at the file head; those are the OLDEST pieces, so plain LRU would evict
+	// them first. Window protection must keep them and evict the next-oldest
+	// unprotected pieces instead. A registered reader also reserves its working
+	// set, so the effective capacity (and thus how many pieces survive) is
+	// capacity(), not the bare 6-piece global budget — see streamingReserve.
 	prev := settings.BTsets()
 	settings.StoreBTsets(&settings.BTSets{UseDisk: false, CacheSize: 6 * pieceLen})
 	t.Cleanup(func() { settings.StoreBTsets(prev) })
@@ -241,8 +243,8 @@ func TestCache_EvictionSparesReaderWindow(t *testing.T) {
 			t.Fatalf("unprotected old piece %d should have been evicted", gone)
 		}
 	}
-	if c.Filled() > 6*pieceLen {
-		t.Fatalf("eviction did not converge: filled=%d cap=%d", c.Filled(), 6*pieceLen)
+	if c.Filled() > c.capacity() {
+		t.Fatalf("eviction did not converge: filled=%d cap=%d", c.Filled(), c.capacity())
 	}
 }
 
