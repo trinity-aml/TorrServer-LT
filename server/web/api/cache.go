@@ -48,7 +48,12 @@ func getCache(req cacheReqJS, c *gin.Context) {
 		c.AbortWithError(http.StatusBadRequest, errors.New("hash is empty"))
 		return
 	}
-	tor := torr.GetTorrent(req.Hash)
+	// Read-only lookup: a torrent must stay alive because it is being PLAYED
+	// (an active reader), never because its cache map is being polled. Using the
+	// deadline-pushing/promoting GetTorrent here let the dialog's 100ms /cache
+	// poll keep a torrent — and its cache — resident forever after playback
+	// ended.
+	tor := torr.GetTorrentLive(req.Hash)
 
 	if tor != nil {
 		st := tor.CacheState()
