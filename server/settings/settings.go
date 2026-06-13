@@ -232,6 +232,21 @@ func safeMigrateAll(source, target TorrServerDB, xpath, targetName string, clear
 		log.TLogln(fmt.Sprintf("Starting migration of all %s entries to %s", xpath, targetName))
 	}
 
+	// The target store is authoritative on startup (it matches the current
+	// storage preference). Drop any source entry that already exists in the
+	// target BEFORE migrating, so MigrateAll only carries over genuinely
+	// leftover keys and can never overwrite a live entry with a stale copy.
+	// (Viewed's storage switch already clears its source, so this is normally a
+	// no-op — it's the same authoritative-target guard as safeMigrate, kept
+	// here for parity and to cover any stale dual-store state.)
+	if clearSource {
+		for _, name := range source.List(xpath) {
+			if target.Get(xpath, name) != nil {
+				source.Rem(xpath, name)
+			}
+		}
+	}
+
 	migrated, skipped, err := MigrateAll(source, target, xpath)
 	log.TLogln(fmt.Sprintf("%s migration result: %d migrated, %d skipped", xpath, migrated, skipped))
 	if err != nil {
