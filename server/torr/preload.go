@@ -15,6 +15,14 @@ import (
 // playing and seeking. ~4 MB covers typical indexes without much overhead.
 const tailPreloadBytes = 4 << 20
 
+// preloadConnections is the per-torrent peer cap raised during a preload burst;
+// defaultConnectionsLimit is what it's restored to when ConnectionsLimit isn't
+// configured (mirrors NewBTS's default).
+const (
+	preloadConnections      = 200
+	defaultConnectionsLimit = 50
+)
+
 // Preload (Torrent method) eagerly downloads the first `size` bytes of file
 // `index` so playback starts with a buffer. Because the torrent sits at piece
 // priority 0 (lazy streaming, see signalGotInfo), this is what actually pulls
@@ -170,6 +178,23 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 	_ = t.lh.ForceReannounce()
 	if settings.BTsets() == nil || !settings.BTsets().DisableDHT {
 		_ = t.lh.ForceDhtAnnounce()
+	}
+
+	// Burst peer connections for the preload. A fresh magnet shows only a
+	// handful of active peers while hundreds are known: torrent_connect_boost
+	// fired at add time when the peer list was still empty, so the swarm now
+	// ramps at the polite steady rate. A high cap during the preload lets many
+	// connection attempts run in parallel, so live peers connect faster despite
+	// the many dead/firewalled ones — which speeds both the fill and the
+	// end-game race for the last piece. Restored to the configured per-torrent
+	// limit once the buffer is in.
+	configuredConns := defaultConnectionsLimit
+	if settings.BTsets() != nil && settings.BTsets().ConnectionsLimit > 0 {
+		configuredConns = settings.BTsets().ConnectionsLimit
+	}
+	if cache.ActiveReaders() == 0 && preloadConnections > configuredConns {
+		_ = t.lh.SetMaxConnections(preloadConnections)
+		defer func() { _ = t.lh.SetMaxConnections(configuredConns) }()
 	}
 
 	// Cancel the wait if the torrent is closed or the requesting client goes
