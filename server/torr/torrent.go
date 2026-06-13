@@ -247,6 +247,65 @@ func (t *Torrent) signalGotInfo() {
 	})
 }
 
+// WarmupSwarm primes the swarm right after a user adds a torrent, so a play
+// that follows within a few seconds starts on a hot peer pool instead of the
+// 5-8 peers a freshly-added magnet shows (a cold preload then drops from
+// ~15-28s to ~3s). libtorrent barely fills connection slots while there is
+// nothing to download — pieces sit at priority 0 for lazy streaming — so the
+// warm-up gives it the first piece to fetch, which both pulls peers in and
+// pre-buffers the file head, and raises the connection cap (libtorrent ramps
+// connection attempts in proportion to it, so a higher cap connects live peers
+// faster even well below the limit). The cap is handed back to the configured
+// value once the head piece is in or after a short bound — unless a preload has
+// taken over by then, which manages the cap itself. If the torrent is never
+// played the idle watchdog drops it (and the warm connections) anyway.
+//
+// Call only on an explicit user add — not on every metadata arrival (playlist
+// promotion, --torrentsdir autoload), which would prefetch and over-connect
+// torrents nobody asked to watch.
+func (t *Torrent) WarmupSwarm() {
+	if t == nil || t.lh == nil {
+		return
+	}
+	lh := t.lh
+	go func() {
+		_ = lh.ForceReannounce()
+		if settings.BTsets() == nil || !settings.BTsets().DisableDHT {
+			_ = lh.ForceDhtAnnounce()
+		}
+		if lh.NumPieces() <= 0 {
+			return
+		}
+		_ = lh.SetMaxConnections(preloadConnections)
+		_ = lh.SetPiecePriority(0, 7)
+		_ = lh.SetPieceDeadline(0, 0, false)
+
+		// Keep the pool hot through the user's think-time (restoring the cap as
+		// soon as the head piece lands cools it right before they press play),
+		// then hand the cap back to the configured limit. Skip the restore if a
+		// play has since started: a preload manages its own cap, and a running
+		// stream should keep its warm pool rather than have peers trimmed
+		// mid-playback. Either way the idle watchdog (~TorrentDisconnectTimeout)
+		// drops a never-played torrent and its connections soon after.
+		select {
+		case <-t.closeCh:
+			return
+		case <-time.After(30 * time.Second):
+		}
+		if t.Stat == state.TorrentPreload {
+			return
+		}
+		if cache := torrstor.Global().CacheByHash([20]byte(t.Hash())); cache != nil && cache.ActiveReaders() > 0 {
+			return
+		}
+		limit := defaultConnectionsLimit
+		if settings.BTsets() != nil && settings.BTsets().ConnectionsLimit > 0 {
+			limit = settings.BTsets().ConnectionsLimit
+		}
+		_ = lh.SetMaxConnections(limit)
+	}()
+}
+
 // WaitInfo blocks until metadata is received or the torrent is closed or
 // the configured timeout elapses. Returns true on success.
 func (t *Torrent) WaitInfo() bool {
