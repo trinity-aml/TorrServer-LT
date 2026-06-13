@@ -138,7 +138,7 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 	// downloaded pieces before this client starts, so the preload progress goes
 	// backwards and never completes (a second device stuck buffering). The
 	// joining client's own reader takes over protection once it streams.
-	cache.SetPreloadReserve(t.PreloadSize, [][2]int{{headFirst, headLast}, {tailFirst, tailLast}})
+	cache.SetPreloadReserve([][2]int{{headFirst, headLast}, {tailFirst, tailLast}})
 	defer cache.ClearPreloadReserve()
 
 	// Priority 7 on every buffer piece; head gets playback-ordered deadlines,

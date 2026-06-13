@@ -36,14 +36,14 @@ type Cache struct {
 
 	// Streaming working-set reservation. capacity() grows the effective cache
 	// above the global CacheSize so concurrent playheads and an in-flight
-	// preload buffer all fit without evicting each other. Readers contribute
-	// their window+behind live (summed in streamingReserve — two devices at
-	// different positions need two windows, not one); an active Preload adds
-	// its buffer (preloadReserve) and protects its piece ranges
-	// (preloadProtect) until the joining client's own reader takes over.
+	// preload buffer all fit without evicting each other. streamingReserve sizes
+	// it from the UNION of every reader's window+behind and the preload's ranges
+	// (preloadProtect) — playheads at different positions add up, ones at the
+	// same position (parallel connections of one player) collapse to one.
+	// preloadProtect also keeps the preload's pieces from being evicted until the
+	// joining client's own reader takes over.
 	preloadMu      sync.Mutex
 	preloadProtect [][2]int
-	preloadReserve atomic.Int64
 
 	// announced is flipped once when the first Reader attaches, to kick
 	// tracker+DHT announces for this (lazily-added) torrent exactly once per
@@ -393,31 +393,63 @@ func (c *Cache) capacity() int64 {
 	return base
 }
 
-// streamingReserve is the total working set that must stay resident: every
-// active reader's window+behind margin, SUMMED (not maxed), plus an in-flight
-// preload buffer. The summing is the fix for concurrent viewers — the old
-// single high-water-mark reservation only ever fit one playhead, so a second
-// device streaming the same torrent from a different position had its pieces
-// evicted under the first's pressure and never started playing. The cost is
-// that RAM scales with the number of simultaneous independent streams, which
-// is inherent: two playheads genuinely need two buffers.
+// streamingReserve is the total working set that must stay resident: the UNION
+// of every active reader's window+behind margin and an in-flight preload
+// buffer. Union, not sum — two playheads at DIFFERENT positions genuinely need
+// two buffers (the concurrent-viewers fix), but readers at the SAME position
+// (one player opening several parallel connections — VLC/Kodi routinely do)
+// share their pieces and need only one. Summing doubled the reported Capacity
+// while Filled stayed single, so external clients computing buffer% =
+// Filled/Capacity saw it stick at ~1/N (50% for two connections) and never
+// "finished" buffering. Overlapping ranges are merged so the reserve tracks the
+// distinct pieces actually held.
 func (c *Cache) streamingReserve() int64 {
-	var sum int64
+	plen := c.PieceLength
+	if plen <= 0 {
+		return 0
+	}
+	var ranges [][2]int
 	c.readersMu.Lock()
 	for r := range c.readers {
-		sum += r.readahead.Load() + r.behindBytes()
+		cur := r.currentPiece()
+		lo := cur - int(r.behindBytes()/plen)
+		if lo < 0 {
+			lo = 0
+		}
+		ranges = append(ranges, [2]int{lo, cur + int(r.readahead.Load()/plen)})
 	}
 	c.readersMu.Unlock()
-	return sum + c.preloadReserve.Load()
+	c.preloadMu.Lock()
+	ranges = append(ranges, c.preloadProtect...)
+	c.preloadMu.Unlock()
+	if len(ranges) == 0 {
+		return 0
+	}
+
+	// Sum the merged (deduplicated) span: ranges at the same position collapse
+	// to one, disjoint ones add up.
+	sort.Slice(ranges, func(i, j int) bool { return ranges[i][0] < ranges[j][0] })
+	var pieces int64
+	lo, hi := ranges[0][0], ranges[0][1]
+	for _, rg := range ranges[1:] {
+		if rg[0] > hi+1 {
+			pieces += int64(hi - lo + 1)
+			lo, hi = rg[0], rg[1]
+		} else if rg[1] > hi {
+			hi = rg[1]
+		}
+	}
+	pieces += int64(hi - lo + 1)
+	return pieces * plen
 }
 
-// SetPreloadReserve marks an in-flight preload's buffer: `bytes` grows the
-// capacity and `ranges` are protected from eviction until ClearPreloadReserve.
-func (c *Cache) SetPreloadReserve(bytes int64, ranges [][2]int) {
+// SetPreloadReserve marks an in-flight preload's buffer: its `ranges` grow the
+// capacity (via streamingReserve) and are protected from eviction until
+// ClearPreloadReserve.
+func (c *Cache) SetPreloadReserve(ranges [][2]int) {
 	c.preloadMu.Lock()
 	c.preloadProtect = ranges
 	c.preloadMu.Unlock()
-	c.preloadReserve.Store(bytes)
 }
 
 // ClearPreloadReserve releases the preload reservation (the joining client's
@@ -426,7 +458,6 @@ func (c *Cache) ClearPreloadReserve() {
 	c.preloadMu.Lock()
 	c.preloadProtect = nil
 	c.preloadMu.Unlock()
-	c.preloadReserve.Store(0)
 	go c.evictIfOverCapacity()
 }
 
