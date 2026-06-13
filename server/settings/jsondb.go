@@ -29,7 +29,10 @@ func NewJsonDB() TorrServerDB {
 	if globalJsonDB != nil {
 		return globalJsonDB
 	}
-	globalJsonDB := &JsonDB{
+	// NB: assign to the package-level singleton, not `:=` — a `:=` here shadows
+	// globalJsonDB with a local, so every call returned a fresh JsonDB (each with
+	// its own per-file lock map, defeating the intended mutual exclusion).
+	globalJsonDB = &JsonDB{
 		Path:              Path,
 		filenameDelimiter: ".",
 		filenameExtension: ".json",

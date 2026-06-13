@@ -282,6 +282,19 @@ func SetSettings(set *sets.BTSets) {
 		log.TLogln("torr.SetSettings: read-only DB mode")
 		return
 	}
+	// The storage-backend preferences (json vs config.db for Settings/Viewed)
+	// are owned exclusively by the /storage/settings switch endpoint, which
+	// migrates the data when they change. A regular settings save must not
+	// touch them: the web settings dialog echoes back a StoreSettingsInJson it
+	// cached before the switch, which would otherwise overwrite the chosen
+	// backend and silently revert it to json on the next restart. Preserve the
+	// live values.
+	if set != nil {
+		if cur := sets.BTsets(); cur != nil {
+			set.StoreSettingsInJson = cur.StoreSettingsInJson
+			set.StoreViewedInJson = cur.StoreViewedInJson
+		}
+	}
 	sets.SetBTSets(set)
 	log.TLogln("torr.SetSettings: dropping all torrents")
 	dropAllTorrent()
