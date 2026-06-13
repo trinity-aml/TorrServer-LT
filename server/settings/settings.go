@@ -191,6 +191,21 @@ func safeMigrate(source, target TorrServerDB, xpath, name, targetName string, cl
 		log.TLogln(fmt.Sprintf("Checking migration of %s/%s to %s", xpath, name, targetName))
 	}
 
+	// The target store is authoritative here — it is the one the current
+	// storage preference points at. Only pull data over when the target is
+	// EMPTY (an initial migration). If the target already holds the value, a
+	// copy left in the source is stale (e.g. a storage switch that didn't clear
+	// it) and must NOT overwrite the live value — drop it instead. Without this
+	// guard a stale settings.json overwrote the real config.db settings on every
+	// restart, silently reverting any change made in bbolt mode.
+	if target.Get(xpath, name) != nil {
+		if clearSource && source.Get(xpath, name) != nil {
+			source.Rem(xpath, name)
+			log.TLogln(fmt.Sprintf("Dropped stale %s/%s from source (target %s is authoritative)", xpath, name, targetName))
+		}
+		return
+	}
+
 	migrated, err := MigrateSingle(source, target, xpath, name)
 	if err != nil {
 		log.TLogln(fmt.Sprintf("Migration error for %s/%s: %v", xpath, name, err))
@@ -307,8 +322,14 @@ func SwitchSettingsStorage(useJson bool) error {
 	var err error
 	if useJson {
 		err = MigrateSettingsToJson(bboltDB, jsonDB)
+		if err == nil {
+			bboltDB.Rem("Settings", "BitTorr") // drop the source so it can't overwrite later
+		}
 	} else {
 		err = MigrateSettingsFromJson(jsonDB, bboltDB)
+		if err == nil {
+			jsonDB.Rem("Settings", "BitTorr") // drop the source so it can't overwrite later
+		}
 	}
 
 	if err != nil {
