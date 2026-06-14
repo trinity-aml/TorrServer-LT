@@ -80,49 +80,13 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 	headFirst := clamp(int(f.Offset / plen))
 	headLast := clamp(int((f.Offset + headBytes - 1) / plen))
 
-	// Tail buffer: the player must read the container index (MP4 moov atom, MKV
-	// cues) — usually at the END of the file — before it can start or seek.
-	// Prefer auto-detecting the exact moov range from the MP4 box structure and
-	// buffering it whole (its size depends on the video, not the torrent's piece
-	// size, so a fixed byte window either under- or over-buffers). Fall back to
-	// the PreloadBufferEnd byte window when the file isn't a parseable MP4 (MKV
-	// cues, etc.) or detection times out.
-	var tailFirst, tailLast int
-	detCtx, detCancel := context.WithTimeout(ctx, 30*time.Second)
-	if ms, me, ok := cache.LocateMoov(detCtx, t.lh, f.Offset, f.Length); ok {
-		tailFirst = clamp(int(ms / plen))
-		tailLast = clamp(int((me - 1) / plen))
-		log.TLogln("torr.Preload: moov auto-detected,", (me-ms)/1024, "KB at offset", ms-f.Offset)
-	} else {
-		tailBytes := int64(tailPreloadBytes)
-		if settings.BTsets() != nil && settings.BTsets().PreloadBufferEnd > 0 {
-			tailBytes = settings.BTsets().PreloadBufferEnd
-		}
-		if tailBytes > f.Length {
-			tailBytes = f.Length
-		}
-		tailFirst = clamp(int((f.Offset + f.Length - tailBytes) / plen))
-		tailLast = clamp(int((f.Offset + f.Length - 1) / plen))
-	}
-	detCancel()
-
-	// Ordered, de-duplicated piece list: head pieces (playback order) followed
-	// by tail pieces not already covered by the head.
-	seen := make(map[int]bool)
-	var order []int
-	addRange := func(a, b int) {
-		for i := a; i <= b; i++ {
-			if !seen[i] {
-				seen[i] = true
-				order = append(order, i)
-			}
-		}
-	}
-	addRange(headFirst, headLast)
-	headCount := len(order)
-	addRange(tailFirst, tailLast)
-	if len(order) == 0 {
+	headCount := headLast - headFirst + 1
+	if headCount <= 0 {
 		return
+	}
+	headPieces := make([]int, 0, headCount)
+	for p := headFirst; p <= headLast; p++ {
+		headPieces = append(headPieces, p)
 	}
 
 	// PreloadSize/PreloadedBytes report the HEAD buffer only — that's the
@@ -135,14 +99,42 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 	t.Stat = state.TorrentPreload
 	t.mu.Unlock()
 
-	// Grow the cache (if needed) so the whole head+tail buffer fits, AND protect
-	// the buffer's piece ranges from eviction for the duration of the wait. This
-	// torrent may already have an active reader (a first viewer playing past the
-	// head); without protection that reader's pressure evicts these freshly
-	// downloaded pieces before this client starts, so the preload progress goes
-	// backwards and never completes (a second device stuck buffering). The
-	// joining client's own reader takes over protection once it streams.
-	cache.SetPreloadReserve([][2]int{{headFirst, headLast}, {tailFirst, tailLast}})
+	// prioritise raises priority 7 + an ascending deadline ramp (startN*10 ms,
+	// +10 ms per piece) on a piece list. libtorrent's time-critical picker always
+	// prioritises the more-recent deadline and assigns the *fastest* peers to the
+	// most urgent piece, and bandwidth is zero-sum (see libtorrent streaming.html),
+	// so the ramp puts piece 0 first and each later piece strictly after it. A
+	// piece libtorrent believes it HAS but the cache evicted (a second viewer
+	// joins after the first played past the head) must be un-haved first or the
+	// picker never re-downloads it and the wait below sits out its full 2 minutes
+	// — the second device hangs in "buffering" forever while the first keeps
+	// playing. Same reconciliation the Reader does on seek-back.
+	prioritise := func(pieces []int, startN int) {
+		for i, p := range pieces {
+			if !cache.Have(p) && t.lh.HasPiece(p) {
+				_ = t.lh.WeDontHave(p, 7) // un-have + top priority, atomically
+			} else {
+				_ = t.lh.SetPiecePriority(p, 7)
+			}
+			_ = t.lh.SetPieceDeadline(p, (startN+i)*10, false)
+		}
+	}
+
+	// The fallback tail window (last PreloadBufferEnd bytes) is where the
+	// container index usually lives; reserve head+that window up front so moov
+	// detection's header reads near the file end aren't evicted while the head
+	// fills, then refine to the exact moov range once detected.
+	tailBytes := int64(tailPreloadBytes)
+	if settings.BTsets() != nil && settings.BTsets().PreloadBufferEnd > 0 {
+		tailBytes = settings.BTsets().PreloadBufferEnd
+	}
+	if tailBytes > f.Length {
+		tailBytes = f.Length
+	}
+	tailFirst := clamp(int((f.Offset + f.Length - tailBytes) / plen))
+	tailLast := clamp(int((f.Offset + f.Length - 1) / plen))
+
+	// Reserve + protect the head now (tail added once moov detection resolves it).
 	// On SUCCESS we deliberately do NOT clear the reservation here. The buffer
 	// (head+tail) can be larger than the configured CacheSize — e.g. PreloadCache
 	// 100% makes the head alone equal CacheSize, leaving no room for the tail.
@@ -155,6 +147,7 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 	// (NewReader -> ClearPreloadReserve) once that window covers the head. Clear
 	// here only when the preload did NOT complete, so an abandoned/timed-out
 	// preload never leaks its reservation.
+	cache.SetPreloadReserve([][2]int{{headFirst, headLast}, {tailFirst, tailLast}})
 	preloadOK := false
 	defer func() {
 		if !preloadOK {
@@ -162,32 +155,13 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 		}
 	}()
 
-	// Priority 7 on every buffer piece, with a single ascending deadline gradient
-	// over the whole order: head pieces in playback order (10 ms apart), then the
-	// tail pieces STRICTLY AFTER the head (continuing the same n*10 ramp). The
-	// tail used to get deadline 0 — as urgent as the playhead's very first piece.
-	// But libtorrent's time-critical picker always prioritises the more-recent
-	// deadline and assigns the *fastest* peers to the most urgent piece, and
-	// bandwidth is zero-sum (see libtorrent's streaming.html), so a deadline-0
-	// tail competed head-on with piece 0 for the best peers and slowed the start
-	// — worse on a multi-file torrent, where the tail's last piece is the boundary
-	// piece shared with the next file and can't complete quickly anyway. Ordering
-	// the tail after the head keeps every head piece strictly more urgent (the
-	// fast peers fill the head first; the tail uses the leftover queue slots),
-	// while the tail stays time-critical enough to still make progress for an
-	// on-demand seek. A piece libtorrent believes it HAS but the cache evicted (a
-	// second viewer joins after the first played past the head) must be un-haved
-	// first or the picker never re-downloads it and the wait below sits out its
-	// full 2 minutes — the second device hangs in "buffering" forever while the
-	// first keeps playing. Same reconciliation the Reader does on seek-back.
-	for n, p := range order {
-		if !cache.Have(p) && t.lh.HasPiece(p) {
-			_ = t.lh.WeDontHave(p, 7) // un-have + top priority, atomically
-		} else {
-			_ = t.lh.SetPiecePriority(p, 7)
-		}
-		_ = t.lh.SetPieceDeadline(p, n*10, false)
-	}
+	// Prioritise + start downloading the HEAD FIRST, before moov detection. moov
+	// detection (below) reads container header pieces and can block up to 30s
+	// fetching them — running it ahead of the head serialised that fetch in front
+	// of the playback buffer, so on a cold torrent the head didn't even start
+	// downloading for ~30s (verified: head sat at piece 0 only). With the head
+	// prioritised and the swarm kicked first, detection overlaps the head fill.
+	prioritise(headPieces, 0)
 
 	// libtorrent hack (cf. elementum): pause+resume kicks the piece picker so it
 	// re-evaluates and starts requesting the freshly-prioritised buffer pieces
@@ -225,6 +199,39 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 		defer func() { _ = t.lh.SetMaxConnections(configuredConns) }()
 	}
 
+	// Tail buffer: the player must read the container index (MP4 moov atom, MKV
+	// cues) — usually at the END of the file — before it can start or seek.
+	// Prefer auto-detecting the exact moov range from the MP4 box structure and
+	// buffering it whole (its size depends on the video, not the torrent's piece
+	// size, so a fixed byte window either under- or over-buffers). Fall back to
+	// the PreloadBufferEnd byte window when the file isn't a parseable MP4 (MKV
+	// cues, etc.) or detection times out. This overlaps the head download above.
+	detCtx, detCancel := context.WithTimeout(ctx, 30*time.Second)
+	if ms, me, ok := cache.LocateMoov(detCtx, t.lh, f.Offset, f.Length); ok {
+		tailFirst = clamp(int(ms / plen))
+		tailLast = clamp(int((me - 1) / plen))
+		log.TLogln("torr.Preload: moov auto-detected,", (me-ms)/1024, "KB at offset", ms-f.Offset)
+	}
+	detCancel()
+
+	// Tail pieces not already covered by the head, ordered STRICTLY AFTER it: the
+	// deadline ramp continues from headCount, so every head piece stays more
+	// urgent and the fast peers fill the head first; the tail takes the leftover
+	// queue slots (a deadline-0 tail used to compete head-on with piece 0 — worse
+	// on multi-file, where the tail's last piece is the boundary piece shared with
+	// the next file and can't complete quickly anyway). The tail still stays
+	// time-critical enough to make progress for an on-demand seek.
+	var tailPieces []int
+	for p := tailFirst; p <= tailLast; p++ {
+		if p < headFirst || p > headLast {
+			tailPieces = append(tailPieces, p)
+		}
+	}
+	if len(tailPieces) > 0 {
+		cache.SetPreloadReserve([][2]int{{headFirst, headLast}, {tailFirst, tailLast}})
+		prioritise(tailPieces, headCount)
+	}
+
 	// Cancel the wait if the torrent is closed or the requesting client goes
 	// away (ctx is the HTTP request's context); cap the total at 2 minutes.
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
@@ -253,7 +260,6 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 	// though the reader only needs the head to begin. The tail stays prioritised
 	// (set above) and downloads alongside; the player fetches it on demand if it
 	// seeks. headCount is guaranteed >= 1 (size > 0).
-	head := order[:headCount]
 	total := int64(headCount) * plen
 	tick := time.NewTicker(200 * time.Millisecond)
 	defer tick.Stop()
@@ -261,7 +267,7 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 		snap := cache.PiecesSnapshot()
 		var got int64
 		done := 0
-		for _, p := range head {
+		for _, p := range headPieces {
 			st, ok := snap[p]
 			if !ok {
 				continue
@@ -298,7 +304,7 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 		t.Stat = state.TorrentWorking
 	}
 	t.mu.Unlock()
-	log.TLogln("torr.Preload:", t.Name(), "buffered", len(order), "pieces (head",
+	log.TLogln("torr.Preload:", t.Name(), "buffered", headCount+len(tailPieces), "pieces (head",
 		headFirst, "..", headLast, "+ tail", tailFirst, "..", tailLast, ")")
 }
 
