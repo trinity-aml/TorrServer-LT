@@ -125,8 +125,12 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 		return
 	}
 
+	// PreloadSize/PreloadedBytes report the HEAD buffer only — that's the
+	// playback buffer the user sized with PreloadCache%, and what gates the start
+	// (below). The tail is downloaded best-effort alongside, not counted in the
+	// progress bar, so the bar reaches a true 100% when playback can begin.
 	t.mu.Lock()
-	t.PreloadSize = int64(len(order)) * plen
+	t.PreloadSize = int64(headCount) * plen
 	t.PreloadedBytes = 0
 	t.Stat = state.TorrentPreload
 	t.mu.Unlock()
@@ -139,7 +143,24 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 	// backwards and never completes (a second device stuck buffering). The
 	// joining client's own reader takes over protection once it streams.
 	cache.SetPreloadReserve([][2]int{{headFirst, headLast}, {tailFirst, tailLast}})
-	defer cache.ClearPreloadReserve()
+	// On SUCCESS we deliberately do NOT clear the reservation here. The buffer
+	// (head+tail) can be larger than the configured CacheSize — e.g. PreloadCache
+	// 100% makes the head alone equal CacheSize, leaving no room for the tail.
+	// Clearing the reserve on return drops capacity back to CacheSize while the
+	// stream's reader has not registered yet (it's created right after, in
+	// tor.Stream): eviction then kicks out the just-downloaded head (LRU = the
+	// pieces fetched first) that the reader is about to read, so playback stalls
+	// re-downloading piece 0 — a ~45s "stuck buffering" on PreloadCache 100%.
+	// Instead the joining reader hands the protection over to its own window
+	// (NewReader -> ClearPreloadReserve) once that window covers the head. Clear
+	// here only when the preload did NOT complete, so an abandoned/timed-out
+	// preload never leaks its reservation.
+	preloadOK := false
+	defer func() {
+		if !preloadOK {
+			cache.ClearPreloadReserve()
+		}
+	}()
 
 	// Priority 7 on every buffer piece; head gets playback-ordered deadlines,
 	// tail pieces are urgent (the player needs the index to begin). A piece
@@ -209,21 +230,31 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 		}
 	}()
 
-	// Wait until every buffer piece is resident, recomputing PreloadedBytes
-	// from the actual cache state (partial pieces included) on a short tick.
-	// Pieces complete out of playback order (rarest-first, different peers), so
-	// the old sequential wait-and-increment accounting froze the progress bar
-	// on the slowest leading piece and then burst-jumped at the very end — the
-	// UI showed ~50-70% at the moment the preload finished and the player
-	// launched, which read as "player starts on a half-filled buffer".
-	total := int64(len(order)) * plen
+	// Wait until every HEAD piece is resident, recomputing PreloadedBytes from
+	// the actual cache state (partial pieces included) on a short tick. Pieces
+	// complete out of playback order (rarest-first, different peers), so the old
+	// sequential wait-and-increment accounting froze the progress bar on the
+	// slowest leading piece and then burst-jumped at the very end — the UI showed
+	// ~50-70% at the moment the preload finished and the player launched, which
+	// read as "player starts on a half-filled buffer".
+	//
+	// Gate on the HEAD only, NOT the whole order: the tail's last piece is, for a
+	// multi-file torrent, the boundary piece that also holds the START of the next
+	// file. It only hash-completes once that next-file portion (a priority-0
+	// region) downloads, which can take much longer than the head — so waiting for
+	// it blocked playback start for ~30s+ on every series/multi-file torrent even
+	// though the reader only needs the head to begin. The tail stays prioritised
+	// (set above) and downloads alongside; the player fetches it on demand if it
+	// seeks. headCount is guaranteed >= 1 (size > 0).
+	head := order[:headCount]
+	total := int64(headCount) * plen
 	tick := time.NewTicker(200 * time.Millisecond)
 	defer tick.Stop()
 	for {
 		snap := cache.PiecesSnapshot()
 		var got int64
 		done := 0
-		for _, p := range order {
+		for _, p := range head {
 			st, ok := snap[p]
 			if !ok {
 				continue
@@ -243,7 +274,8 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 		t.mu.Lock()
 		t.PreloadedBytes = got
 		t.mu.Unlock()
-		if done == len(order) {
+		if done == headCount {
+			preloadOK = true
 			break
 		}
 		select {

@@ -152,6 +152,11 @@ func (c *Cache) ActiveReaders() int {
 // close drops the in-memory state for every piece but leaves on-disk
 // files in place — they're the source of truth for the next resume.
 func (c *Cache) close() {
+	// Drop any leftover preload reservation (e.g. a preview that never streamed)
+	// so a dropped torrent doesn't carry a stale reserve into its next resume.
+	c.preloadMu.Lock()
+	c.preloadProtect = nil
+	c.preloadMu.Unlock()
 	c.mu.Lock()
 	for _, p := range c.pieces {
 		p.release()

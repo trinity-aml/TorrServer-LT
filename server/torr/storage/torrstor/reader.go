@@ -155,6 +155,12 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo) *Reader {
 		}
 	}
 	r.scheduleWindow()
+	// Take over any play-gated preload's buffer reservation: it was left set so
+	// the head stayed resident through the gap between the preload completing and
+	// this reader registering (otherwise eviction drops the head when the buffer
+	// is >= CacheSize, e.g. PreloadCache 100%). Now this reader's window protects
+	// the head, so release the reserve and let the tail overage be trimmed.
+	cache.ClearPreloadReserve()
 	if handle != nil {
 		go r.reprioritizeLoop()
 	}
