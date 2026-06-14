@@ -162,12 +162,23 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 		}
 	}()
 
-	// Priority 7 on every buffer piece; head gets playback-ordered deadlines,
-	// tail pieces are urgent (the player needs the index to begin). A piece
-	// libtorrent believes it HAS but the cache evicted (a second viewer joins
-	// after the first played past the head) must be un-haved first or the
-	// picker never re-downloads it and the wait below sits out its full
-	// 2 minutes — the second device hangs in "buffering" forever while the
+	// Priority 7 on every buffer piece, with a single ascending deadline gradient
+	// over the whole order: head pieces in playback order (10 ms apart), then the
+	// tail pieces STRICTLY AFTER the head (continuing the same n*10 ramp). The
+	// tail used to get deadline 0 — as urgent as the playhead's very first piece.
+	// But libtorrent's time-critical picker always prioritises the more-recent
+	// deadline and assigns the *fastest* peers to the most urgent piece, and
+	// bandwidth is zero-sum (see libtorrent's streaming.html), so a deadline-0
+	// tail competed head-on with piece 0 for the best peers and slowed the start
+	// — worse on a multi-file torrent, where the tail's last piece is the boundary
+	// piece shared with the next file and can't complete quickly anyway. Ordering
+	// the tail after the head keeps every head piece strictly more urgent (the
+	// fast peers fill the head first; the tail uses the leftover queue slots),
+	// while the tail stays time-critical enough to still make progress for an
+	// on-demand seek. A piece libtorrent believes it HAS but the cache evicted (a
+	// second viewer joins after the first played past the head) must be un-haved
+	// first or the picker never re-downloads it and the wait below sits out its
+	// full 2 minutes — the second device hangs in "buffering" forever while the
 	// first keeps playing. Same reconciliation the Reader does on seek-back.
 	for n, p := range order {
 		if !cache.Have(p) && t.lh.HasPiece(p) {
@@ -175,11 +186,7 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 		} else {
 			_ = t.lh.SetPiecePriority(p, 7)
 		}
-		if n < headCount {
-			_ = t.lh.SetPieceDeadline(p, n*10, false)
-		} else {
-			_ = t.lh.SetPieceDeadline(p, 0, false)
-		}
+		_ = t.lh.SetPieceDeadline(p, n*10, false)
 	}
 
 	// libtorrent hack (cf. elementum): pause+resume kicks the piece picker so it
