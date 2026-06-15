@@ -344,6 +344,22 @@ func PreloadOnPlay(ctx context.Context, torr *Torrent, index int) {
 		return
 	}
 
+	// The play-gate is for the COLD START only — nothing is streaming yet, so
+	// buffer before the first byte. Once any reader is active on this torrent the
+	// swarm is already hot and the reader's window drives buffering. Re-running a
+	// full preload then (a player pre-buffering the next episode, opening a
+	// parallel/probe connection, or reconnecting mid-file with an open range) is
+	// actively harmful: it flips Stat back to "preload" and resets PreloadedBytes
+	// (looks like the cache "reset" and preload "started over"), re-prioritises the
+	// file HEAD — pieces long since played — at deadline 0, and steals the live
+	// playhead's fastest peers, so playback stalls even though total download speed
+	// is high. The cold-start play itself is safe: its reader is created later (in
+	// tor.Stream), so ActiveReaders is still 0 here. Mirrors the same guard the
+	// preload's own pause/resume + connection burst already use.
+	if cache := torrstor.Global().CacheByHash([20]byte(torr.Hash())); cache != nil && cache.ActiveReaders() > 0 {
+		return
+	}
+
 	torr.preloadGateMu.Lock()
 	if torr.preloadGateBusy || time.Since(torr.preloadGateLast) < playGateDebounce {
 		torr.preloadGateMu.Unlock()
