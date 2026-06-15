@@ -323,3 +323,41 @@ func Preload(ctx context.Context, torr *Torrent, index int) {
 	}
 	torr.Preload(ctx, index, size)
 }
+
+// playGateDebounce is how long, after a play-gated preload, further play
+// requests on the SAME torrent skip the gate and stream straight away.
+const playGateDebounce = 30 * time.Second
+
+// PreloadOnPlay runs the playback-start preload (PreloadCache buffer) for an
+// initial &play request, but de-bounces it per torrent so a playlist client
+// that opens every episode's &play link in turn doesn't trigger a full buffer
+// fill for each file ("constant preload" on multi-file/series torrents).
+//
+// The first play on a cold torrent buffers as before. While that preload is in
+// flight — or within playGateDebounce after it — any other play request on the
+// same torrent (a prefetch/scan of another episode, or a duplicate concurrent
+// connection) skips the gate and streams directly; by then the swarm is hot and
+// the reader's own window buffers the start. A genuine "next episode" the user
+// switches to later (past the debounce) gates normally again.
+func PreloadOnPlay(ctx context.Context, torr *Torrent, index int) {
+	if torr == nil || settings.BTsets() == nil {
+		return
+	}
+
+	torr.preloadGateMu.Lock()
+	if torr.preloadGateBusy || time.Since(torr.preloadGateLast) < playGateDebounce {
+		torr.preloadGateMu.Unlock()
+		return
+	}
+	torr.preloadGateBusy = true
+	torr.preloadGateMu.Unlock()
+
+	defer func() {
+		torr.preloadGateMu.Lock()
+		torr.preloadGateBusy = false
+		torr.preloadGateLast = time.Now()
+		torr.preloadGateMu.Unlock()
+	}()
+
+	Preload(ctx, torr, index)
+}

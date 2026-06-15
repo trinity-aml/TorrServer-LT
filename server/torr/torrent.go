@@ -51,6 +51,12 @@ type Torrent struct {
 	PreloadSize    int64
 	PreloadedBytes int64
 
+	// play-gate debounce: suppresses the per-file preload that a playlist
+	// client triggers when it walks every &play entry of a multi-file torrent.
+	preloadGateMu   sync.Mutex
+	preloadGateBusy bool
+	preloadGateLast time.Time
+
 	DurationSeconds float64
 	BitRate         string
 
