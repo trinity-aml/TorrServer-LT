@@ -13,7 +13,9 @@ set -euo pipefail
 # --- pinned versions -------------------------------------------------
 BOOST_VERSION=${BOOST_VERSION:-1.85.0}
 LIBTORRENT_TAG=${LIBTORRENT_TAG:-v2.0.13}
-TS_VERSION=${TS_VERSION:-MatriX.LT-001}
+# First number must stay >= 132: the Android client gates its settings UI on the
+# leading digit run (>131 shows PreloadCache, hides the legacy PreloadBuffer).
+TS_VERSION=${TS_VERSION:-MatriX.134.LT-001}
 
 # --- paths -----------------------------------------------------------
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
