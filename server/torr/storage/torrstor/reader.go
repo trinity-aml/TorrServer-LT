@@ -399,6 +399,19 @@ func (r *Reader) scheduleWindow() {
 	base := r.file.Offset + r.offset.Load()
 	first := int(base / plen)
 	last := int((base + rad) / plen)
+	// Never prioritise past THIS file's last piece. A reader streams a single
+	// file, so its forward window must not spill into the next file's pieces.
+	// Without this clamp a reader sitting near a file's end — e.g. the SECOND
+	// connection VLC/libavformat opens to read an AVI's idx1 index at EOF —
+	// schedules a full readahead window of the *next* file at deadline 0 and
+	// steals the swarm from the actually-playing head. Verified live: a few-KB
+	// index read pulled ~64 MB of the next episode (pieces past E01's end) with
+	// deadline 0 while the real playhead's pieces 3-5 starved → stall at high
+	// download speed. The boundary piece that straddles two files stays included
+	// (it holds this file's last bytes), so seeking to EOF still works.
+	if fl := r.fileLastPiece(); last > fl {
+		last = fl
+	}
 	if last >= r.cache.NumPieces {
 		last = r.cache.NumPieces - 1
 	}
@@ -456,6 +469,17 @@ func (r *Reader) currentPiece() int {
 		return 0
 	}
 	return int((r.file.Offset + r.offset.Load()) / r.cache.PieceLength)
+}
+
+// fileLastPiece is the last torrent piece that belongs to this reader's file
+// (inclusive). The forward window and the capacity reserve must never extend
+// past it into the next file's pieces (see scheduleWindow / streamingReserve).
+func (r *Reader) fileLastPiece() int {
+	plen := r.cache.PieceLength
+	if plen <= 0 {
+		return 0
+	}
+	return int((r.file.Offset + r.file.Length - 1) / plen)
 }
 
 // behindBytes is how much of the just-played stream to keep resident behind the
