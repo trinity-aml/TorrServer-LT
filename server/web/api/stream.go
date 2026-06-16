@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"server/log"
@@ -194,7 +195,15 @@ func stream(c *gin.Context) {
 	}
 	// preload torrent
 	if preload {
-		torr.Preload(c.Request.Context(), tor, index)
+		// Detached from the request context on purpose: the explicit &preload
+		// endpoint sends no body until the buffer is full, so clients (TorrServe,
+		// Lampa) hit their short HTTP read-timeout (~5s) and disconnect, then poll
+		// the torrent Stat for PRELOAD->WORKING. If the preload were bound to the
+		// request, that disconnect would cancel it mid-fill and flip Stat to
+		// WORKING early — the polling client then launches the player on a
+		// half-filled buffer ("playback starts before preload"). Run it to
+		// completion (it still ends on torrent close / a 2-min cap inside Preload).
+		torr.Preload(context.Background(), tor, index)
 	}
 	// return stat if query
 	if stat {
@@ -362,7 +371,9 @@ func streamNoAuth(c *gin.Context) {
 	}
 	// preload torrent
 	if preload {
-		torr.Preload(c.Request.Context(), tor, index)
+		// Detached from the request context — see the note in stream(): a client's
+		// short preload-request timeout must not cancel the buffer fill.
+		torr.Preload(context.Background(), tor, index)
 	}
 	// return m3u if query
 	if m3u {

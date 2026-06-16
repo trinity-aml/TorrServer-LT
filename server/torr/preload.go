@@ -344,20 +344,27 @@ func PreloadOnPlay(ctx context.Context, torr *Torrent, index int) {
 		return
 	}
 
-	// The play-gate is for the COLD START only — nothing is streaming yet, so
-	// buffer before the first byte. Once any reader is active on this torrent the
-	// swarm is already hot and the reader's window drives buffering. Re-running a
-	// full preload then (a player pre-buffering the next episode, opening a
-	// parallel/probe connection, or reconnecting mid-file with an open range) is
-	// actively harmful: it flips Stat back to "preload" and resets PreloadedBytes
-	// (looks like the cache "reset" and preload "started over"), re-prioritises the
-	// file HEAD — pieces long since played — at deadline 0, and steals the live
-	// playhead's fastest peers, so playback stalls even though total download speed
-	// is high. The cold-start play itself is safe: its reader is created later (in
-	// tor.Stream), so ActiveReaders is still 0 here. Mirrors the same guard the
-	// preload's own pause/resume + connection burst already use.
-	if cache := torrstor.Global().CacheByHash([20]byte(torr.Hash())); cache != nil && cache.ActiveReaders() > 0 {
-		return
+	// Skip the gate only when the playback buffer is ALREADY resident — a prior
+	// preload filled it, or it is being played. DON'T skip merely because *a
+	// reader exists* (the old `ActiveReaders() > 0` guard): players open a SECOND
+	// connection to read the container index at the file's END (MKV cues / AVI
+	// idx1) with a `Range: bytes=<near-EOF>-`. That request isn't play-gated
+	// (shouldPreloadOnPlay is false for it) but tor.Stream still registers a
+	// reader near EOF — so by the time the real `bytes=0-` playback connection
+	// calls this, ActiveReaders is already > 0 and the whole preload was skipped.
+	// Playback then began on a single piece with no buffer (reproduced live: an
+	// EOF-range reader opened ~1s before bytes=0- → preload never ran, Stat never
+	// entered "preload"). Gating on HEAD RESIDENCY instead fixes that regardless
+	// of which connection registers first, and still doesn't re-fire a full
+	// preload mid-playback: once the head was buffered it stays resident (the
+	// reader's window/behind-margin protect it), so an in-progress or finished
+	// playback short-circuits here without re-prioritising already-played pieces.
+	if cache := torrstor.Global().CacheByHash([20]byte(torr.Hash())); cache != nil && cache.PieceLength > 0 {
+		if f := torr.fileByID(index); f != nil {
+			if cache.Have(preloadHeadLastPiece(f, cache.PieceLength, cache.NumPieces)) {
+				return
+			}
+		}
 	}
 
 	torr.preloadGateMu.Lock()
@@ -376,4 +383,52 @@ func PreloadOnPlay(ctx context.Context, torr *Torrent, index int) {
 	}()
 
 	Preload(ctx, torr, index)
+}
+
+// fileByID resolves the 1-based API file id (FileStats.Id) to its *File, the
+// same two-step mapping Stream and Preload use (id -> path -> file).
+func (t *Torrent) fileByID(index int) *File {
+	if t == nil {
+		return nil
+	}
+	var path string
+	for _, fs := range t.Status().FileStats {
+		if fs.Id == index {
+			path = fs.Path
+			break
+		}
+	}
+	if path == "" {
+		return nil
+	}
+	for _, ff := range t.Files() {
+		if ff.Path == path {
+			return ff
+		}
+	}
+	return nil
+}
+
+// preloadHeadLastPiece is the last torrent piece of file f's playback head
+// buffer (PreloadCache % of CacheSize from the file start) — the piece the
+// preload finishes last. If it's resident the buffer is satisfied. Caller
+// guarantees settings.BTsets() != nil and plen > 0.
+func preloadHeadLastPiece(f *File, plen int64, numPieces int) int {
+	cacheB := float32(settings.BTsets().CacheSize)
+	prc := float32(settings.BTsets().PreloadCache)
+	size := int64((cacheB / 100.0) * prc)
+	if size > f.Length {
+		size = f.Length
+	}
+	p := int(f.Offset / plen)
+	if size > 0 {
+		p = int((f.Offset + size - 1) / plen)
+	}
+	if p < 0 {
+		p = 0
+	}
+	if numPieces > 0 && p >= numPieces {
+		p = numPieces - 1
+	}
+	return p
 }
