@@ -168,7 +168,7 @@ export default function DialogTorrentDetailsContent({ closeDialog, torrent }) {
               <Poster poster={poster}>{poster ? <img alt='poster' src={poster} /> : <NoImageIcon />}</Poster>
 
               <div>
-                {title && name !== title ? (
+                {title && name && name !== title ? (
                   getParsedTitle().length > 90 ? (
                     <>
                       <SectionTitle>{ptt.parse(name).title}</SectionTitle>
