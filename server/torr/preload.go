@@ -2,6 +2,8 @@ package torr
 
 import (
 	"context"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"server/log"
@@ -9,6 +11,18 @@ import (
 	"server/torr/state"
 	"server/torr/storage/torrstor"
 )
+
+// isMP4Container reports whether the file is an MP4-family container, the only
+// one whose index (moov atom) the preload tries to locate precisely. Everything
+// else (MKV, AVI, TS, …) uses the fixed PreloadBufferEnd tail window, so moov
+// detection — which reads pieces and can stall ~30s — must be skipped for them.
+func isMP4Container(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".mp4", ".m4v", ".mov", ".m4a", ".m4b", ".m4p":
+		return true
+	}
+	return false
+}
 
 // tailPreloadBytes is how much of the file's END to buffer alongside the head,
 // so containers whose index lives at the tail (MP4 moov, MKV cues) can start
@@ -201,35 +215,49 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 
 	// Tail buffer: the player must read the container index (MP4 moov atom, MKV
 	// cues) — usually at the END of the file — before it can start or seek.
-	// Prefer auto-detecting the exact moov range from the MP4 box structure and
-	// buffering it whole (its size depends on the video, not the torrent's piece
-	// size, so a fixed byte window either under- or over-buffers). Fall back to
-	// the PreloadBufferEnd byte window when the file isn't a parseable MP4 (MKV
-	// cues, etc.) or detection times out. This overlaps the head download above.
-	detCtx, detCancel := context.WithTimeout(ctx, 30*time.Second)
-	if ms, me, ok := cache.LocateMoov(detCtx, t.lh, f.Offset, f.Length); ok {
-		tailFirst = clamp(int(ms / plen))
-		tailLast = clamp(int((me - 1) / plen))
-		log.TLogln("torr.Preload: moov auto-detected,", (me-ms)/1024, "KB at offset", ms-f.Offset)
-	}
-	detCancel()
-
-	// Tail pieces not already covered by the head, ordered STRICTLY AFTER it: the
+	// prioritiseTail reserves + raises priority on the tail window [tf,tl] (the
+	// pieces not already in the head), ordered STRICTLY AFTER the head: the
 	// deadline ramp continues from headCount, so every head piece stays more
 	// urgent and the fast peers fill the head first; the tail takes the leftover
 	// queue slots (a deadline-0 tail used to compete head-on with piece 0 — worse
 	// on multi-file, where the tail's last piece is the boundary piece shared with
-	// the next file and can't complete quickly anyway). The tail still stays
-	// time-critical enough to make progress for an on-demand seek.
-	var tailPieces []int
-	for p := tailFirst; p <= tailLast; p++ {
-		if p < headFirst || p > headLast {
-			tailPieces = append(tailPieces, p)
+	// the next file and can't complete quickly anyway).
+	prioritiseTail := func(tf, tl int) {
+		var tailPieces []int
+		for p := tf; p <= tl; p++ {
+			if p < headFirst || p > headLast {
+				tailPieces = append(tailPieces, p)
+			}
+		}
+		if len(tailPieces) > 0 {
+			cache.SetPreloadReserve([][2]int{{headFirst, headLast}, {tf, tl}})
+			prioritise(tailPieces, headCount)
 		}
 	}
-	if len(tailPieces) > 0 {
-		cache.SetPreloadReserve([][2]int{{headFirst, headLast}, {tailFirst, tailLast}})
-		prioritise(tailPieces, headCount)
+
+	// Prioritise the PreloadBufferEnd byte window NOW so it downloads alongside the
+	// head and the progress/gate loop below can start immediately.
+	prioritiseTail(tailFirst, tailLast)
+
+	// For MP4 the exact moov range can be auto-detected and buffered precisely (its
+	// size depends on the video, not the piece size). Run it CONCURRENTLY: LocateMoov
+	// reads container pieces and can block up to 30s, and serialising it in FRONT of
+	// the wait loop froze PreloadedBytes at 0 for that whole time — the UI showed no
+	// preload percent and then it jumped to 100%, and playback start was delayed —
+	// worst on MKV/AVI where detection never succeeds anyway (a whole series is MKV).
+	// The head is already prioritised, so detection overlaps the fill; when it
+	// resolves it just refines the tail priorities. detParent is captured before ctx
+	// is reassigned to the 2-min wait context below.
+	if isMP4Container(f.Path) {
+		detParent := ctx
+		go func() {
+			detCtx, detCancel := context.WithTimeout(detParent, 30*time.Second)
+			defer detCancel()
+			if ms, me, ok := cache.LocateMoov(detCtx, t.lh, f.Offset, f.Length); ok {
+				log.TLogln("torr.Preload: moov auto-detected,", (me-ms)/1024, "KB at offset", ms-f.Offset)
+				prioritiseTail(clamp(int(ms/plen)), clamp(int((me-1)/plen)))
+			}
+		}()
 	}
 
 	// Cancel the wait if the torrent is closed or the requesting client goes
@@ -304,8 +332,8 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 		t.Stat = state.TorrentWorking
 	}
 	t.mu.Unlock()
-	log.TLogln("torr.Preload:", t.Name(), "buffered", headCount+len(tailPieces), "pieces (head",
-		headFirst, "..", headLast, "+ tail", tailFirst, "..", tailLast, ")")
+	log.TLogln("torr.Preload:", t.Name(), "buffered head", headFirst, "..", headLast,
+		"+ tail", tailFirst, "..", tailLast)
 }
 
 // Preload (free function) keeps API parity with the legacy call sites
