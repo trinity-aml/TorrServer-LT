@@ -103,12 +103,40 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 		headPieces = append(headPieces, p)
 	}
 
-	// PreloadSize/PreloadedBytes report the HEAD buffer only — that's the
-	// playback buffer the user sized with PreloadCache%, and what gates the start
-	// (below). The tail is downloaded best-effort alongside, not counted in the
-	// progress bar, so the bar reaches a true 100% when playback can begin.
+	// Tail window = last PreloadBufferEnd bytes of the file, where the container
+	// index lives (MP4 moov, MKV cues). Computed here — not only where it's
+	// prioritised below — because the START GATE now WAITS for it too (see the
+	// wait loop). Mirrors the original TorrServer (reads head AND the last
+	// startend bytes, then wg.Wait()s both) and Elementum (pre- AND post-buffer
+	// pieces both counted in BufferProgress; player released only at 100%).
+	tailBytes := int64(tailPreloadBytes)
+	if settings.BTsets() != nil && settings.BTsets().PreloadBufferEnd > 0 {
+		tailBytes = settings.BTsets().PreloadBufferEnd
+	}
+	if tailBytes > f.Length {
+		tailBytes = f.Length
+	}
+	tailFirst := clamp(int((f.Offset + f.Length - tailBytes) / plen))
+	tailLast := clamp(int((f.Offset + f.Length - 1) / plen))
+
+	// gatePieces = head + the tail pieces not already in the head. The start gate
+	// waits for ALL of them resident. Without the tail in the gate the bar hit
+	// "100%" on the head while the player then blocked fetching the end-of-file
+	// index — the "100% but still loading" stall on series/multi-file.
+	gatePieces := make([]int, len(headPieces), headCount+(tailLast-tailFirst+1))
+	copy(gatePieces, headPieces)
+	for p := tailFirst; p <= tailLast; p++ {
+		if p < headFirst || p > headLast {
+			gatePieces = append(gatePieces, p)
+		}
+	}
+
+	// PreloadSize/PreloadedBytes report head + tail — both are required before
+	// playback starts (head = playback buffer, tail = the index the player reads
+	// to open/seek), so the bar reaches a true 100% only when the stream can
+	// actually begin without a post-100% stall.
 	t.mu.Lock()
-	t.PreloadSize = int64(headCount) * plen
+	t.PreloadSize = int64(len(gatePieces)) * plen
 	t.PreloadedBytes = 0
 	t.Stat = state.TorrentPreload
 	t.mu.Unlock()
@@ -134,21 +162,7 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 		}
 	}
 
-	// The fallback tail window (last PreloadBufferEnd bytes) is where the
-	// container index usually lives; reserve head+that window up front so moov
-	// detection's header reads near the file end aren't evicted while the head
-	// fills, then refine to the exact moov range once detected.
-	tailBytes := int64(tailPreloadBytes)
-	if settings.BTsets() != nil && settings.BTsets().PreloadBufferEnd > 0 {
-		tailBytes = settings.BTsets().PreloadBufferEnd
-	}
-	if tailBytes > f.Length {
-		tailBytes = f.Length
-	}
-	tailFirst := clamp(int((f.Offset + f.Length - tailBytes) / plen))
-	tailLast := clamp(int((f.Offset + f.Length - 1) / plen))
-
-	// Reserve + protect the head now (tail added once moov detection resolves it).
+	// Reserve + protect head + tail window (both computed above) now.
 	// On SUCCESS we deliberately do NOT clear the reservation here. The buffer
 	// (head+tail) can be larger than the configured CacheSize — e.g. PreloadCache
 	// 100% makes the head alone equal CacheSize, leaving no room for the tail.
@@ -230,7 +244,10 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 			}
 		}
 		if len(tailPieces) > 0 {
-			cache.SetPreloadReserve([][2]int{{headFirst, headLast}, {tf, tl}})
+			// Always keep the end-of-file tail (what the start gate waits for)
+			// reserved alongside head and the passed range, so a moov refinement
+			// to a different region never un-protects the gated index piece.
+			cache.SetPreloadReserve([][2]int{{headFirst, headLast}, {tailFirst, tailLast}, {tf, tl}})
 			prioritise(tailPieces, headCount)
 		}
 	}
@@ -272,30 +289,32 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 		}
 	}()
 
-	// Wait until every HEAD piece is resident, recomputing PreloadedBytes from
-	// the actual cache state (partial pieces included) on a short tick. Pieces
-	// complete out of playback order (rarest-first, different peers), so the old
-	// sequential wait-and-increment accounting froze the progress bar on the
-	// slowest leading piece and then burst-jumped at the very end — the UI showed
-	// ~50-70% at the moment the preload finished and the player launched, which
-	// read as "player starts on a half-filled buffer".
+	// Wait until every GATE piece (head + tail) is resident, recomputing
+	// PreloadedBytes from the actual cache state (partial pieces included) on a
+	// short tick. Pieces complete out of playback order (rarest-first, different
+	// peers), so the old sequential wait-and-increment accounting froze the
+	// progress bar on the slowest leading piece and then burst-jumped at the very
+	// end — the UI showed ~50-70% at the moment the preload finished.
 	//
-	// Gate on the HEAD only, NOT the whole order: the tail's last piece is, for a
-	// multi-file torrent, the boundary piece that also holds the START of the next
-	// file. It only hash-completes once that next-file portion (a priority-0
-	// region) downloads, which can take much longer than the head — so waiting for
-	// it blocked playback start for ~30s+ on every series/multi-file torrent even
-	// though the reader only needs the head to begin. The tail stays prioritised
-	// (set above) and downloads alongside; the player fetches it on demand if it
-	// seeks. headCount is guaranteed >= 1 (size > 0).
-	total := int64(headCount) * plen
+	// Gate on head + tail, mirroring the original TorrServer (wg.Wait()s both the
+	// head reader and the last-startend-bytes reader) and Elementum (player
+	// released only once pre- AND post-buffer pieces hit 100%). The tail holds the
+	// container index the player reads to open/seek; if it isn't resident at gate
+	// release the stream "reaches 100%" then stalls fetching it — the series /
+	// multi-file bug. On a multi-file torrent the tail's last piece is the boundary
+	// piece shared with the next file, so it also costs that file's leading bytes;
+	// that cost now shows as honest buffering progress instead of a post-100% hang.
+	// The 2-min ctx cap (above) bounds the pathological case (boundary piece with
+	// no seeders) so the stream still starts. gateCount >= headCount >= 1.
+	gateCount := len(gatePieces)
+	total := int64(gateCount) * plen
 	tick := time.NewTicker(200 * time.Millisecond)
 	defer tick.Stop()
 	for {
 		snap := cache.PiecesSnapshot()
 		var got int64
 		done := 0
-		for _, p := range headPieces {
+		for _, p := range gatePieces {
 			st, ok := snap[p]
 			if !ok {
 				continue
@@ -315,7 +334,7 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 		t.mu.Lock()
 		t.PreloadedBytes = got
 		t.mu.Unlock()
-		if done == headCount {
+		if done == gateCount {
 			preloadOK = true
 			break
 		}
