@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: write
+  packages: write   # the reused build.yml docker job pushes the GHCR image on tags
 
 jobs:
   # linux amd64/arm64/armv7, windows-amd64, android arm64/armv7

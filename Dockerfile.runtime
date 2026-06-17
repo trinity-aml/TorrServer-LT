@@ -1,0 +1,45 @@
+# syntax=docker/dockerfile:1
+#
+# TorrServer-LT runtime image (multi-arch) — assembled WITHOUT compiling.
+#
+# It packages the linux binary that .github/workflows/build.yml already
+# cross-built (glibc-dynamic, libtorrent linked in via cgo), so the multi-arch
+# image builds with plain buildx and NO QEMU libtorrent rebuild — matching the
+# project's "no Docker, no QEMU" cross-compile path. The workflow's docker job
+# lays the per-arch binaries out under dist/<arch>, and the COPY below selects
+# the right one through buildx's predefined $TARGETARCH$TARGETVARIANT:
+#   linux/amd64   -> dist/amd64
+#   linux/arm64   -> dist/arm64
+#   linux/arm/v7  -> dist/armv7
+#
+# Base: debian:trixie-slim (glibc 2.41). The cross-built binaries need glibc
+# >= 2.38 plus libstdc++/libgcc at runtime, so a 2.36 base (bookworm) would
+# fail to load them.
+
+FROM debian:trixie-slim
+
+ARG TARGETARCH
+ARG TARGETVARIANT
+
+ENV TS_CONF_PATH="/opt/ts/config" \
+    TS_LOG_PATH="/opt/ts/log" \
+    TS_TORR_DIR="/opt/ts/torrents" \
+    TS_PORT=8090 \
+    GODEBUG=madvdontneed=1
+
+# libstdc++6 + libgcc are libtorrent's C++ runtime (the binary links them
+# dynamically); ffmpeg provides the optional ffprobe (bitrate/duration probe);
+# ca-certificates for HTTPS trackers / TMDB.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        ca-certificates ffmpeg libstdc++6 \
+ && rm -rf /var/lib/apt/lists/*
+
+# Cross-built binary; docker-entrypoint.sh execs `torrserver` from PATH.
+COPY dist/${TARGETARCH}${TARGETVARIANT}/torrserver /usr/local/bin/torrserver
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/torrserver /docker-entrypoint.sh
+
+EXPOSE 8090
+VOLUME ["/opt/ts/config", "/opt/ts/torrents"]
+ENTRYPOINT ["/docker-entrypoint.sh"]

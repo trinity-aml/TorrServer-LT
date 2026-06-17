@@ -12,7 +12,7 @@
 # Stage 1 milestone: only proves the toolchain works end-to-end (lt.Version()).
 # Real wiring of session/torrent/storage lands in later milestones.
 
-ARG LT_TAG=v2.0.10
+ARG LT_TAG=v2.0.13
 ARG GO_VERSION=1.25
 ARG ALPINE_VERSION=3.20
 
@@ -65,7 +65,7 @@ COPY . .
 
 WORKDIR /src/server
 
-ARG TS_VERSION=MatriX.LT-001
+ARG TS_VERSION=MatriX.141.LT-001
 
 # CGO_ENABLED=1 + fully-static via -extldflags '-static'.
 # pkg-config in lt.go resolves CXXFLAGS/LDFLAGS for libtorrent-rasterbar.

@@ -110,3 +110,70 @@ jobs:
           name: TorrServer-LT-${{ matrix.target }}
           path: _out/TorrServer-LT-${{ matrix.target }}*
           if-no-files-found: error
+
+  # Assemble + push the multi-arch GHCR image straight from the linux binaries
+  # the matrix just cross-built — no recompile and no QEMU for the binary (only
+  # the base image's apt runs emulated, per arch). Publishes on master pushes and
+  # on release tags (when this workflow is reused by ts_release.yml); never on
+  # pull requests. See Dockerfile.runtime.
+  docker:
+    needs: cross
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download linux binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: TorrServer-LT-linux-*
+          path: _artifacts
+          merge-multiple: true
+
+      # Name each binary `torrserver` under dist/<arch>, where <arch> is exactly
+      # buildx's $TARGETARCH$TARGETVARIANT (amd64 / arm64 / armv7), and set +x
+      # (the artifact zip drops the executable bit).
+      - name: Lay binaries out per Docker arch
+        run: |
+          set -euo pipefail
+          install -D -m755 _artifacts/TorrServer-LT-linux-amd64 dist/amd64/torrserver
+          install -D -m755 _artifacts/TorrServer-LT-linux-arm64 dist/arm64/torrserver
+          install -D -m755 _artifacts/TorrServer-LT-linux-armv7 dist/armv7/torrserver
+
+      - name: Set up QEMU            # only to run the base image's apt per arch
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Lower-case image repo
+        run: echo "REG_REPO=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Docker metadata (tags + labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ env.REG_REPO }}
+          tags: |
+            type=raw,value=master,enable=${{ github.ref == 'refs/heads/master' }}
+            type=ref,event=tag
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.runtime
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
