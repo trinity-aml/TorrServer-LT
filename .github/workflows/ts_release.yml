@@ -30,9 +30,12 @@ jobs:
     needs: [cross, macos]
     runs-on: ubuntu-latest
     steps:
-      - name: Download all build artifacts
+      - name: Download the binary artifacts
         uses: actions/download-artifact@v4
         with:
+          # Binaries only — skip the docker job's `<repo>.dockerbuild` build-record
+          # artifact (it would pollute the release and its download is flaky).
+          pattern: TorrServer-LT-*
           path: ./dist
           merge-multiple: true
 

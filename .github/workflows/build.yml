@@ -170,6 +170,10 @@ jobs:
 
       - name: Build and push multi-arch image
         uses: docker/build-push-action@v6
+        env:
+          # Don't upload the `<repo>.dockerbuild` build-record artifact — it shows
+          # up in the release job's artifact set and breaks its download.
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
         with:
           context: .
           file: Dockerfile.runtime
