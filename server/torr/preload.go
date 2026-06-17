@@ -328,8 +328,16 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 			}
 			got += sz
 		}
-		if got > total {
+		// Display rule: report exactly 100% only when the gate actually releases.
+		// The boundary/index piece usually has all its bytes (Size ~= plen) several
+		// seconds before its hash completes — it pulls the next file's overlap — so
+		// without this the bar read 100% while stat was still PRELOAD: the very
+		// "100% but not playing" this gate fix removes. Hold at <=99% until every
+		// gate piece is verified; clients gate on stat, and the bar now matches.
+		if done == gateCount {
 			got = total
+		} else if capBytes := total - total/100; got > capBytes {
+			got = capBytes
 		}
 		t.mu.Lock()
 		t.PreloadedBytes = got
