@@ -394,22 +394,30 @@ func Preload(ctx context.Context, torr *Torrent, index int) {
 	torr.Preload(ctx, index, size)
 }
 
-// playGateDebounce is how long, after a play-gated preload, further play
-// requests on the SAME torrent skip the gate and stream straight away.
+// playGateDebounce is how long, after a play-gated preload of one file, a play
+// request for a DIFFERENT file skips the gate and streams straight away.
 const playGateDebounce = 30 * time.Second
 
-// PreloadOnPlay runs the playback-start preload (PreloadCache buffer) for an
-// initial &play request, but de-bounces it per torrent so a playlist client
-// that opens every episode's &play link in turn doesn't trigger a full buffer
-// fill for each file ("constant preload" on multi-file/series torrents).
+// PreloadOnPlay buffers the PreloadCache head before an initial &play request
+// starts streaming. It must survive an impatient external player: a raw player
+// opened straight from a web-interface playlist gets a plain &play URL (no
+// two-phase &preload+poll like TorrServe/Lampa), so the handler has to hold the
+// connection through the whole 20-30s fill. Many players give up waiting for the
+// first byte and disconnect or reconnect.
 //
-// The first play on a cold torrent buffers as before. While that preload is in
-// flight — or within playGateDebounce after it — any other play request on the
-// same torrent (a prefetch/scan of another episode, or a duplicate concurrent
-// connection) skips the gate and streams directly; by then the swarm is hot and
-// the reader's own window buffers the start. A genuine "next episode" the user
-// switches to later (past the debounce) gates normally again.
-func PreloadOnPlay(ctx context.Context, torr *Torrent, index int) {
+// So the fill runs DETACHED (context.Background) in a goroutine — a disconnect
+// can't abort it — while THIS handler only waits on it bounded by reqCtx: if the
+// player vanishes, the handler returns at once (its tor.Stream then writes to a
+// dead socket and fails fast) and the background fill keeps going. A reconnect
+// for the SAME file finds that in-flight fill and WAITS for it (it never skips
+// the gate onto a half-buffer — the old request-bound code aborted the fill on
+// disconnect and the debounce then made the retry stream partial).
+//
+// The per-file debounce that suppresses the preload storm of a playlist client
+// walking every episode's &play link is kept, but ONLY for OTHER files: while a
+// fill is in flight, or within playGateDebounce after one, a play for a
+// different file streams directly (swarm is hot, reader's window buffers it).
+func PreloadOnPlay(reqCtx context.Context, torr *Torrent, index int) {
 	if torr == nil || settings.BTsets() == nil {
 		return
 	}
@@ -438,21 +446,48 @@ func PreloadOnPlay(ctx context.Context, torr *Torrent, index int) {
 	}
 
 	torr.preloadGateMu.Lock()
-	if torr.preloadGateBusy || time.Since(torr.preloadGateLast) < playGateDebounce {
+	// A fill for THIS file is already in flight: wait on that same fill, never
+	// start a second one and never skip onto a half-buffer (this is the reconnect
+	// path after an impatient player dropped the first connection).
+	if torr.preloadGateDone != nil && torr.preloadGateIndex == index {
+		done := torr.preloadGateDone
+		torr.preloadGateMu.Unlock()
+		waitBounded(reqCtx, done)
+		return
+	}
+	// A fill for a DIFFERENT file is in flight, or one finished within the
+	// debounce: a playlist scan of other episodes — stream directly.
+	if torr.preloadGateDone != nil || time.Since(torr.preloadGateLast) < playGateDebounce {
 		torr.preloadGateMu.Unlock()
 		return
 	}
-	torr.preloadGateBusy = true
+	// Start a detached fill for this file and remember it so reconnects can wait.
+	done := make(chan struct{})
+	torr.preloadGateIndex = index
+	torr.preloadGateDone = done
 	torr.preloadGateMu.Unlock()
 
-	defer func() {
+	go func() {
+		Preload(context.Background(), torr, index)
 		torr.preloadGateMu.Lock()
-		torr.preloadGateBusy = false
+		torr.preloadGateIndex = 0
+		torr.preloadGateDone = nil
 		torr.preloadGateLast = time.Now()
 		torr.preloadGateMu.Unlock()
+		close(done)
 	}()
 
-	Preload(ctx, torr, index)
+	waitBounded(reqCtx, done)
+}
+
+// waitBounded blocks until the fill signalled by done completes, or reqCtx is
+// cancelled (the player disconnected) — whichever first. Returning early on
+// cancel only releases THIS handler; the detached fill behind done keeps running.
+func waitBounded(reqCtx context.Context, done <-chan struct{}) {
+	select {
+	case <-done:
+	case <-reqCtx.Done():
+	}
 }
 
 // fileByID resolves the 1-based API file id (FileStats.Id) to its *File, the

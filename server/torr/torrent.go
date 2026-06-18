@@ -51,11 +51,17 @@ type Torrent struct {
 	PreloadSize    int64
 	PreloadedBytes int64
 
-	// play-gate debounce: suppresses the per-file preload that a playlist
-	// client triggers when it walks every &play entry of a multi-file torrent.
-	preloadGateMu   sync.Mutex
-	preloadGateBusy bool
-	preloadGateLast time.Time
+	// play-gate state. The fill itself runs detached (context.Background) so an
+	// impatient external player disconnecting mid-buffer can't abort it; the gate
+	// tracks which file is filling and a channel that closes when it finishes, so
+	// a reconnect for the SAME file WAITS for that same fill instead of skipping
+	// the gate and streaming a half-buffer. preloadGateLast keeps the post-fill
+	// debounce that suppresses the per-file preload storm a playlist client
+	// triggers when it walks every &play entry of a multi-file torrent.
+	preloadGateMu    sync.Mutex
+	preloadGateIndex int
+	preloadGateDone  chan struct{}
+	preloadGateLast  time.Time
 
 	DurationSeconds float64
 	BitRate         string
