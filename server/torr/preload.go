@@ -346,6 +346,23 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 			preloadOK = true
 			break
 		}
+		// Hand off to the reader once playback has genuinely taken over. A
+		// reconnect (or a concurrent viewer) can short-circuit the head-residency
+		// gate and start streaming while this fill is still chasing the tail — the
+		// boundary/index piece, which on a multi-file torrent is shared with the
+		// next file and barely completes. Keeping the fill alive then just pins
+		// head+tail at priority 7 plus a cache reserve that inflates capacity and
+		// fights the live stream; on a small cache that showed up as two readers
+		// stuck near the file start endlessly re-downloading the head while
+		// playback never stabilised. Once the head buffer is resident AND a reader
+		// is on the file, its own window drives forward buffering and the player
+		// pulls the container index over its own connection, so this fill is now
+		// pure interference — stop it (priority release + reserve clear below).
+		// Guarded by head residency so the EOF-index-reader-first race still fills
+		// the head before yielding (never starts playback on an empty buffer).
+		if cache.ActiveReaders() > 0 && cache.Have(headLast) {
+			break
+		}
 		select {
 		case <-ctx.Done(): // timeout or torrent closed
 		case <-tick.C:
