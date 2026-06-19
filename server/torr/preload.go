@@ -459,6 +459,34 @@ func PreloadOnPlay(reqCtx context.Context, torr *Torrent, index int) {
 			if cache.Have(preloadHeadLastPiece(f, cache.PieceLength, cache.NumPieces)) {
 				return
 			}
+			// The file is ALREADY being played: a reader sits inside the file
+			// BODY (past the head buffer, before the tail index window). Do NOT
+			// re-fire the full preload from piece 0. This catches the player that
+			// periodically re-reads the container header mid-playback with a fresh
+			// `Range: bytes=0-` (VLC does this) — the head buffer it asks for has
+			// long since been evicted as playback moved forward on a small cache,
+			// so the head-residency check above no longer short-circuits, and
+			// without this guard every such re-read re-prioritised PreloadCache%%
+			// of the cache from the file start, evicting the playhead and looping
+			// (reproduced: 3× `bytes=0-` → 3× full head re-buffer). The tail
+			// window is excluded so the SECOND connection a player opens to read
+			// the container index at EOF (MKV cues / AVI idx1) doesn't count as
+			// "playing the body" and wrongly suppress the genuine first preload.
+			plen := cache.PieceLength
+			headFirst := int(f.Offset / plen)
+			tailBytes := int64(tailPreloadBytes)
+			if pe := settings.BTsets().PreloadBufferEnd; pe > 0 {
+				tailBytes = pe
+			}
+			if tailBytes > f.Length {
+				tailBytes = f.Length
+			}
+			tailFirst := int((f.Offset + f.Length - tailBytes) / plen)
+			for _, rs := range cache.ReadersSnapshot() {
+				if rs != nil && rs.Reader >= headFirst && rs.Reader < tailFirst {
+					return
+				}
+			}
 		}
 	}
 
