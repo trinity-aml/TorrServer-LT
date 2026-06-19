@@ -12,6 +12,27 @@ import (
 	"server/torr/storage/state"
 )
 
+// graceEvictSec is how long (seconds) a complete piece that fell out of the
+// streaming window stays resident before proactive eviction drops it — a grace
+// that bridges a player's read jitter / per-chunk reconnects so a brief
+// wobble back doesn't re-download a just-played piece.
+const graceEvictSec = 1
+
+// anchorHoldSec is how long (seconds) the playhead holds when the lowest live
+// reader jumps forward, so a player's brief gap in its trailing connection
+// doesn't shove the window ahead onto its leading read-ahead connection.
+const anchorHoldSec = 2
+
+// abandonEvictSec is how long (seconds) an INCOMPLETE piece outside the
+// streaming window may sit untouched before proactive eviction forgets it. A
+// seek leaves partially-downloaded pieces stranded in the old playback region;
+// they receive no further blocks (their Accessed stops advancing) and would
+// otherwise linger forever, since complete-only eviction can't touch them. We
+// give them a longer grace than complete pieces so a piece that is genuinely
+// still filling (end-game, a slow peer) isn't yanked mid-download — only the
+// stranded seek leftovers, untouched well past this window, are reaped.
+const abandonEvictSec = 4
+
 // Cache holds every Piece for a single torrent.
 type Cache struct {
 	storage *Storage
@@ -23,6 +44,15 @@ type Cache struct {
 
 	mu     sync.RWMutex
 	pieces map[int]*Piece
+
+	// abandoned records pieces proactively forgotten on a seek (un-had via
+	// WeDontHave, then wiped) and when, guarded by mu. A block that was already
+	// in flight when we abandoned the piece still lands afterwards and would
+	// re-create the incomplete piece, only for the next eviction pass to reap it
+	// again. writePiece drops such a straggler block instead of resurrecting the
+	// piece, so a seek's leftovers go away in one pass. A reader that genuinely
+	// needs the piece again (seek back) clears the mark via clearAbandoned.
+	abandoned map[int]int64
 
 	// per-piece wait channels, closed by SignalPieceComplete when
 	// libtorrent's piece_finished_alert arrives.
@@ -56,6 +86,13 @@ type Cache struct {
 	// evicted, it un-haves just that piece so it re-downloads. See
 	// evictIfOverCapacity for why this is no longer done per-eviction.
 	handle atomic.Pointer[lt.Torrent]
+
+	// playhead is the last known streaming position (streamAnchor) and when it was
+	// set. streamAnchor holds it through a brief gap where a player's only live
+	// connection is a header re-read, so the single window doesn't collapse onto
+	// the head and drop the forward buffer it just downloaded.
+	playhead     atomic.Int64
+	playheadTime atomic.Int64
 }
 
 func newCache(s *Storage, sid int64, hash [20]byte, numPieces int, pieceLength int64) *Cache {
@@ -66,6 +103,7 @@ func newCache(s *Storage, sid int64, hash [20]byte, numPieces int, pieceLength i
 		NumPieces:   numPieces,
 		PieceLength: pieceLength,
 		pieces:      map[int]*Piece{},
+		abandoned:   map[int]int64{},
 		waiters:     map[int]chan struct{}{},
 		readers:     map[*Reader]struct{}{},
 	}
@@ -147,6 +185,132 @@ func (c *Cache) ActiveReaders() int {
 	c.readersMu.Lock()
 	defer c.readersMu.Unlock()
 	return len(c.readers)
+}
+
+// streamAnchor is the single playback position the cache window is built around:
+// the LOWEST current piece among streaming readers (winFirst >= 0). A player
+// opens several connections at once and its demuxer reads out of order across a
+// span (audio/video at different offsets, short seeks); the lowest is the true
+// playhead (what it can't have played past yet) and the rest are read-ahead
+// within the span. Anchoring the one window here — [anchor-behind, anchor+ahead]
+// — covers the whole span, so those jumps don't drop and re-fetch each other's
+// pieces. Returns false when no reader is streaming yet. Never call while holding
+// readersMu (it locks it).
+func (c *Cache) streamAnchor() (int, bool) {
+	c.readersMu.Lock()
+	defer c.readersMu.Unlock()
+	plen := c.PieceLength
+	// playMin = lowest PLAYBACK position; anyMin = lowest of any qualifying reader.
+	// We anchor on playMin (so a header re-read can't drag the window back), and
+	// fall back to anyMin only when nothing but header/probe readers exist (the
+	// very start of playback, before the playhead leaves the head pin).
+	playMin, playOK := 0, false
+	anyMin, anyOK := 0, false
+	for r := range c.readers {
+		cur := r.currentPiece()
+		// Exclude an offset-0 probe (ServeContent's Seek(0,End)/Seek(0,Start) before
+		// the real seek): counting it would peg the anchor at the file head forever.
+		if r.winFirst.Load() < 0 && cur == 0 {
+			continue
+		}
+		// Exclude a reader sitting in its file's END-OF-FILE index (the tail pin):
+		// players open a SECOND connection to read the container index at EOF (AVI
+		// idx1 / MKV cues / MP4 moov). That's not the playhead — it's pinned — but
+		// being a high piece it pegged the single playhead at the file END, so the
+		// window jumped off the body, the preloaded head got dropped and
+		// re-downloaded, and the body filled with holes. The head pin is excluded
+		// from the PLAYBACK anchor below (a header re-read isn't the playhead either),
+		// but kept in anyMin so a genuine play-from-start still anchors at 0.
+		if plen > 0 {
+			tailStart := r.fileLastPiece() - streamTailPinPieces + 1
+			if cur >= tailStart {
+				continue
+			}
+		}
+		if !anyOK || cur < anyMin {
+			anyMin, anyOK = cur, true
+		}
+		// Exclude a reader in its file's head pin: a container-header re-read, kept
+		// resident by the pin, NOT the playhead — counting it dragged the window
+		// back over the header and the playhead sat mid-cache instead of at the front.
+		headEnd := streamHeaderPinPieces
+		if plen > 0 {
+			headEnd += int(r.file.Offset / plen)
+		}
+		if cur < headEnd {
+			continue
+		}
+		if !playOK || cur < playMin {
+			playMin, playOK = cur, true
+		}
+	}
+	now := time.Now().Unix()
+	if playOK {
+		ph := int(c.playhead.Load())
+		// Follow the lowest reader DOWN immediately (a real lower read must be
+		// covered), but UP only after a hold — a player keeps a trailing playback
+		// connection AND a leading read-ahead one a few pieces apart, each a series
+		// of short per-chunk connections; when the trailing one is briefly between
+		// chunks the lowest live reader jumps up to the leading position. Jumping
+		// the window up with it overshot the download (far pieces fetched then
+		// dropped when the trailing reader reappeared — cyclic churn) and pushed the
+		// playhead into the cache middle. Holding bridges the gap so the window
+		// tracks the true (trailing) playhead.
+		if c.playheadTime.Load() == 0 || playMin <= ph {
+			c.playhead.Store(int64(playMin))
+			c.playheadTime.Store(now)
+			return playMin, true
+		}
+		// playMin is above the held playhead. A small step up is the trailing
+		// connection briefly between chunks (hold, so the window doesn't jump onto
+		// the leading read-ahead); a BIG step up — past the whole window — is a
+		// forward SEEK, so advance at once and let the old window drop immediately.
+		_, aheadP := c.streamWindowPieces()
+		if playMin-ph > aheadP || now-c.playheadTime.Load() > anchorHoldSec {
+			c.playhead.Store(int64(playMin))
+			c.playheadTime.Store(now)
+			return playMin, true
+		}
+		return ph, true
+	}
+	// No playback reader (only a header re-read / probe): hold the last playhead
+	// through the gap, else fall back to whatever reader exists.
+	if anyOK && now-c.playheadTime.Load() <= anchorHoldSec {
+		if ph := int(c.playhead.Load()); ph > anyMin {
+			return ph, true
+		}
+	}
+	return anyMin, anyOK
+}
+
+// streamWindowPieces is the forward (ahead) and behind reach of the cache window
+// in pieces, from the ReaderReadAHead split of the cache budget. One window for
+// the whole player, so NOT divided across connections.
+func (c *Cache) streamWindowPieces() (behind, ahead int) {
+	plen := c.PieceLength
+	if plen <= 0 {
+		return 0, streamWindowFloorPieces
+	}
+	cacheB := globalCacheSize()
+	prc := int64(80)
+	if s := settings.BTsets(); s != nil {
+		prc = int64(s.ReaderReadAHead)
+		if prc < 5 {
+			prc = 5
+		}
+		if prc > 100 {
+			prc = 100
+		}
+	}
+	ahead = int(cacheB * prc / 100 / plen)
+	behind = int(cacheB * (100 - prc) / 100 / plen)
+	if ahead < streamWindowFloorPieces {
+		ahead = streamWindowFloorPieces
+	}
+	if behind < streamBehindFloorPieces {
+		behind = streamBehindFloorPieces
+	}
+	return behind, ahead
 }
 
 // close drops the in-memory state for every piece but leaves on-disk
@@ -234,6 +398,18 @@ func (c *Cache) writePiece(piece int, offset int64, src []byte) (int, error) {
 	c.mu.Lock()
 	p := c.pieces[piece]
 	if p == nil {
+		// A block that was in flight when we abandoned this piece on a seek still
+		// lands here. Drop it (report it written, but don't resurrect the piece) so
+		// the seek's leftovers don't keep coming back. The mark expires so a stale
+		// id can't suppress a real re-download forever; a seek back clears it sooner
+		// via clearAbandoned.
+		if t, ok := c.abandoned[piece]; ok {
+			if time.Now().Unix()-t < abandonEvictSec {
+				c.mu.Unlock()
+				return len(src), nil
+			}
+			delete(c.abandoned, piece)
+		}
 		p = newPiece(c, piece)
 		c.pieces[piece] = p
 	}
@@ -243,6 +419,18 @@ func (c *Cache) writePiece(piece int, offset int64, src []byte) (int, error) {
 		go c.evictIfOverCapacity()
 	}
 	return n, err
+}
+
+// clearAbandoned removes a piece's abandoned mark so a writePiece for it stores
+// the block instead of dropping it. Called when a reader genuinely needs the
+// piece again (a seek back into a forgotten region), so its re-download isn't
+// suppressed by the straggler-drop guard.
+func (c *Cache) clearAbandoned(piece int) {
+	c.mu.Lock()
+	if len(c.abandoned) > 0 {
+		delete(c.abandoned, piece)
+	}
+	c.mu.Unlock()
 }
 
 // evictIfOverCapacity drops the least-recently-used complete pieces until
@@ -259,9 +447,7 @@ func (c *Cache) evictIfOverCapacity() {
 	if cap <= 0 {
 		return
 	}
-	if c.Filled() <= cap {
-		return
-	}
+	filled := c.Filled()
 	protect := c.readerProtectRanges()
 	c.mu.Lock()
 	pieces := make([]*Piece, 0, len(c.pieces))
@@ -269,68 +455,126 @@ func (c *Cache) evictIfOverCapacity() {
 		pieces = append(pieces, p)
 	}
 	c.mu.Unlock()
-	sort.Slice(pieces, func(i, j int) bool {
-		return pieces[i].Accessed() < pieces[j].Accessed()
-	})
-	needFree := c.Filled() - cap
-	for _, p := range pieces {
-		if needFree <= 0 {
-			return
-		}
-		sz := p.SizeBytes()
-		if sz <= 0 {
-			continue
-		}
-		if !p.Complete() {
-			// NEVER evict a piece libtorrent hasn't finished and hash-checked.
-			// Its blocks live only in this cache, and libtorrent may finish the
-			// piece at any later moment (end-game, an unchoke, a re-prioritised
-			// window) — the hash check then reads the piece back through us, the
-			// wiped blocks come back as garbage, the hash fails, and libtorrent
-			// bans the innocent peers that sent the remaining blocks ("too many
-			// corrupt pieces"). On a small swarm that bans the only seed and the
-			// stream dies at 0 peers. Verified live on a seek-away scenario:
-			// abandoned half-downloaded window piece → evicted → opportunistic
-			// completion minutes later → hash_failed → peer_ban → dead torrent.
-			// Incomplete leftovers are bounded (a few per abandoned window) and
-			// complete normally if the piece is ever wanted again.
-			continue
-		}
-		if pieceInRanges(p.Id, protect) {
-			continue // keep a reader's working set resident
-		}
-		// Eviction needs to free disk space too, not just memory.
+
+	evict := func(p *Piece) {
+		// We deliberately do NOT WeDontHave here: un-having every evicted piece
+		// churns the piece_picker and stalls the whole download once eviction
+		// starts mid-stream. The have-bitfield is reconciled lazily, on demand, by
+		// the Reader (ensurePieceLocked) if it ever needs an evicted piece back.
 		p.wipe()
 		c.mu.Lock()
 		delete(c.pieces, p.Id)
 		c.mu.Unlock()
-		// NB: we deliberately do NOT call WeDontHave here. Un-having every evicted
-		// piece churns libtorrent's piece_picker and, once the cache starts
-		// evicting mid-stream, stalls the whole download (verified). The
-		// have-bitfield is instead reconciled lazily, on demand, by the Reader: if
-		// it later needs a piece libtorrent has but we evicted, it un-haves just
-		// that one piece to force a re-download (see ensurePieceLocked).
+	}
+	// Never evict an INCOMPLETE piece: its blocks live only in this cache and
+	// libtorrent may finish it later (end-game, an unchoke, a re-prioritised
+	// window); the hash check then reads it back through us, the wiped blocks
+	// return as garbage, the hash fails, and libtorrent bans the innocent peers
+	// that sent the rest ("too many corrupt pieces") — on a small swarm that bans
+	// the only seed and the stream dies. Incomplete leftovers are bounded.
+	evictable := func(p *Piece) bool { return p.SizeBytes() > 0 && p.Complete() }
+
+	// Proactive sliding cache: while a reader streams, the resident set is the
+	// window around the playhead ([anchor-behind .. anchor+ahead]) plus the pinned
+	// head/tail, so as the playhead advances the just-played tail is DROPPED
+	// instead of lingering until the cache overflows. But NOT instantly: a piece
+	// that left the window keeps a short grace (it was read/written within
+	// graceEvictSec). A player's demuxer reads jitter across a span and its
+	// per-chunk connections re-open at slightly different low offsets, so the
+	// window's low edge wobbles; dropping the instant a piece falls behind made
+	// those wobbles re-fetch just-played pieces (un-have → 10 s+ re-download). The
+	// grace bridges the wobble — the piece is still resident when the read comes
+	// back — while genuinely old behind pieces (untouched for graceEvictSec) still
+	// drop. protect is empty only with no reader and no preload — then fall through
+	// to the capacity trim so an idle torrent keeps a cap-sized buffer for resume.
+	if len(protect) > 0 {
+		nowU := time.Now().Unix()
+		for _, p := range pieces {
+			if pieceInRanges(p.Id, protect) || p.SizeBytes() <= 0 {
+				continue
+			}
+			if p.Complete() {
+				if nowU-p.Accessed() > graceEvictSec {
+					evict(p)
+				}
+				continue
+			}
+			// Stranded INCOMPLETE leftover (typically a seek leaving partial pieces
+			// behind in the old playback region). Wiping a partial piece while
+			// libtorrent still records the blocks would corrupt a later hash check
+			// and ban the seed — so first WeDontHave it (priority 0): the picker
+			// forgets the blocks and won't re-request, making the wipe safe. Mark it
+			// abandoned so a straggler block already in flight doesn't resurrect it.
+			if nowU-p.Accessed() > abandonEvictSec {
+				if h := c.handle.Load(); h != nil {
+					_ = h.WeDontHave(p.Id, 0)
+				}
+				c.mu.Lock()
+				c.abandoned[p.Id] = nowU
+				c.mu.Unlock()
+				evict(p)
+			}
+		}
+		return
+	}
+
+	if filled <= cap {
+		return
+	}
+	sort.Slice(pieces, func(i, j int) bool {
+		return pieces[i].Accessed() < pieces[j].Accessed()
+	})
+	needFree := filled - cap
+	for _, p := range pieces {
+		if needFree <= 0 {
+			return
+		}
+		if !evictable(p) {
+			continue
+		}
+		sz := p.SizeBytes()
+		evict(p)
 		needFree -= sz
 	}
 }
 
-// readerProtectRanges collects the protected piece window of every active
-// reader, so eviction can keep each one's working set resident.
+// readerProtectRanges is the set of piece ranges eviction must keep resident:
+// the ONE sliding window around the playhead ([anchor-behind .. anchor+ahead]),
+// each just-opened reader's current piece, every streamed file's head/tail pins,
+// and an in-flight preload's buffer. One window for the whole player (not one
+// per connection) is what makes the cache slide smoothly instead of jumping to
+// whichever connection read last and dropping the others' pieces.
 func (c *Cache) readerProtectRanges() [][2]int {
+	out := make([][2]int, 0, 8)
+	behindP, aheadP := c.streamWindowPieces()
+	if anchor, ok := c.streamAnchor(); ok {
+		lo := anchor - behindP
+		if lo < 0 {
+			lo = 0
+		}
+		out = append(out, [2]int{lo, anchor + aheadP})
+	}
 	c.readersMu.Lock()
 	rs := make([]*Reader, 0, len(c.readers))
 	for r := range c.readers {
 		rs = append(rs, r)
 	}
 	c.readersMu.Unlock()
-	out := make([][2]int, 0, len(rs)+2)
 	for _, r := range rs {
-		lo, hi := r.protectRange()
-		out = append(out, [2]int{lo, hi})
+		// A reader that hasn't read yet (just opened by ServeContent, about to be
+		// seeked to its Range start) protects ONLY the piece it currently sits on,
+		// so its first-read piece — a fresh mid-file position not yet in the window
+		// — isn't evicted right before the read (seen as `piece=N cur=N
+		// evictedButHad=true`).
+		if r.winFirst.Load() < 0 {
+			cur := r.currentPiece()
+			out = append(out, [2]int{cur, cur})
+		}
+		// Keep this file's container header + end-of-file index pinned (reservePins).
+		out = append(out, r.reservePins()...)
 	}
-	// An in-flight preload has no reader yet, so its freshly-downloaded buffer
-	// would be evicted under an active reader's pressure before the joining
-	// client could play it — keep its ranges resident until the join finishes.
+	// An in-flight preload has no reader yet — keep its buffer resident until a
+	// reader's window takes over (cleared on the first scheduleWindow).
 	c.preloadMu.Lock()
 	out = append(out, c.preloadProtect...)
 	c.preloadMu.Unlock()
@@ -398,35 +642,16 @@ func (c *Cache) capacity() int64 {
 	return base
 }
 
-// streamingReserve is the total working set that must stay resident: the UNION
-// of every active reader's window+behind margin and an in-flight preload
-// buffer. Union, not sum — two playheads at DIFFERENT positions genuinely need
-// two buffers (the concurrent-viewers fix), but readers at the SAME position
-// (one player opening several parallel connections — VLC/Kodi routinely do)
-// share their pieces and need only one. Summing doubled the reported Capacity
-// while Filled stayed single, so external clients computing buffer% =
-// Filled/Capacity saw it stick at ~1/N (50% for two connections) and never
-// "finished" buffering. Overlapping ranges are merged so the reserve tracks the
-// distinct pieces actually held.
+// streamingReserve is the total distinct pieces that must stay resident — the
+// single sliding window + just-opened readers' pieces + file pins + preload (see
+// readerProtectRanges) — merged so overlaps count once. capacity() grows to this
+// when it exceeds the configured budget (e.g. a preload larger than the cache).
 func (c *Cache) streamingReserve() int64 {
 	plen := c.PieceLength
 	if plen <= 0 {
 		return 0
 	}
-	var ranges [][2]int
-	c.readersMu.Lock()
-	for r := range c.readers {
-		cur := r.currentPiece()
-		lo := cur - int(r.behindBytes()/plen)
-		if lo < 0 {
-			lo = 0
-		}
-		ranges = append(ranges, [2]int{lo, cur + int(r.readahead.Load()/plen)})
-	}
-	c.readersMu.Unlock()
-	c.preloadMu.Lock()
-	ranges = append(ranges, c.preloadProtect...)
-	c.preloadMu.Unlock()
+	ranges := c.readerProtectRanges()
 	if len(ranges) == 0 {
 		return 0
 	}
@@ -545,18 +770,24 @@ func (c *Cache) State() *state.CacheState {
 	}
 }
 
-// ReadersSnapshot returns the active readers' positions for the /cache detail
-// view. ALWAYS non-nil: the web UI iterates Readers without a null guard, so a
-// nil here (JSON null) crashes the torrent info dialog.
+// ReadersSnapshot returns ONE reader marker for the /cache detail view: the
+// single streaming window (playhead anchor + [winLo .. winHi]). A player opens
+// several connections — a trailing playback one and a leading read-ahead one a
+// few pieces apart — and showing each as its own marker put a confusing second
+// reader in the middle of the cache. The cache streams one window, so we report
+// one: the playhead at its front. ALWAYS non-nil — the web UI iterates Readers
+// without a null guard.
 func (c *Cache) ReadersSnapshot() []*state.ReaderState {
-	c.readersMu.Lock()
-	defer c.readersMu.Unlock()
-	out := make([]*state.ReaderState, 0, len(c.readers))
-	for r := range c.readers {
-		st := r.State()
-		out = append(out, &st)
+	anchor, ok := c.streamAnchor()
+	if !ok {
+		return []*state.ReaderState{}
 	}
-	return out
+	behindP, aheadP := c.streamWindowPieces()
+	lo := anchor - behindP
+	if lo < 0 {
+		lo = 0
+	}
+	return []*state.ReaderState{{Start: lo, End: anchor + aheadP, Reader: anchor}}
 }
 
 func hashHex(h [20]byte) string {

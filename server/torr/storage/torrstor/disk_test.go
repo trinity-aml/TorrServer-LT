@@ -185,20 +185,20 @@ func TestCache_LRUEvictsOldestWhenOverCapacity(t *testing.T) {
 }
 
 func TestCache_EvictionSparesReaderWindow(t *testing.T) {
-	// 12 pieces written, global budget 6 → 6 must be evicted. A reader pins a
-	// forward window [0..2] at the file head; those are the OLDEST pieces, so
-	// plain LRU would evict them first. Window protection must keep them and
-	// evict the next-oldest unprotected pieces instead. The lone reader's
-	// working set equals the global budget, so capacity() stays at 6 pieces
-	// (no growth, no margin) — assert against capacity() so the test tracks the
-	// real budget rather than a hardcoded constant.
+	// A 40-piece file is fully resident; a single reader streams from the middle.
+	// Eviction must keep that reader's working set — behind margin + forward
+	// window (keepBehind/keepAhead) — plus the pinned container header and tail
+	// index, and drop everything else, even though some kept pieces are older
+	// (lower accessed) than some dropped ones. With CacheSize 10 pieces and
+	// ReadAhead 80%, a lone reader's forward window is 8 pieces and behind 2, so
+	// at cur=20 it protects [18..28]; pins add [0..1] (head) and [37..39] (tail).
 	prev := settings.BTsets()
-	settings.StoreBTsets(&settings.BTSets{UseDisk: false, CacheSize: 6 * pieceLen})
+	settings.StoreBTsets(&settings.BTSets{UseDisk: false, CacheSize: 10 * pieceLen, ReaderReadAHead: 80})
 	t.Cleanup(func() { settings.StoreBTsets(prev) })
 
 	s := NewStorage()
 	h := mkHash(0x5A)
-	const total = 12
+	const total = 40
 	s.callbackOpen(1, h, total, pieceLen)
 	c := s.CacheByHash(h)
 
@@ -219,29 +219,31 @@ func TestCache_EvictionSparesReaderWindow(t *testing.T) {
 	}
 	c.mu.Unlock()
 
-	// Reader pinned at the head with forward window [0..2] and no behind margin.
+	// Reader streaming the middle, at piece 20.
 	r := &Reader{cache: c, file: FileInfo{Offset: 0, Length: total * pieceLen}}
-	r.winFirst.Store(0)
-	r.winLast.Store(2)
+	r.readahead.Store(8 * pieceLen) // 80% of the 10-piece budget
+	r.offset.Store(20 * pieceLen)
+	r.winFirst.Store(20) // marks the reader as actively streaming
+	r.winLast.Store(28)
 	c.registerReader(r)
 
-	c.evictIfOverCapacity() // 12 pieces, budget 6 → 6 must go
+	c.evictIfOverCapacity()
 
 	present := func(id int) bool {
 		c.mu.RLock()
 		defer c.mu.RUnlock()
 		return c.pieces[id] != nil
 	}
-	// Protected oldest pieces survive.
-	for _, keep := range []int{0, 1, 2} {
+	// Forward window + behind margin and the head/tail pins survive.
+	for _, keep := range []int{0, 1, 18, 20, 28, 37, 39} {
 		if !present(keep) {
-			t.Fatalf("protected window piece %d was evicted", keep)
+			t.Fatalf("protected piece %d was evicted", keep)
 		}
 	}
-	// The next-oldest unprotected pieces are the ones dropped.
-	for _, gone := range []int{3, 4, 5} {
+	// Pieces outside the working set and the pins are dropped, even old ones.
+	for _, gone := range []int{2, 10, 17, 29, 36} {
 		if present(gone) {
-			t.Fatalf("unprotected old piece %d should have been evicted", gone)
+			t.Fatalf("unprotected piece %d should have been evicted", gone)
 		}
 	}
 	if c.Filled() > c.capacity() {
