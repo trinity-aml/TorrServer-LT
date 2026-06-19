@@ -154,7 +154,18 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo) *Reader {
 			_ = handle.ForceDhtAnnounce()
 		}
 	}
-	r.scheduleWindow()
+	// Deliberately DON'T scheduleWindow() here. A reader is born at offset 0 and
+	// only seeked to the real Range position afterwards by http.ServeContent
+	// (which first probes Seek(0,End) then Seek(0,Start) to size the body). If we
+	// scheduled the window now, every new connection would prioritise — and, for
+	// pieces libtorrent has but the cache evicted, WeDontHave (force re-download)
+	// — the file HEAD [0..readahead] before being seeked away. A player that opens
+	// a fresh HTTP connection per seek/chunk (VLC: 37 in 3 min) then re-downloads
+	// the head on every connection while playing the body, cycling the cache
+	// (verified from the live log: 144 head re-downloads, all from readers caught
+	// at offset 0). The window is instead established by the first Read at the real
+	// position (and kept fresh by reprioritizeLoop), by when ServeContent's seek
+	// has already moved r.offset, so the probe seeks schedule nothing.
 	// Take over any play-gated preload's buffer reservation: it was left set so
 	// the head stayed resident through the gap between the preload completing and
 	// this reader registering (otherwise eviction drops the head when the buffer
@@ -310,7 +321,12 @@ func (r *Reader) Seek(offset int64, whence int) (int64, error) {
 		off = 0
 	}
 	r.offset.Store(off)
-	r.scheduleWindow()
+	// Don't scheduleWindow() on seek: http.ServeContent probes Seek(0,End) then
+	// Seek(0,Start) before seeking to the real Range start, so scheduling here
+	// would prioritise + re-download the file head and tail on every one of a
+	// per-seek-connection player's requests. The first Read at the new position
+	// establishes the window (reprioritizeLoop keeps it fresh); r.offset is set
+	// above so both see the real position. See NewReader for the full rationale.
 	return off, nil
 }
 
@@ -443,14 +459,23 @@ func (r *Reader) scheduleWindow() {
 		pos := i - first
 		prio, deadlineMs := windowPriority(pos)
 		entered := prevF < 0 || i < prevF || i > prevL
-		if entered && !r.cache.Have(i) && r.handle.HasPiece(i) {
-			// The piece entered the window but libtorrent thinks it's already
-			// downloaded while our cache evicted it (a seek into a previously
-			// played region). Un-have it now — for the whole entering window at
-			// once — so the picker re-fetches the buffer in parallel. Leaving
-			// this to ensurePieceLocked's per-piece fallback makes the refill a
-			// piece-by-piece ratchet: each evicted piece is only re-requested
-			// when the playhead reaches it.
+		// Resurrect a piece libtorrent thinks it has but our cache evicted (a seek
+		// into a previously played region, or — with a player that opens a fresh
+		// connection per chunk — a piece a sibling connection prefetched and that
+		// then got evicted). Un-have it so the picker re-fetches it. But do this
+		// ONLY inside the time-critical part of the window (deadlineMs >= 0, i.e.
+		// pos <= 8), NOT across the whole readahead window. The far edge (pos > 8)
+		// has no deadline — resurrecting it speculatively re-downloaded pieces a
+		// dozen ahead of the playhead that were promptly evicted again on a cache
+		// with no slack (ReadAhead ~= CacheSize), so the same far piece was
+		// re-fetched many times (live log: one piece pulled 9×) while STEALING the
+		// swarm from the playhead → playback stutter. Gating on the deadline tier
+		// makes the refill just-in-time: each evicted piece is re-fetched once, as
+		// it enters the 8-piece deadlined horizon, where it's actually about to be
+		// read. Not gated on `entered`, so a piece that slid into the horizon while
+		// still evicted is refilled even though it was already in the window.
+		needRefill := !r.cache.Have(i) && r.handle.HasPiece(i)
+		if needRefill && deadlineMs >= 0 {
 			_ = r.handle.WeDontHave(i, prio)
 		} else if entered || pos <= 8 {
 			_ = r.handle.SetPiecePriority(i, prio)
