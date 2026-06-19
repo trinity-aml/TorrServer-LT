@@ -1044,6 +1044,20 @@ int lt_torrent_set_piece_deadline(lt_torrent tid, int piece_idx, int deadline_ms
     WRAP_END(LT_ERR_INTERNAL)
 }
 
+int lt_torrent_set_sequential_download(lt_torrent tid, int enable) {
+    WRAP_BEGIN
+    auto h = get_torrent(tid);
+    if (!h.is_valid()) return set_err(LT_ERR_NOT_FOUND, "torrent not found");
+    // The legacy set_sequential_download(bool) is deprecated in lt 2.0; drive the
+    // torrent_flags::sequential_download flag directly instead.
+    if (enable)
+        h.set_flags(lt::torrent_flags::sequential_download);
+    else
+        h.unset_flags(lt::torrent_flags::sequential_download);
+    return LT_OK;
+    WRAP_END(LT_ERR_INTERNAL)
+}
+
 int lt_torrent_clear_piece_deadlines(lt_torrent tid) {
     WRAP_BEGIN
     auto h = get_torrent(tid);

@@ -153,6 +153,12 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo) *Reader {
 		if settings.BTsets() == nil || !settings.BTsets().DisableDHT {
 			_ = handle.ForceDhtAnnounce()
 		}
+		// Stream in piece order: the picker prefers the lowest-indexed wanted
+		// piece. Only the streaming window has priority>0, so this orders the far
+		// readahead (pos>8, no deadline) in playback order — the immediate next
+		// chunk is fetched before pieces deeper in the buffer — while per-piece
+		// deadlines still drive the near window first. One-shot with the announce.
+		_ = handle.SetSequentialDownload(true)
 	}
 	// Deliberately DON'T scheduleWindow() here. A reader is born at offset 0 and
 	// only seeked to the real Range position afterwards by http.ServeContent

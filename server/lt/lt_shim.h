@@ -184,6 +184,11 @@ int lt_torrent_set_piece_priority(lt_torrent t, int piece_idx, int prio);
 int lt_torrent_set_all_pieces_priority(lt_torrent t, int prio);
 int lt_torrent_set_piece_deadline(lt_torrent t, int piece_idx, int deadline_ms, int alert_when_ready);
 int lt_torrent_clear_piece_deadlines(lt_torrent t);
+/* Sequential download: make the piece_picker prefer the lowest-indexed wanted
+ * (priority>0) piece. Scoped to the reader's window because the rest of the
+ * torrent sits at priority 0; complements per-piece deadlines (which still take
+ * precedence via the time-critical queue) by ordering the far readahead too. */
+int lt_torrent_set_sequential_download(lt_torrent t, int enable);
 int lt_torrent_set_file_priority(lt_torrent t, int file_idx, int prio);
 /* Per-piece "un-have": tell libtorrent's piece_picker it no longer has this
  * piece, so the picker will re-request it from peers. Needed because the

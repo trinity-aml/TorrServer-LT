@@ -508,6 +508,18 @@ func (t *Torrent) ClearPieceDeadlines() error {
 	return codeToErr(C.lt_torrent_clear_piece_deadlines(t.id))
 }
 
+// SetSequentialDownload makes the piece picker prefer the lowest-indexed wanted
+// piece. Only the reader's streaming window carries priority>0 (the torrent is
+// lazy at priority 0), so this orders the far readahead in playback order while
+// per-piece deadlines still drive the near window first.
+func (t *Torrent) SetSequentialDownload(enable bool) error {
+	e := C.int(0)
+	if enable {
+		e = 1
+	}
+	return codeToErr(C.lt_torrent_set_sequential_download(t.id, e))
+}
+
 // SetFilePriority sets the priority for a file (0..7).
 func (t *Torrent) SetFilePriority(file, prio int) error {
 	return codeToErr(C.lt_torrent_set_file_priority(t.id, C.int(file), C.int(prio)))
