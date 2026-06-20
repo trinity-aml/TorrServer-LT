@@ -247,9 +247,15 @@ getBinaryName() {
 }
 
 getVersionTag() {
-  # Release tags look like MatriX.LT-001; accept "1", "01" or "001".
+  # A full release tag (MatriX.141.LT-1.0.0, or legacy MatriX.LT-001) is used
+  # as-is; a bare number keeps the legacy zero-padded form MatriX.LT-NNN so old
+  # "--version 2" selectors still resolve.
   local version="$1"
-  printf '%s-%03d\n' "$VERSION_PREFIX" "$((10#$version))"
+  if [[ "$version" == *LT* ]]; then
+    echo "$version"
+  else
+    printf '%s-%03d\n' "$VERSION_PREFIX" "$((10#$version))"
+  fi
 }
 
 buildDownloadUrl() {

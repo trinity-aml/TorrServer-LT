@@ -121,7 +121,7 @@ jobs:
           cd server
           mkdir -p ../out
           go build \
-            -ldflags "-s -w -X server/version.Version=${{ inputs.version || 'MatriX.LT-001' }}" \
+            -ldflags "-s -w -X server/version.Version=${{ inputs.version || 'MatriX.141.LT-1.0.0' }}" \
             -o "../out/${{ matrix.artifact }}" \
             ./cmd
           file "../out/${{ matrix.artifact }}"

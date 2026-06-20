@@ -39,7 +39,7 @@ The difference from upstream is the underlying torrent engine: `arvidn/libtorren
 
 ### Installation
 
-Download the application for the required platform in the [releases](https://github.com/YouROK/TorrServer/releases) page. After installation, open the link <http://127.0.0.1:8090> in the browser.
+Download the application for the required platform in the [releases](https://github.com/trinity-aml/TorrServer-LT/releases) page. After installation, open the link <http://127.0.0.1:8090> in the browser.
 
 #### Windows
 
@@ -50,7 +50,7 @@ Run `TorrServer-windows-amd64.exe`.
 Run in console
 
 ```bash
-curl -s https://raw.githubusercontent.com/YouROK/TorrServer/master/installTorrServerLinux.sh | sudo bash
+curl -s https://raw.githubusercontent.com/trinity-aml/TorrServer-LT/master/installTorrServerLinux.sh | sudo bash
 ```
 
 The script supports interactive and non-interactive installation, configuration, updates, and removal. When running the script interactively, you can:
@@ -62,7 +62,7 @@ The script supports interactive and non-interactive installation, configuration,
 **Download first and set execute permissions:**
 
 ```bash
-curl -s https://raw.githubusercontent.com/YouROK/TorrServer/master/installTorrServerLinux.sh -o installTorrServerLinux.sh && chmod 755 installTorrServerLinux.sh
+curl -s https://raw.githubusercontent.com/trinity-aml/TorrServer-LT/master/installTorrServerLinux.sh -o installTorrServerLinux.sh && chmod 755 installTorrServerLinux.sh
 ```
 
 **Command-line examples:**
@@ -70,7 +70,7 @@ curl -s https://raw.githubusercontent.com/YouROK/TorrServer/master/installTorrSe
 - Install a specific version:
 
   ```bash
-  sudo bash ./installTorrServerLinux.sh --install 135 --silent
+  sudo bash ./installTorrServerLinux.sh --install MatriX.141.LT-1.0.0 --silent
   ```
 
 - Update to latest version:
@@ -94,7 +94,7 @@ curl -s https://raw.githubusercontent.com/YouROK/TorrServer/master/installTorrSe
 - Downgrade to a specific version:
 
   ```bash
-  sudo bash ./installTorrServerLinux.sh --down 135
+  sudo bash ./installTorrServerLinux.sh --down MatriX.LT-001
   ```
 
 - Remove/uninstall:
@@ -127,7 +127,7 @@ curl -s https://raw.githubusercontent.com/YouROK/TorrServer/master/installTorrSe
 Run in Terminal.app
 
 ```bash
-curl -s https://raw.githubusercontent.com/YouROK/TorrServer/master/installTorrServerMac.sh -o installTorrserverMac.sh && chmod 755 installTorrServerMac.sh && bash ./installTorrServerMac.sh
+curl -s https://raw.githubusercontent.com/trinity-aml/TorrServer-LT/master/installTorrServerMac.sh -o installTorrserverMac.sh && chmod 755 installTorrServerMac.sh && bash ./installTorrServerMac.sh
 ```
 
 Alternative install script for Intel Macs: <https://github.com/dancheskus/TorrServerMacInstaller>

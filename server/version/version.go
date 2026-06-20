@@ -7,5 +7,7 @@ package version
 // it — e.g. it only shows the PreloadCache field (and hides the dead legacy
 // PreloadBuffer switch) when that number is > 131. Keep the first number >= 132
 // so the client unlocks the modern controls; "141" tracks upstream MatriX
-// feature parity, ".LT-001" marks the fork.
-var Version = "MatriX.141.LT-001"
+// feature parity (and is that first digit run), ".LT-1.0.0" marks the fork and
+// carries its own semantic version. Release tags must keep this shape
+// (MatriX.141.LT-X.Y.Z) so the gate stays satisfied.
+var Version = "MatriX.141.LT-1.0.0"
