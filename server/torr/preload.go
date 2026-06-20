@@ -50,6 +50,15 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// Snapshot the libtorrent handle once. Preload runs DETACHED (it survives the
+	// request, blocking up to 2 min on the buffer fill), so the torrent can be
+	// dropped mid-flight and set t.lh = nil — a later lh.Method() would then
+	// deref a nil receiver and crash the server (panic in the call AND again in the
+	// deferred SetMaxConnections). The captured handle stays non-nil; once the
+	// torrent is removed from the session its calls just return "not found" from
+	// the C shim (get_torrent → is_valid check), so the fill ends quietly. Mirrors
+	// how a Reader captures its handle at construction.
+	lh := t.lh
 
 	// Resolve the file the same way Stream does: `index` is the 1-based API
 	// file id (FileStats.Id), which we map to a path and then to the file.
@@ -153,12 +162,12 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 	// playing. Same reconciliation the Reader does on seek-back.
 	prioritise := func(pieces []int, startN int) {
 		for i, p := range pieces {
-			if !cache.Have(p) && t.lh.HasPiece(p) {
-				_ = t.lh.WeDontHave(p, 7) // un-have + top priority, atomically
+			if !cache.Have(p) && lh.HasPiece(p) {
+				_ = lh.WeDontHave(p, 7) // un-have + top priority, atomically
 			} else {
-				_ = t.lh.SetPiecePriority(p, 7)
+				_ = lh.SetPiecePriority(p, 7)
 			}
-			_ = t.lh.SetPieceDeadline(p, (startN+i)*10, false)
+			_ = lh.SetPieceDeadline(p, (startN+i)*10, false)
 		}
 	}
 
@@ -199,15 +208,15 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 	// drops every peer connection, hiccuping the running stream, and the swarm
 	// is already hot — the picker will pull the new buffer without the kick.
 	if cache.ActiveReaders() == 0 {
-		_ = t.lh.Pause()
-		_ = t.lh.Resume()
+		_ = lh.Pause()
+		_ = lh.Resume()
 	}
 
 	// Find peers fast: kick trackers + DHT now (the torrent was lazy and lightly
 	// announced until this preload).
-	_ = t.lh.ForceReannounce()
+	_ = lh.ForceReannounce()
 	if settings.BTsets() == nil || !settings.BTsets().DisableDHT {
-		_ = t.lh.ForceDhtAnnounce()
+		_ = lh.ForceDhtAnnounce()
 	}
 
 	// Burst peer connections for the preload. A fresh magnet shows only a
@@ -223,8 +232,8 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 		configuredConns = settings.BTsets().ConnectionsLimit
 	}
 	if cache.ActiveReaders() == 0 && preloadConnections > configuredConns {
-		_ = t.lh.SetMaxConnections(preloadConnections)
-		defer func() { _ = t.lh.SetMaxConnections(configuredConns) }()
+		_ = lh.SetMaxConnections(preloadConnections)
+		defer func() { _ = lh.SetMaxConnections(configuredConns) }()
 	}
 
 	// Tail buffer: the player must read the container index (MP4 moov atom, MKV
@@ -270,7 +279,7 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 		go func() {
 			detCtx, detCancel := context.WithTimeout(detParent, 30*time.Second)
 			defer detCancel()
-			if ms, me, ok := cache.LocateMoov(detCtx, t.lh, f.Offset, f.Length); ok {
+			if ms, me, ok := cache.LocateMoov(detCtx, lh, f.Offset, f.Length); ok {
 				log.TLogln("torr.Preload: moov auto-detected,", (me-ms)/1024, "KB at offset", ms-f.Offset)
 				prioritiseTail(clamp(int(ms/plen)), clamp(int((me-1)/plen)))
 			}
@@ -388,7 +397,7 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 	// active file's reader re-raises priority on its live window via
 	// scheduleWindow, so the played file is unaffected while idle files go quiet.
 	for _, p := range gatePieces {
-		_ = t.lh.SetPiecePriority(p, 0)
+		_ = lh.SetPiecePriority(p, 0)
 	}
 
 	log.TLogln("torr.Preload:", t.Name(), "buffered head", headFirst, "..", headLast,
@@ -402,6 +411,15 @@ func Preload(ctx context.Context, torr *Torrent, index int) {
 	if torr == nil || settings.BTsets() == nil {
 		return
 	}
+	// A preload runs detached (PreloadOnPlay) or holds a request (&preload) and can
+	// race the torrent being dropped mid-fill. Recover here so a stray nil-deref in
+	// the fill ends only this preload instead of taking the whole server down — a
+	// background task must never crash the process.
+	defer func() {
+		if r := recover(); r != nil {
+			log.TLogln("torr.Preload: recovered from panic:", r)
+		}
+	}()
 	cache := float32(settings.BTsets().CacheSize)
 	prc := float32(settings.BTsets().PreloadCache)
 	size := int64((cache / 100.0) * prc)
