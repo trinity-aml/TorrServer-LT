@@ -3,9 +3,11 @@ package torr
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"server/ffprobe"
 	"server/log"
 	"server/settings"
 	"server/torr/state"
@@ -402,6 +404,49 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 
 	log.TLogln("torr.Preload:", t.Name(), "buffered head", headFirst, "..", headLast,
 		"+ tail", tailFirst, "..", tailLast)
+
+	// Fill BitRate/DurationSeconds for the torrent status the way the original
+	// TorrServer does at preload time (ffprobe over the play stream). The head and
+	// container index (tail) are resident now, so the probe reads from cache and
+	// returns in a second or two. Run it DETACHED so it never blocks playback start
+	// and never fails the preload, and only when not already known (re-plays of the
+	// same file shouldn't re-probe).
+	t.mu.Lock()
+	needProbe := t.BitRate == "" && t.DurationSeconds == 0
+	t.mu.Unlock()
+	if needProbe {
+		go t.probeMediaInfo(index)
+	}
+}
+
+// probeMediaInfo runs ffprobe against the torrent's own /play stream and stores
+// the file's BitRate and DurationSeconds on the torrent, so they surface in the
+// status JSON (state.TorrentStatus.BitRate / DurationSeconds) that clients read.
+// This is the auto-population the original TorrServer performs inside Preload;
+// the on-demand /ffp/{hash}/{id} endpoint is unaffected. Detached and defensive:
+// a background task must never crash the process or disturb playback.
+func (t *Torrent) probeMediaInfo(index int) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.TLogln("torr.probeMediaInfo: recovered from panic:", r)
+		}
+	}()
+	if t == nil || !ffprobe.Exists() {
+		return
+	}
+	link := "http://127.0.0.1:" + settings.Port + "/play/" + t.Hash().HexString() + "/" + strconv.Itoa(index)
+	if settings.Ssl {
+		link = "https://127.0.0.1:" + settings.SslPort + "/play/" + t.Hash().HexString() + "/" + strconv.Itoa(index)
+	}
+	data, err := ffprobe.ProbeUrl(link)
+	if err != nil || data == nil || data.Format == nil {
+		return
+	}
+	t.mu.Lock()
+	t.BitRate = data.Format.BitRate
+	t.DurationSeconds = data.Format.DurationSeconds
+	t.mu.Unlock()
+	log.TLogln("torr.probeMediaInfo:", t.Name(), "bitrate", data.Format.BitRate, "duration", data.Format.DurationSeconds)
 }
 
 // Preload (free function) keeps API parity with the legacy call sites
