@@ -370,8 +370,11 @@ func (c *Cache) streamWindowPieces() (behind, ahead int) {
 	if ahead < streamWindowFloorPieces {
 		ahead = streamWindowFloorPieces
 	}
-	if behind < streamBehindFloorPieces {
-		behind = streamBehindFloorPieces
+	// Byte-bounded behind floor: ~2 pieces for small pieces, 1 for large ones (see
+	// streamBehindFloorBytes), so ReadAhead 95 % doesn't pin half the cache behind
+	// the playhead on a 16 MB-piece torrent.
+	if floor := piecesForBytes(streamBehindFloorBytes, plen, streamBehindFloorPieces); behind < floor {
+		behind = floor
 	}
 	// Cap the whole RESIDENT window (behind + the anchor piece + ahead) to the
 	// cache budget in pieces. With a large piece size relative to CacheSize the
@@ -393,12 +396,12 @@ func (c *Cache) streamWindowPieces() (behind, ahead int) {
 	return behind, ahead
 }
 
-// pinPiecesForBytes converts a byte pin budget into a piece count for this
-// cache's piece size: at least 1, never more than maxPieces. A small piece size
-// keeps the full cap (a header/index can span several pieces); a large piece
-// already covers the budget in one, so the pin shrinks instead of reserving
-// maxPieces*pieceLen. See streamHeaderPinPieces.
-func pinPiecesForBytes(wantBytes, plen int64, maxPieces int) int {
+// piecesForBytes converts a byte budget into a piece count for this cache's piece
+// size: at least 1, never more than maxPieces. A small piece size keeps the full
+// cap (a header/index/behind-cushion can span several pieces); a large piece
+// already covers the budget in one, so it shrinks instead of reserving
+// maxPieces*pieceLen. Shared by the head/tail pins and the behind floor.
+func piecesForBytes(wantBytes, plen int64, maxPieces int) int {
 	if plen <= 0 {
 		return 1
 	}
@@ -415,7 +418,7 @@ func pinPiecesForBytes(wantBytes, plen int64, maxPieces int) int {
 // headPinPieces / tailPinPieces are the byte-bounded pin sizes (see reservePins
 // and groupReaderSnaps, which must agree on where the head/tail pin regions are).
 func (c *Cache) headPinPieces() int {
-	return pinPiecesForBytes(streamHeaderPinBytes, c.PieceLength, streamHeaderPinPieces)
+	return piecesForBytes(streamHeaderPinBytes, c.PieceLength, streamHeaderPinPieces)
 }
 
 func (c *Cache) tailPinPieces() int {
@@ -423,7 +426,7 @@ func (c *Cache) tailPinPieces() int {
 	if s := settings.BTsets(); s != nil && s.PreloadBufferEnd > 0 {
 		want = s.PreloadBufferEnd
 	}
-	return pinPiecesForBytes(want, c.PieceLength, streamTailPinPieces)
+	return piecesForBytes(want, c.PieceLength, streamTailPinPieces)
 }
 
 // close drops the in-memory state for every piece but leaves on-disk
