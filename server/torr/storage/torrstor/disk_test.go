@@ -190,8 +190,9 @@ func TestCache_EvictionSparesReaderWindow(t *testing.T) {
 	// window (keepBehind/keepAhead) — plus the pinned container header and tail
 	// index, and drop everything else, even though some kept pieces are older
 	// (lower accessed) than some dropped ones. With CacheSize 10 pieces and
-	// ReadAhead 80%, a lone reader's forward window is 8 pieces and behind 2, so
-	// at cur=20 it protects [18..28]; pins add [0..1] (head) and [37..39] (tail).
+	// ReadAhead 80%, the window is capped to the 10-piece budget: behind 2 + the
+	// anchor + ahead trimmed to 7, so at cur=20 it protects [18..27]; pins add
+	// [0..1] (head) and [37..39] (tail).
 	prev := settings.BTsets()
 	settings.StoreBTsets(&settings.BTSets{UseDisk: false, CacheSize: 10 * pieceLen, ReaderReadAHead: 80})
 	t.Cleanup(func() { settings.StoreBTsets(prev) })
@@ -235,13 +236,14 @@ func TestCache_EvictionSparesReaderWindow(t *testing.T) {
 		return c.pieces[id] != nil
 	}
 	// Forward window + behind margin and the head/tail pins survive.
-	for _, keep := range []int{0, 1, 18, 20, 28, 37, 39} {
+	for _, keep := range []int{0, 1, 18, 20, 27, 37, 39} {
 		if !present(keep) {
 			t.Fatalf("protected piece %d was evicted", keep)
 		}
 	}
 	// Pieces outside the working set and the pins are dropped, even old ones.
-	for _, gone := range []int{2, 10, 17, 29, 36} {
+	// Piece 28 is just past the capped window's far edge (27) and must drop.
+	for _, gone := range []int{2, 10, 17, 28, 29, 36} {
 		if present(gone) {
 			t.Fatalf("unprotected piece %d should have been evicted", gone)
 		}
@@ -255,10 +257,11 @@ func TestCache_EvictionSparesReaderWindow(t *testing.T) {
 // devices (distinct groups) stream the same torrent from far-apart positions.
 // Each group must get its OWN protected sliding window — neither device's
 // just-about-to-play pieces may be evicted to make room for the other's. With
-// CacheSize 10 pieces / ReadAhead 80%, each window is 8 ahead + 2 behind, so
-// device A at piece 20 protects [18..28] and device B at piece 60 protects
-// [58..68]; capacity grows (streamingReserve) to fit both plus the shared
-// head/tail pins, and everything outside both windows is dropped.
+// CacheSize 10 pieces / ReadAhead 80%, each window is capped to the 10-piece
+// budget (2 behind + anchor + 7 ahead), so device A at piece 20 protects
+// [18..27] and device B at piece 60 protects [58..67]; capacity grows
+// (streamingReserve) to fit both plus the shared head/tail pins, and everything
+// outside both windows is dropped.
 func TestCache_EvictionSparesBothDeviceWindows(t *testing.T) {
 	prev := settings.BTsets()
 	settings.StoreBTsets(&settings.BTSets{UseDisk: false, CacheSize: 10 * pieceLen, ReaderReadAHead: 80})
@@ -307,16 +310,60 @@ func TestCache_EvictionSparesBothDeviceWindows(t *testing.T) {
 		return c.pieces[id] != nil
 	}
 	// BOTH device windows + the shared head/tail pins survive.
-	for _, keep := range []int{0, 1, 18, 20, 28, 58, 60, 68, 77, 79} {
+	for _, keep := range []int{0, 1, 18, 20, 27, 58, 60, 67, 77, 79} {
 		if !present(keep) {
 			t.Fatalf("protected piece %d was evicted (device isolation broken)", keep)
 		}
 	}
-	// Pieces outside both windows and the pins are dropped.
-	for _, gone := range []int{10, 30, 45, 55, 70} {
+	// Pieces outside both windows and the pins are dropped (28/68 are just past
+	// each capped window's far edge).
+	for _, gone := range []int{10, 28, 30, 45, 55, 68, 70} {
 		if present(gone) {
 			t.Fatalf("unprotected piece %d should have been evicted", gone)
 		}
+	}
+}
+
+// TestCache_LargePieceCapacityBounded reproduces the field report: a 64 MB cache
+// on a torrent with 16 MB pieces ballooned a SINGLE viewer's capacity to 192 MB
+// (window 7 pieces + head pin 2 + tail pin 3, all disjoint for a mid-file
+// playhead). The window must be capped to the cache budget and the pins
+// byte-bounded, so one viewer stays ~CacheSize + a small pin overhang.
+func TestCache_LargePieceCapacityBounded(t *testing.T) {
+	const MB = int64(1) << 20
+	prev := settings.BTsets()
+	settings.StoreBTsets(&settings.BTSets{UseDisk: false, CacheSize: 64 * MB, ReaderReadAHead: 95})
+	t.Cleanup(func() { settings.StoreBTsets(prev) })
+
+	plen := 16 * MB
+	s := NewStorage()
+	h := mkHash(0x2B)
+	const numPieces = 128 // a 2 GB file, offset 0
+	s.callbackOpen(1, h, numPieces, plen)
+	c := s.CacheByHash(h)
+
+	// The window itself must never exceed the configured cache budget (4 pieces).
+	behind, ahead := c.streamWindowPieces()
+	if window := behind + ahead + 1; int64(window)*plen > 64*MB {
+		t.Fatalf("window %d pieces (%d MB) exceeds the 64 MB cache budget", window, int64(window)*plen/MB)
+	}
+
+	// One viewer playing mid-file at piece 60, window established.
+	r := &Reader{cache: c, group: "dev", file: FileInfo{Offset: 0, Length: int64(numPieces) * plen}}
+	r.readahead.Store(60 * MB)
+	r.offset.Store(60 * plen)
+	r.winFirst.Store(int64(60 - behind))
+	r.winLast.Store(int64(60 + ahead))
+	c.registerReader(r)
+
+	// Was 192 MB; the cap + byte-bounded pins bring it to ~CacheSize + the two
+	// single-piece pins. Assert it is comfortably under the old 3x blowup.
+	cap := c.capacity()
+	if cap > 112*MB {
+		t.Fatalf("single-viewer capacity %d MB too high (regression: window/pins not bounded)", cap/MB)
+	}
+	if cap < 64*MB {
+		t.Fatalf("capacity %d MB below the configured cache", cap/MB)
 	}
 }
 

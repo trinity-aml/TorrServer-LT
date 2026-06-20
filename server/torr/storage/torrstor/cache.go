@@ -229,13 +229,13 @@ func (c *Cache) groupReaderSnaps() map[string][]readerSnap {
 		// connection at the file end; it's pinned, not the playhead, and being a high
 		// piece it would otherwise peg the window at the file END.
 		if plen > 0 {
-			if tailStart := r.fileLastPiece() - streamTailPinPieces + 1; cur >= tailStart {
+			if tailStart := r.fileLastPiece() - c.tailPinPieces() + 1; cur >= tailStart {
 				s.isTail = true
 			}
 		}
 		// Container-header re-read, kept resident by the head pin, NOT the playhead —
 		// counting it dragged the window back over the header.
-		headEnd := streamHeaderPinPieces
+		headEnd := c.headPinPieces()
 		if plen > 0 {
 			headEnd += int(r.file.Offset / plen)
 		}
@@ -373,7 +373,57 @@ func (c *Cache) streamWindowPieces() (behind, ahead int) {
 	if behind < streamBehindFloorPieces {
 		behind = streamBehindFloorPieces
 	}
+	// Cap the whole RESIDENT window (behind + the anchor piece + ahead) to the
+	// cache budget in pieces. With a large piece size relative to CacheSize the
+	// floors above blow the window past the cache itself — e.g. 16 MB pieces in a
+	// 64 MB cache fit only 4 pieces, yet the floors want 2 behind + 4 ahead + 1 =
+	// 7 (112 MB), so a single viewer's window alone is 1.75x the configured size.
+	// Trim ahead first (keep >=1 so there's always some readahead), then behind, so
+	// the window never exceeds the budget the user set.
+	budget := int(cacheB / plen)
+	if budget < 1 {
+		budget = 1
+	}
+	for behind+ahead+1 > budget && ahead > 1 {
+		ahead--
+	}
+	for behind+ahead+1 > budget && behind > 0 {
+		behind--
+	}
 	return behind, ahead
+}
+
+// pinPiecesForBytes converts a byte pin budget into a piece count for this
+// cache's piece size: at least 1, never more than maxPieces. A small piece size
+// keeps the full cap (a header/index can span several pieces); a large piece
+// already covers the budget in one, so the pin shrinks instead of reserving
+// maxPieces*pieceLen. See streamHeaderPinPieces.
+func pinPiecesForBytes(wantBytes, plen int64, maxPieces int) int {
+	if plen <= 0 {
+		return 1
+	}
+	n := int((wantBytes + plen - 1) / plen)
+	if n < 1 {
+		n = 1
+	}
+	if n > maxPieces {
+		n = maxPieces
+	}
+	return n
+}
+
+// headPinPieces / tailPinPieces are the byte-bounded pin sizes (see reservePins
+// and groupReaderSnaps, which must agree on where the head/tail pin regions are).
+func (c *Cache) headPinPieces() int {
+	return pinPiecesForBytes(streamHeaderPinBytes, c.PieceLength, streamHeaderPinPieces)
+}
+
+func (c *Cache) tailPinPieces() int {
+	want := int64(streamHeaderPinBytes) // default EOF-index window
+	if s := settings.BTsets(); s != nil && s.PreloadBufferEnd > 0 {
+		want = s.PreloadBufferEnd
+	}
+	return pinPiecesForBytes(want, c.PieceLength, streamTailPinPieces)
 }
 
 // close drops the in-memory state for every piece but leaves on-disk

@@ -579,19 +579,23 @@ func (r *Reader) fileLastPiece() int {
 	return int((r.file.Offset + r.file.Length - 1) / plen)
 }
 
-// streamHeaderPinPieces / streamTailPinPieces cap how many pieces at the file
-// START and END stay pinned in cache while it streams: the container header
-// (AVI main header, MKV/MP4 header) at the front and the seek index (AVI idx1,
-// MKV cues, MP4 moov) at the back. A player re-reads these on the fly; the
-// preload fetches them up front, but on a small cache they get evicted as the
-// playhead window advances, and the re-read then re-downloads them and stalls
-// (verified: VLC re-reads bytes=0- mid-stream, and the end-index read stalled
-// ~14 s on a re-download). Caps (not raw bytes) so the pin is always a small
-// fixed cost and never swallows a short file. Mirrors the original TorrServer
-// (head AND last-startend bytes) / Elementum.
+// streamHeaderPinPieces / streamTailPinPieces are the MAX pieces pinned at the
+// file START and END while it streams: the container header (AVI main header,
+// MKV/MP4 header) at the front and the seek index (AVI idx1, MKV cues, MP4 moov)
+// at the back. A player re-reads these on the fly; the preload fetches them up
+// front, but on a small cache they get evicted as the playhead window advances,
+// and the re-read then re-downloads them and stalls (verified: VLC re-reads
+// bytes=0- mid-stream, and the end-index read stalled ~14 s on a re-download).
+// The actual pin is BYTE-bounded (streamHeaderPinBytes / PreloadBufferEnd) and
+// only rounded UP to these caps — so on a small piece size the header/index can
+// span the full cap, but on a LARGE piece size (e.g. 16 MB) a single piece
+// already covers the few-MB header/index and the pin shrinks to 1 instead of
+// reserving cap*pieceLen (3*16 MB = 48 MB of "tail index" on a 64 MB cache).
+// Mirrors the original TorrServer (head AND last-startend bytes) / Elementum.
 const (
 	streamHeaderPinPieces = 2
 	streamTailPinPieces   = 3
+	streamHeaderPinBytes  = 4 << 20 // container header / default EOF-index budget
 )
 
 // reservePins returns the container-header and end-of-file index piece ranges to
@@ -604,11 +608,11 @@ func (r *Reader) reservePins() [][2]int {
 	}
 	first := int(r.file.Offset / plen)
 	last := r.fileLastPiece()
-	headLast := first + streamHeaderPinPieces - 1
+	headLast := first + r.cache.headPinPieces() - 1
 	if headLast > last {
 		headLast = last
 	}
-	tailFirst := last - streamTailPinPieces + 1
+	tailFirst := last - r.cache.tailPinPieces() + 1
 	if tailFirst < first {
 		tailFirst = first
 	}
