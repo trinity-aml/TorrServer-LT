@@ -20,3 +20,15 @@ export const getTorrServerHost = () => torrserverHost
 export const setTorrServerHost = host => {
   torrserverHost = host
 }
+
+// Per-tab playback-session token, generated once per page load. The dozens of
+// connections a player opens from a direct &play link all carry it, so the cache
+// groups them into one sliding window; another device (its own page load / its
+// own playlist fetch) gets a different token and thus an isolated window even
+// behind the same IP. The m3u playlist gets its own token server-side. See
+// torr.streamGroupKey.
+const sessionTokenValue = (
+  (window.crypto && window.crypto.randomUUID && window.crypto.randomUUID()) ||
+  Math.random().toString(36).slice(2, 12) + Date.now().toString(36)
+).replace(/-/g, '')
+export const sessionToken = () => sessionTokenValue

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -128,6 +129,12 @@ func getM3uList(tor *state.TorrentStatus, host string, fromLast bool) string {
 			from = pos
 		}
 	}
+	// One session token per generated playlist (one per fetch). The player keeps
+	// it on every stream URL across all its connections, so the cache groups them
+	// into one sliding window; a second device fetching its OWN playlist gets a
+	// different token and thus an isolated window even behind the same IP. See
+	// torr.streamGroupKey.
+	session := "&ss=" + newSessionToken()
 	for i, f := range tor.FileStats {
 		if i >= from {
 			if utils.GetMimeType(f.Path) != "*/*" {
@@ -141,16 +148,28 @@ func getM3uList(tor *state.TorrentStatus, host string, fromLast bool) string {
 					m3u += "#EXTVLCOPT:input-slave="         // include VLC option for external media
 					for _, namesake := range fileNamesakes { // include play-links to external media, with # splitter
 						sname := filepath.Base(namesake.Path)
-						m3u += host + "/stream/" + url.PathEscape(sname) + "?link=" + tor.Hash + "&index=" + fmt.Sprint(namesake.Id) + "&play#"
+						m3u += host + "/stream/" + url.PathEscape(sname) + "?link=" + tor.Hash + "&index=" + fmt.Sprint(namesake.Id) + "&play" + session + "#"
 					}
 					m3u += "\n"
 				}
 				name := filepath.Base(f.Path)
-				m3u += host + "/stream/" + url.PathEscape(name) + "?link=" + tor.Hash + "&index=" + fmt.Sprint(f.Id) + "&play\n"
+				m3u += host + "/stream/" + url.PathEscape(name) + "?link=" + tor.Hash + "&index=" + fmt.Sprint(f.Id) + "&play" + session + "\n"
 			}
 		}
 	}
 	return m3u
+}
+
+// newSessionToken returns a short random token used to isolate one playback
+// session's cache window from another's (see getM3uList / torr.streamGroupKey).
+func newSessionToken() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return hex.EncodeToString(b[:])
+	}
+	// crypto/rand essentially never fails; a time-based fallback still yields a
+	// distinct-enough token per fetch so sessions don't collapse together.
+	return fmt.Sprintf("%x", time.Now().UnixNano())
 }
 
 func findFileNamesakes(files []*state.TorrentFileStat, file *state.TorrentFileStat) []*state.TorrentFileStat {

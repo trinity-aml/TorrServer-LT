@@ -87,12 +87,23 @@ type Cache struct {
 	// evictIfOverCapacity for why this is no longer done per-eviction.
 	handle atomic.Pointer[lt.Torrent]
 
-	// playhead is the last known streaming position (streamAnchor) and when it was
-	// set. streamAnchor holds it through a brief gap where a player's only live
-	// connection is a header re-read, so the single window doesn't collapse onto
-	// the head and drop the forward buffer it just downloaded.
-	playhead     atomic.Int64
-	playheadTime atomic.Int64
+	// groups holds the per-device sliding-window state (one entry per Reader.group
+	// = one client IP). Each device gets its OWN held playhead so two devices
+	// streaming the same torrent from different positions keep independent windows
+	// that don't drag or evict each other. Keyed by group; pruned in streamAnchors
+	// once a group's last reader leaves. Guarded by groupsMu.
+	groupsMu sync.Mutex
+	groups   map[string]*group
+}
+
+// group is the sliding-window state of one playback session (device). playhead
+// is the last anchor and playheadTime when it was set; the anchor follows the
+// group's lowest reader DOWN at once but UP only after a hold, so a player's
+// trailing connection briefly between chunks doesn't shove the window forward
+// onto its leading read-ahead. See streamAnchors.
+type group struct {
+	playhead     int64
+	playheadTime int64
 }
 
 func newCache(s *Storage, sid int64, hash [20]byte, numPieces int, pieceLength int64) *Cache {
@@ -106,6 +117,7 @@ func newCache(s *Storage, sid int64, hash [20]byte, numPieces int, pieceLength i
 		abandoned:   map[int]int64{},
 		waiters:     map[int]chan struct{}{},
 		readers:     map[*Reader]struct{}{},
+		groups:      map[string]*group{},
 	}
 }
 
@@ -187,100 +199,151 @@ func (c *Cache) ActiveReaders() int {
 	return len(c.readers)
 }
 
-// streamAnchor is the single playback position the cache window is built around:
-// the LOWEST current piece among streaming readers (winFirst >= 0). A player
-// opens several connections at once and its demuxer reads out of order across a
-// span (audio/video at different offsets, short seeks); the lowest is the true
-// playhead (what it can't have played past yet) and the rest are read-ahead
-// within the span. Anchoring the one window here — [anchor-behind, anchor+ahead]
-// — covers the whole span, so those jumps don't drop and re-fetch each other's
-// pieces. Returns false when no reader is streaming yet. Never call while holding
-// readersMu (it locks it).
-func (c *Cache) streamAnchor() (int, bool) {
+// readerSnap is a lock-free snapshot of one reader's position + classification,
+// taken under readersMu so the anchor maths can run without holding it.
+type readerSnap struct {
+	group     string
+	cur       int
+	isProbe   bool // offset-0 ServeContent probe (not a real playhead)
+	isTail    bool // sitting in the file's EOF index pin (a pinned re-read)
+	belowHead bool // inside the container-header pin (a header re-read)
+}
+
+// groupReaderSnaps buckets every active reader by its group (device), capturing
+// the position + pin classification the anchor maths needs. Locks readersMu;
+// never call while holding it.
+func (c *Cache) groupReaderSnaps() map[string][]readerSnap {
+	plen := c.PieceLength
 	c.readersMu.Lock()
 	defer c.readersMu.Unlock()
-	plen := c.PieceLength
-	// playMin = lowest PLAYBACK position; anyMin = lowest of any qualifying reader.
-	// We anchor on playMin (so a header re-read can't drag the window back), and
-	// fall back to anyMin only when nothing but header/probe readers exist (the
-	// very start of playback, before the playhead leaves the head pin).
-	playMin, playOK := 0, false
-	anyMin, anyOK := 0, false
+	out := make(map[string][]readerSnap, len(c.readers))
 	for r := range c.readers {
 		cur := r.currentPiece()
-		// Exclude an offset-0 probe (ServeContent's Seek(0,End)/Seek(0,Start) before
-		// the real seek): counting it would peg the anchor at the file head forever.
+		s := readerSnap{group: r.group, cur: cur}
+		// Offset-0 probe (ServeContent's Seek(0,End)/Seek(0,Start) before the real
+		// seek): counting it would peg the anchor at the file head forever.
 		if r.winFirst.Load() < 0 && cur == 0 {
-			continue
+			s.isProbe = true
 		}
-		// Exclude a reader sitting in its file's END-OF-FILE index (the tail pin):
-		// players open a SECOND connection to read the container index at EOF (AVI
-		// idx1 / MKV cues / MP4 moov). That's not the playhead — it's pinned — but
-		// being a high piece it pegged the single playhead at the file END, so the
-		// window jumped off the body, the preloaded head got dropped and
-		// re-downloaded, and the body filled with holes. The head pin is excluded
-		// from the PLAYBACK anchor below (a header re-read isn't the playhead either),
-		// but kept in anyMin so a genuine play-from-start still anchors at 0.
+		// EOF index re-read (AVI idx1 / MKV cues / MP4 moov): players open a SECOND
+		// connection at the file end; it's pinned, not the playhead, and being a high
+		// piece it would otherwise peg the window at the file END.
 		if plen > 0 {
-			tailStart := r.fileLastPiece() - streamTailPinPieces + 1
-			if cur >= tailStart {
-				continue
+			if tailStart := r.fileLastPiece() - streamTailPinPieces + 1; cur >= tailStart {
+				s.isTail = true
 			}
 		}
-		if !anyOK || cur < anyMin {
-			anyMin, anyOK = cur, true
-		}
-		// Exclude a reader in its file's head pin: a container-header re-read, kept
-		// resident by the pin, NOT the playhead — counting it dragged the window
-		// back over the header and the playhead sat mid-cache instead of at the front.
+		// Container-header re-read, kept resident by the head pin, NOT the playhead —
+		// counting it dragged the window back over the header.
 		headEnd := streamHeaderPinPieces
 		if plen > 0 {
 			headEnd += int(r.file.Offset / plen)
 		}
 		if cur < headEnd {
+			s.belowHead = true
+		}
+		out[s.group] = append(out[s.group], s)
+	}
+	return out
+}
+
+// streamAnchors returns the playback anchor for every active group (device),
+// keyed by group. Each anchor is that group's LOWEST playback piece (its true
+// playhead — a player opens several connections at once and reads out of order
+// across a span; the lowest is what it can't have played past, the rest are
+// read-ahead within the span), run through a per-group monotonic hold so a
+// trailing connection briefly between chunks doesn't shove the window forward.
+// Two devices produce two anchors → two independent windows. A group with only
+// probe/header readers yields no entry. Locks readersMu and groupsMu (in that
+// order); never call while holding either.
+func (c *Cache) streamAnchors() map[string]int {
+	snaps := c.groupReaderSnaps()
+	_, aheadP := c.streamWindowPieces()
+	now := time.Now().Unix()
+
+	c.groupsMu.Lock()
+	defer c.groupsMu.Unlock()
+	out := make(map[string]int, len(snaps))
+	for key, rs := range snaps {
+		// playMin = lowest PLAYBACK position; anyMin = lowest of any non-pin reader.
+		// Anchor on playMin (so a header re-read can't drag the window back), falling
+		// back to anyMin only when nothing but header/probe readers exist (the very
+		// start, before the playhead leaves the head pin).
+		playMin, playOK := 0, false
+		anyMin, anyOK := 0, false
+		for _, s := range rs {
+			if s.isProbe || s.isTail {
+				continue
+			}
+			if !anyOK || s.cur < anyMin {
+				anyMin, anyOK = s.cur, true
+			}
+			if s.belowHead {
+				continue
+			}
+			if !playOK || s.cur < playMin {
+				playMin, playOK = s.cur, true
+			}
+		}
+
+		g := c.groups[key]
+		if g == nil {
+			g = &group{}
+			c.groups[key] = g
+		}
+
+		if playOK {
+			ph := int(g.playhead)
+			// Follow the lowest reader DOWN immediately (a real lower read must be
+			// covered), but UP only after a hold — a player keeps a trailing playback
+			// connection AND a leading read-ahead one a few pieces apart; when the
+			// trailing one is briefly between chunks the lowest live reader jumps up to
+			// the leading position. Holding bridges the gap so the window tracks the
+			// true (trailing) playhead instead of overshooting and churning.
+			switch {
+			case g.playheadTime == 0 || playMin <= ph:
+				g.playhead, g.playheadTime = int64(playMin), now
+				out[key] = playMin
+			// A small step up is the trailing connection between chunks (hold); a BIG
+			// step up — past the whole window — is a forward SEEK, so advance at once
+			// and let the old window drop immediately.
+			case playMin-ph > aheadP || now-g.playheadTime > anchorHoldSec:
+				g.playhead, g.playheadTime = int64(playMin), now
+				out[key] = playMin
+			default:
+				out[key] = ph
+			}
 			continue
 		}
-		if !playOK || cur < playMin {
-			playMin, playOK = cur, true
+		// No playback reader (only a header re-read / probe): hold the last playhead
+		// through the gap, else fall back to whatever reader exists.
+		if anyOK && now-g.playheadTime <= anchorHoldSec {
+			if ph := int(g.playhead); ph > anyMin {
+				out[key] = ph
+				continue
+			}
+		}
+		if anyOK {
+			out[key] = anyMin
 		}
 	}
-	now := time.Now().Unix()
-	if playOK {
-		ph := int(c.playhead.Load())
-		// Follow the lowest reader DOWN immediately (a real lower read must be
-		// covered), but UP only after a hold — a player keeps a trailing playback
-		// connection AND a leading read-ahead one a few pieces apart, each a series
-		// of short per-chunk connections; when the trailing one is briefly between
-		// chunks the lowest live reader jumps up to the leading position. Jumping
-		// the window up with it overshot the download (far pieces fetched then
-		// dropped when the trailing reader reappeared — cyclic churn) and pushed the
-		// playhead into the cache middle. Holding bridges the gap so the window
-		// tracks the true (trailing) playhead.
-		if c.playheadTime.Load() == 0 || playMin <= ph {
-			c.playhead.Store(int64(playMin))
-			c.playheadTime.Store(now)
-			return playMin, true
-		}
-		// playMin is above the held playhead. A small step up is the trailing
-		// connection briefly between chunks (hold, so the window doesn't jump onto
-		// the leading read-ahead); a BIG step up — past the whole window — is a
-		// forward SEEK, so advance at once and let the old window drop immediately.
-		_, aheadP := c.streamWindowPieces()
-		if playMin-ph > aheadP || now-c.playheadTime.Load() > anchorHoldSec {
-			c.playhead.Store(int64(playMin))
-			c.playheadTime.Store(now)
-			return playMin, true
-		}
-		return ph, true
-	}
-	// No playback reader (only a header re-read / probe): hold the last playhead
-	// through the gap, else fall back to whatever reader exists.
-	if anyOK && now-c.playheadTime.Load() <= anchorHoldSec {
-		if ph := int(c.playhead.Load()); ph > anyMin {
-			return ph, true
+	// Prune groups whose readers have all left, so a stale held playhead can't
+	// resurrect a window after the device stops.
+	for key := range c.groups {
+		if _, ok := snaps[key]; !ok {
+			delete(c.groups, key)
 		}
 	}
-	return anyMin, anyOK
+	return out
+}
+
+// streamAnchorForGroup is the anchor for one group (device), used by a reader to
+// drive its own window from its device's playhead — not the global lowest — so a
+// second device far ahead doesn't get pinned to the first's position. Returns
+// false when the group has no playback reader yet.
+func (c *Cache) streamAnchorForGroup(key string) (int, bool) {
+	a, ok := c.streamAnchors()[key]
+	return a, ok
 }
 
 // streamWindowPieces is the forward (ahead) and behind reach of the cache window
@@ -539,15 +602,18 @@ func (c *Cache) evictIfOverCapacity() {
 }
 
 // readerProtectRanges is the set of piece ranges eviction must keep resident:
-// the ONE sliding window around the playhead ([anchor-behind .. anchor+ahead]),
-// each just-opened reader's current piece, every streamed file's head/tail pins,
-// and an in-flight preload's buffer. One window for the whole player (not one
-// per connection) is what makes the cache slide smoothly instead of jumping to
-// whichever connection read last and dropping the others' pieces.
+// one sliding window per group/device around its playhead ([anchor-behind ..
+// anchor+ahead]), each just-opened reader's current piece, every streamed file's
+// head/tail pins, and an in-flight preload's buffer. One window per device (not
+// one per connection) is what makes each device's cache slide smoothly instead
+// of jumping to whichever connection read last and dropping the others' pieces.
 func (c *Cache) readerProtectRanges() [][2]int {
 	out := make([][2]int, 0, 8)
 	behindP, aheadP := c.streamWindowPieces()
-	if anchor, ok := c.streamAnchor(); ok {
+	// One sliding window per group (device): two devices at different positions add
+	// two disjoint ranges, so streamingReserve grows the capacity to fit both and
+	// neither's window is evicted to make room for the other.
+	for _, anchor := range c.streamAnchors() {
 		lo := anchor - behindP
 		if lo < 0 {
 			lo = 0
@@ -770,24 +836,26 @@ func (c *Cache) State() *state.CacheState {
 	}
 }
 
-// ReadersSnapshot returns ONE reader marker for the /cache detail view: the
-// single streaming window (playhead anchor + [winLo .. winHi]). A player opens
-// several connections — a trailing playback one and a leading read-ahead one a
-// few pieces apart — and showing each as its own marker put a confusing second
-// reader in the middle of the cache. The cache streams one window, so we report
-// one: the playhead at its front. ALWAYS non-nil — the web UI iterates Readers
-// without a null guard.
+// ReadersSnapshot returns one reader marker per group (device) for the /cache
+// detail view: each device's streaming window (playhead anchor + [winLo ..
+// winHi]). A single player opens several connections — a trailing playback one
+// and a leading read-ahead one a few pieces apart — that all collapse to ONE
+// marker (its group's window); a second device adds its own. Sorted by anchor
+// for a stable display. ALWAYS non-nil — the web UI iterates Readers without a
+// null guard.
 func (c *Cache) ReadersSnapshot() []*state.ReaderState {
-	anchor, ok := c.streamAnchor()
-	if !ok {
-		return []*state.ReaderState{}
-	}
+	anchors := c.streamAnchors()
 	behindP, aheadP := c.streamWindowPieces()
-	lo := anchor - behindP
-	if lo < 0 {
-		lo = 0
+	out := make([]*state.ReaderState, 0, len(anchors))
+	for _, anchor := range anchors {
+		lo := anchor - behindP
+		if lo < 0 {
+			lo = 0
+		}
+		out = append(out, &state.ReaderState{Start: lo, End: anchor + aheadP, Reader: anchor})
 	}
-	return []*state.ReaderState{{Start: lo, End: anchor + aheadP, Reader: anchor}}
+	sort.Slice(out, func(i, j int) bool { return out[i].Reader < out[j].Reader })
+	return out
 }
 
 func hashHex(h [20]byte) string {

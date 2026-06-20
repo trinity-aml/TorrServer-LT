@@ -6,7 +6,7 @@ import {
   Delete as DeleteIcon,
 } from '@material-ui/icons'
 import { getPeerString, humanizeSize, humanizeSpeed, removeRedundantCharacters } from 'utils/Utils'
-import { playlistTorrHost, streamHost, torrentsHost } from 'utils/Hosts'
+import { playlistTorrHost, streamHost, torrentsHost, sessionToken } from 'utils/Hosts'
 import { NoImageIcon } from 'icons'
 import DialogTorrentDetailsContent from 'components/DialogTorrentDetailsContent'
 import Dialog from '@material-ui/core/Dialog'
@@ -90,7 +90,9 @@ const Torrent = ({ torrent }) => {
   const catIndex = TORRENT_CATEGORIES.findIndex(e => e.key === category)
   const catArray = TORRENT_CATEGORIES.find(e => e.key === category)
   const getFileLink = (path, id) =>
-    `${streamHost()}/${encodeURIComponent(path.split('\\').pop().split('/').pop())}?link=${hash}&index=${id}&play`
+    `${streamHost()}/${encodeURIComponent(
+      path.split('\\').pop().split('/').pop(),
+    )}?link=${hash}&index=${id}&play&ss=${sessionToken()}`
 
   const fileList = (data && JSON.parse(data).TorrServer?.Files) || []
   const playableVideoList = fileList.filter(({ path }) => isFilePlayable(path))

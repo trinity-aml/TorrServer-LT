@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -76,7 +77,13 @@ func (t *Torrent) Stream(fileID int, req *http.Request, resp http.ResponseWriter
 		return err
 	}
 
-	reader := t.NewReader(file)
+	// Group every connection from the same playback session (device) into one
+	// sliding window: a player opens dozens of parallel connections that must
+	// share a window, while a SECOND device streaming the same torrent gets its
+	// own isolated window so the two don't evict each other. Keyed by the
+	// playlist's per-session token (falls back to client IP) — see streamGroupKey.
+	group := streamGroupKey(req)
+	reader := t.NewReaderGroup(file, group)
 	if reader == nil {
 		http.Error(resp, "no reader (cache not yet open)", http.StatusServiceUnavailable)
 		return errors.New("torr.Stream: NewReader returned nil")
@@ -118,8 +125,13 @@ func (t *Torrent) Stream(fileID int, req *http.Request, resp http.ResponseWriter
 	}
 
 	if sets.BTsets() != nil && sets.BTsets().EnableDebug {
+		// group= is the cache-window key this connection was bucketed under: "ss:..."
+		// when the playlist's per-session token was present, "ip:..." on the IP
+		// fallback. Two devices streaming the same torrent must show two DISTINCT
+		// group values here (one isolated window each); the same device's many
+		// connections must all share one — handy to verify on a multi-device test.
 		log.TLogln("torr.Stream: connect",
-			"id=", streamID, "remote=", req.RemoteAddr,
+			"id=", streamID, "remote=", req.RemoteAddr, "group=", group,
 			"file=", file.Path, "size=", file.Length,
 			"active_streams=", atomic.LoadInt32(&activeStreams),
 		)
@@ -136,4 +148,32 @@ func (t *Torrent) Stream(fileID int, req *http.Request, resp http.ResponseWriter
 // GetActiveStreams returns the current number of in-flight streams.
 func GetActiveStreams() int32 {
 	return atomic.LoadInt32(&activeStreams)
+}
+
+// streamGroupKey derives the per-device cache-window key from a request. It
+// prefers an explicit per-session token (the "ss" query param the playlist bakes
+// into every stream URL): a player keeps the whole URL — token included — across
+// the dozens of connections it opens, so they all map to one window, while two
+// DIFFERENT players each loaded a playlist with its own token and so get
+// independent windows EVEN BEHIND ONE IP (NAT, or two players on one host) — an
+// IP key cannot tell those apart. Falls back to the client IP (port stripped,
+// since one device dials from many ephemeral ports) for requests without a token
+// (direct /play links, older clients), so distinct devices still separate in the
+// common case. Prefixed so a token can never collide with an IP string.
+func streamGroupKey(req *http.Request) string {
+	if req == nil {
+		return ""
+	}
+	if req.URL != nil {
+		if ss := req.URL.Query().Get("ss"); ss != "" {
+			return "ss:" + ss
+		}
+	}
+	if req.RemoteAddr != "" {
+		if host, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
+			return "ip:" + host
+		}
+		return "ip:" + req.RemoteAddr
+	}
+	return ""
 }

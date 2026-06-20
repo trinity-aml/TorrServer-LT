@@ -590,6 +590,15 @@ func (t *Torrent) Status() *state.TorrentStatus {
 // cache hasn't been opened yet (metadata still in flight) or file is
 // nil.
 func (t *Torrent) NewReader(file *File) Reader {
+	return t.NewReaderGroup(file, "")
+}
+
+// NewReaderGroup is NewReader with an explicit device/session key (the client IP)
+// so concurrent streams of the same torrent from different devices each get their
+// own isolated sliding window in the cache. The streaming HTTP path passes the
+// caller's IP; internal consumers (DLNA index, tgbot, FUSE) use NewReader and
+// share the default group.
+func (t *Torrent) NewReaderGroup(file *File, group string) Reader {
 	if t == nil || t.lh == nil || file == nil {
 		return nil
 	}
@@ -603,7 +612,7 @@ func (t *Torrent) NewReader(file *File) Reader {
 		Path:   file.Path,
 		Offset: file.Offset,
 		Length: file.Length,
-	})
+	}, group)
 }
 
 // CloseReader releases a previously handed-out reader and pushes the

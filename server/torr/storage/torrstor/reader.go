@@ -120,6 +120,14 @@ type Reader struct {
 	handle *lt.Torrent // for SetPieceDeadline (nil disables priority hints)
 	file   FileInfo
 
+	// group identifies the playback session this reader belongs to — one device.
+	// A device opens many connections (VLC: ~80) all from the same client IP; they
+	// share ONE sliding window. Two devices (different IPs) streaming the same
+	// torrent get independent windows, anchors and held playheads, so neither
+	// evicts or drags the other's pieces. Empty for internal/non-device readers
+	// (DLNA index, tgbot, FUSE) — they all collapse into the default group.
+	group string
+
 	mu     sync.Mutex // serialises Read/Seek bodies and scheduleWindow's window diff
 	closed bool
 
@@ -148,8 +156,12 @@ type Reader struct {
 	stopTicker chan struct{}
 }
 
-// NewReader constructs a Reader. Returns nil when cache is nil.
-func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo) *Reader {
+// NewReader constructs a Reader. Returns nil when cache is nil. The optional
+// group is the device key (client IP) that isolates this reader's sliding window
+// from other devices streaming the same torrent; callers that don't stream to a
+// distinct device (tests, DLNA index, tgbot, FUSE) omit it and share the default
+// group.
+func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo, group ...string) *Reader {
 	if cache == nil {
 		return nil
 	}
@@ -158,6 +170,9 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo) *Reader {
 		handle:     handle,
 		file:       file,
 		stopTicker: make(chan struct{}),
+	}
+	if len(group) > 0 {
+		r.group = group[0]
 	}
 	r.readahead.Store(readaheadBytes()) // ReaderReadAHead % of cache (UI slider)
 	r.winFirst.Store(-1)
@@ -457,7 +472,7 @@ func (r *Reader) scheduleWindow() {
 	// streamAnchor).
 	cur := r.currentPiece()
 	first := cur
-	if a, ok := r.cache.streamAnchor(); ok && a < first {
+	if a, ok := r.cache.streamAnchorForGroup(r.group); ok && a < first {
 		first = a
 	}
 	_, aheadP := r.cache.streamWindowPieces()

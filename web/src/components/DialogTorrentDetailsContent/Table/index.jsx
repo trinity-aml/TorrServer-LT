@@ -1,4 +1,4 @@
-import { streamHost } from 'utils/Hosts'
+import { streamHost, sessionToken } from 'utils/Hosts'
 import isEqual from 'lodash/isEqual'
 import { humanizeSize, detectStandaloneApp, isMacOS, isAppleDevice } from 'utils/Utils'
 import ptt from 'parse-torrent-title'
@@ -22,7 +22,9 @@ const Table = memo(
     const [isSupported, setIsSupported] = useState(true)
     const preloadBuffer = fileId => fetch(`${streamHost()}?link=${hash}&index=${fileId}&preload`)
     const getFileLink = (path, id) =>
-      `${streamHost()}/${encodeURIComponent(path.split('\\').pop().split('/').pop())}?link=${hash}&index=${id}&play`
+      `${streamHost()}/${encodeURIComponent(
+        path.split('\\').pop().split('/').pop(),
+      )}?link=${hash}&index=${id}&play&ss=${sessionToken()}`
     const fileHasEpisodeText = !!playableFileList?.find(({ path }) => ptt.parse(path).episode)
     const fileHasSeasonText = !!playableFileList?.find(({ path }) => ptt.parse(path).season)
     const fileHasResolutionText = !!playableFileList?.find(({ path }) => ptt.parse(path).resolution)

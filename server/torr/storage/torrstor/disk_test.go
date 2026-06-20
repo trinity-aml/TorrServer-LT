@@ -251,6 +251,75 @@ func TestCache_EvictionSparesReaderWindow(t *testing.T) {
 	}
 }
 
+// TestCache_EvictionSparesBothDeviceWindows is the multi-device case: two
+// devices (distinct groups) stream the same torrent from far-apart positions.
+// Each group must get its OWN protected sliding window — neither device's
+// just-about-to-play pieces may be evicted to make room for the other's. With
+// CacheSize 10 pieces / ReadAhead 80%, each window is 8 ahead + 2 behind, so
+// device A at piece 20 protects [18..28] and device B at piece 60 protects
+// [58..68]; capacity grows (streamingReserve) to fit both plus the shared
+// head/tail pins, and everything outside both windows is dropped.
+func TestCache_EvictionSparesBothDeviceWindows(t *testing.T) {
+	prev := settings.BTsets()
+	settings.StoreBTsets(&settings.BTSets{UseDisk: false, CacheSize: 10 * pieceLen, ReaderReadAHead: 80})
+	t.Cleanup(func() { settings.StoreBTsets(prev) })
+
+	s := NewStorage()
+	h := mkHash(0x3C)
+	const total = 80
+	s.callbackOpen(1, h, total, pieceLen)
+	c := s.CacheByHash(h)
+
+	payload := bytes.Repeat([]byte{0x9}, int(pieceLen))
+	c.mu.Lock()
+	for i := 0; i < total; i++ {
+		p := newPiece(c, i)
+		if _, err := p.WriteAt(payload, 0); err != nil {
+			c.mu.Unlock()
+			t.Fatalf("write %d: %v", i, err)
+		}
+		p.setComplete(true)
+		p.accessed.Store(int64(i)) // all old, so only protection keeps a piece
+		c.pieces[i] = p
+	}
+	c.mu.Unlock()
+
+	// Device A streams piece 20; device B streams piece 60 — different groups.
+	rA := &Reader{cache: c, group: "deviceA", file: FileInfo{Offset: 0, Length: total * pieceLen}}
+	rA.readahead.Store(8 * pieceLen)
+	rA.offset.Store(20 * pieceLen)
+	rA.winFirst.Store(20)
+	rA.winLast.Store(28)
+	c.registerReader(rA)
+
+	rB := &Reader{cache: c, group: "deviceB", file: FileInfo{Offset: 0, Length: total * pieceLen}}
+	rB.readahead.Store(8 * pieceLen)
+	rB.offset.Store(60 * pieceLen)
+	rB.winFirst.Store(60)
+	rB.winLast.Store(68)
+	c.registerReader(rB)
+
+	c.evictIfOverCapacity()
+
+	present := func(id int) bool {
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		return c.pieces[id] != nil
+	}
+	// BOTH device windows + the shared head/tail pins survive.
+	for _, keep := range []int{0, 1, 18, 20, 28, 58, 60, 68, 77, 79} {
+		if !present(keep) {
+			t.Fatalf("protected piece %d was evicted (device isolation broken)", keep)
+		}
+	}
+	// Pieces outside both windows and the pins are dropped.
+	for _, gone := range []int{10, 30, 45, 55, 70} {
+		if present(gone) {
+			t.Fatalf("unprotected piece %d should have been evicted", gone)
+		}
+	}
+}
+
 func TestDiskPiece_NameLayoutMatchesLegacy(t *testing.T) {
 	dir := withDiskCache(t, 0)
 	s := NewStorage()
