@@ -57,22 +57,6 @@ const reprioritizeInterval = time.Second
 // keeps no matter the settings — so the buffer never collapses to nothing.
 const streamWindowFloorPieces = 4
 
-// streamBehindFloorPieces / streamBehindFloorBytes set the smallest behind reach
-// the cache keeps resident behind the playhead. With a high ReadAhead the
-// configured behind share rounds to zero, putting the low edge right on the
-// playhead; a player's trailing playback connection re-opens at slightly lower
-// offsets and its piece would then be evicted the instant the anchor ticks up,
-// forcing a re-download (the behind-edge wobble). The floor is BYTE-bounded
-// (streamBehindFloorBytes) and only rounded UP to streamBehindFloorPieces: on a
-// small piece size the ~2.5 s trailing lag spans two pieces, but on a large piece
-// size one piece already covers many seconds, so the floor shrinks to 1 instead
-// of pinning two 16 MB pieces (32 MB, half a 64 MB cache) the user never asked
-// for at ReadAhead 95 %.
-const (
-	streamBehindFloorPieces = 2
-	streamBehindFloorBytes  = 8 << 20
-)
-
 // windowLingerDelay is how long a closed reader's streaming window stays
 // prioritised before being returned to lazy. It bridges the gap between the
 // per-chunk HTTP connections an impatient player (VLC) opens, so libtorrent

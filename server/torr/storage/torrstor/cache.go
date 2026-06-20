@@ -347,8 +347,14 @@ func (c *Cache) streamAnchorForGroup(key string) (int, bool) {
 }
 
 // streamWindowPieces is the forward (ahead) and behind reach of the cache window
-// in pieces, from the ReaderReadAHead split of the cache budget. One window for
-// the whole player, so NOT divided across connections.
+// in pieces. It mirrors the original TorrServer's getOffsetRange, which is
+// per-device and BYTE-based: the cache budget is split by ReaderReadAHead into a
+// behind byte budget (capacity*(100-prc)/100) and an ahead byte budget
+// (capacity*prc/100), summing to the whole cache. We convert each to the pieces
+// that COVER those bytes (round up), so the split stays proportional to the
+// slider with no artificial floor — e.g. ReadAhead 95 % on a 16 MB-piece torrent
+// gives ~0-1 behind, not a fixed 2. One window for the whole player (NOT divided
+// across that player's connections, unlike the original's flawed /readers).
 func (c *Cache) streamWindowPieces() (behind, ahead int) {
 	plen := c.PieceLength
 	if plen <= 0 {
@@ -365,24 +371,18 @@ func (c *Cache) streamWindowPieces() (behind, ahead int) {
 			prc = 100
 		}
 	}
-	ahead = int(cacheB * prc / 100 / plen)
-	behind = int(cacheB * (100 - prc) / 100 / plen)
-	if ahead < streamWindowFloorPieces {
-		ahead = streamWindowFloorPieces
+	behindB := cacheB * (100 - prc) / 100
+	aheadB := cacheB * prc / 100
+	behind = int((behindB + plen - 1) / plen) // pieces covering the behind bytes
+	ahead = int((aheadB + plen - 1) / plen)
+	if ahead < 1 {
+		ahead = 1 // always some readahead, even at a tiny cache
 	}
-	// Byte-bounded behind floor: ~2 pieces for small pieces, 1 for large ones (see
-	// streamBehindFloorBytes), so ReadAhead 95 % doesn't pin half the cache behind
-	// the playhead on a 16 MB-piece torrent.
-	if floor := piecesForBytes(streamBehindFloorBytes, plen, streamBehindFloorPieces); behind < floor {
-		behind = floor
-	}
-	// Cap the whole RESIDENT window (behind + the anchor piece + ahead) to the
-	// cache budget in pieces. With a large piece size relative to CacheSize the
-	// floors above blow the window past the cache itself — e.g. 16 MB pieces in a
-	// 64 MB cache fit only 4 pieces, yet the floors want 2 behind + 4 ahead + 1 =
-	// 7 (112 MB), so a single viewer's window alone is 1.75x the configured size.
-	// Trim ahead first (keep >=1 so there's always some readahead), then behind, so
-	// the window never exceeds the budget the user set.
+	// Never let the resident window (behind + the anchor piece + ahead) exceed the
+	// cache budget in pieces — it physically can't hold more than CacheSize. With a
+	// large piece size the rounding pushes the window one piece over (e.g. 16 MB
+	// pieces in a 64 MB cache fit 4, the split rounds to 5-6); trim ahead first
+	// (keep >=1), then behind, so a single viewer stays at ~CacheSize.
 	budget := int(cacheB / plen)
 	if budget < 1 {
 		budget = 1
