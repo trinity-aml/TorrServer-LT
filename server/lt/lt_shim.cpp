@@ -61,6 +61,19 @@ extern void tsl_install_disk_io_on(libtorrent::session_params& params);
 namespace lt = libtorrent;
 using json = nlohmann::json;
 
+// nlohmann::json::dump() defaults to error_handler_t::strict, which THROWS
+// type_error.316 ("invalid UTF-8 byte ...") when any string in the object is
+// not valid UTF-8. libtorrent error/alert strings come from the OS: on a
+// non-UTF-8 system locale (e.g. Russian Windows, where error_code::message()
+// returns CP1251 bytes) those strings are not valid UTF-8, so a single such
+// alert would abort the whole batched dump and the Go side would lose every
+// alert in the pop (stalling piece_finished delivery and breaking streaming).
+// Replace bad bytes with U+FFFD instead of throwing — diagnostic text may be
+// mojibake, but the pump never fails. Use this for every dump in the shim.
+inline std::string json_dump(json const& j) {
+    return j.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
 // ============================================================================
 // global last error
 //
@@ -1085,7 +1098,7 @@ size_t lt_torrent_status_json(lt_torrent tid, char* buf, size_t cap) {
     try {
         auto h = get_torrent(tid);
         if (!h.is_valid()) { set_err(LT_ERR_NOT_FOUND, "torrent not found"); return 0; }
-        std::string s = status_to_json(h).dump();
+        std::string s = json_dump(status_to_json(h));
         return copy_string(s, buf, cap);
     } catch (std::exception const& e) {
         set_err(LT_ERR_INTERNAL, e.what());
@@ -1101,7 +1114,7 @@ char* lt_session_stats_json_alloc(lt_session sid, size_t* out_len) {
         slot->s->post_session_stats();
         json j;
         j["requested"] = true;
-        std::string s = j.dump();
+        std::string s = json_dump(j);
         return alloc_string(s, out_len);
     } catch (std::exception const& e) {
         set_err(LT_ERR_INTERNAL, e.what());
@@ -1138,7 +1151,7 @@ char* lt_session_pop_alerts_json_alloc(lt_session sid, size_t* out_len) {
             try { arr.push_back(alert_to_json(a)); }
             catch (std::exception const&) { /* skip malformed */ }
         }
-        std::string s = arr.dump();
+        std::string s = json_dump(arr);
         return alloc_string(s, out_len);
     } catch (std::exception const& e) {
         set_err(LT_ERR_INTERNAL, e.what());
@@ -1173,7 +1186,7 @@ static char* parse_atp_to_json(lt::add_torrent_params const& atp, size_t* out_le
         j["piece_length"]  = 0;
         j["total_size"]    = 0;
     }
-    std::string s = j.dump();
+    std::string s = json_dump(j);
     return alloc_string(s, out_len);
 }
 
