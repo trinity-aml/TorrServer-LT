@@ -39,15 +39,17 @@ func newPiece(c *Cache, id int) *Piece {
 // re-opening a Cache after a settings change picks the new backend
 // (existing Pieces keep their original backend until released).
 func useDisk() bool {
-	return settings.BTsets() != nil && settings.BTsets().UseDisk &&
-		settings.BTsets().TorrentsSavePath != ""
+	// Load the atomically-swapped pointer once: separate BTsets() calls can race
+	// a runtime swap (or a test resetting it to nil) and nil-panic mid-expression.
+	s := settings.BTsets()
+	return s != nil && s.UseDisk && s.TorrentsSavePath != ""
 }
 
 func savePath() string {
-	if settings.BTsets() == nil {
-		return ""
+	if s := settings.BTsets(); s != nil {
+		return s.TorrentsSavePath
 	}
-	return settings.BTsets().TorrentsSavePath
+	return ""
 }
 
 func (p *Piece) WriteAt(b []byte, off int64) (int, error) {

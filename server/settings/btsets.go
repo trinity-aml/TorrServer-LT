@@ -84,6 +84,16 @@ type BTSets struct {
 	SslCert string
 	SslKey  string
 
+	// Reverse proxy
+	// TrustedProxies lists the reverse proxies (CIDRs like "192.168.0.0/16" or
+	// bare IPs) whose X-Forwarded-For / X-Real-IP header is honoured to recover
+	// the real client IP for per-device cache grouping (see torr.streamGroupKey),
+	// so clients behind a proxy aren't all collapsed into one cache window. Empty
+	// = trust loopback + private LAN ranges (proxy on the same host/LAN), which
+	// covers the usual home setup; set explicit entries to harden against a
+	// spoofed header from an untrusted client.
+	TrustedProxies []string
+
 	// Reader
 	ResponsiveMode bool // enable Responsive reader (don't wait pieceComplete)
 

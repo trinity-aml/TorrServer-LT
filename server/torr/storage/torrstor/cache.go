@@ -684,12 +684,15 @@ func pieceInRanges(id int, ranges [][2]int) bool {
 	return false
 }
 
-// globalCacheSize is the user-configured cache budget in bytes.
+// globalCacheSize is the user-configured cache budget in bytes. Loads the
+// settings pointer ONCE: it is swapped atomically at runtime (and to nil by
+// tests), so a check-then-deref on two separate BTsets() calls can nil-panic in
+// the async eviction goroutine when the second call races the swap.
 func globalCacheSize() int64 {
-	if settings.BTsets() == nil {
-		return 0
+	if s := settings.BTsets(); s != nil {
+		return s.CacheSize
 	}
-	return settings.BTsets().CacheSize
+	return 0
 }
 
 // capacity is this cache's effective eviction budget: the global CacheSize,

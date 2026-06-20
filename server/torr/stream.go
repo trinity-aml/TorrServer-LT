@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -169,11 +170,76 @@ func streamGroupKey(req *http.Request) string {
 			return "ss:" + ss
 		}
 	}
-	if req.RemoteAddr != "" {
-		if host, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
-			return "ip:" + host
-		}
-		return "ip:" + req.RemoteAddr
+	if ip := clientIP(req); ip != "" {
+		return "ip:" + ip
 	}
 	return ""
+}
+
+// clientIP returns the real client IP for grouping. Normally that is the direct
+// TCP peer (req.RemoteAddr). When the request arrived through a TRUSTED reverse
+// proxy, the peer is the proxy — not the device — so every client behind it would
+// otherwise collapse into one cache group; we instead recover the originating
+// address from the proxy-set X-Forwarded-For / X-Real-IP header. Those headers are
+// client-spoofable, so they are honoured ONLY when the direct peer is a trusted
+// proxy (see isTrustedProxy / settings.TrustedProxies).
+func clientIP(req *http.Request) string {
+	peer := req.RemoteAddr
+	if host, _, err := net.SplitHostPort(peer); err == nil {
+		peer = host
+	}
+	if peer == "" || !isTrustedProxy(peer) {
+		return peer
+	}
+	// Trusted peer: walk X-Forwarded-For (client, proxy1, proxy2, ...) right to
+	// left and return the first address that is NOT itself a trusted proxy — the
+	// client just before the trust boundary. If the whole chain is trusted, the
+	// leftmost entry is the originator.
+	if xff := req.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		for i := len(parts) - 1; i >= 0; i-- {
+			if ip := strings.TrimSpace(parts[i]); ip != "" && !isTrustedProxy(ip) {
+				return ip
+			}
+		}
+		for _, p := range parts {
+			if ip := strings.TrimSpace(p); ip != "" {
+				return ip
+			}
+		}
+	}
+	if xr := strings.TrimSpace(req.Header.Get("X-Real-Ip")); xr != "" {
+		return xr
+	}
+	return peer
+}
+
+// isTrustedProxy reports whether ipStr is a reverse proxy whose forwarding
+// headers may be trusted. With settings.TrustedProxies set, the address must
+// match one of its CIDRs/IPs; with it empty, loopback and private/LAN ranges are
+// trusted by default (the proxy-on-my-own-host/LAN case).
+func isTrustedProxy(ipStr string) bool {
+	ip := net.ParseIP(strings.TrimSpace(ipStr))
+	if ip == nil {
+		return false
+	}
+	if s := sets.BTsets(); s != nil && len(s.TrustedProxies) > 0 {
+		for _, t := range s.TrustedProxies {
+			t = strings.TrimSpace(t)
+			if t == "" {
+				continue
+			}
+			if _, cidr, err := net.ParseCIDR(t); err == nil {
+				if cidr.Contains(ip) {
+					return true
+				}
+				continue
+			}
+			if pip := net.ParseIP(t); pip != nil && pip.Equal(ip) {
+				return true
+			}
+		}
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
 }
