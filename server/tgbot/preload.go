@@ -30,7 +30,7 @@ func cmdPreload(c tele.Context) error {
 		return c.Send(tr(uid, "torrent_not_found") + ":\n<code>" + hash + "</code>")
 	}
 
-	torr.Preload(context.Background(), t, index)
+	torr.Preload(context.Background(), t, index, false)
 	return c.Send(fmt.Sprintf(tr(uid, "preload_started"), args[1]))
 }
 
@@ -44,6 +44,6 @@ func callbackPreload(c tele.Context, hash, indexStr string) error {
 	if t == nil {
 		return c.Respond(&tele.CallbackResponse{Text: tr(uid, "torrent_not_found")})
 	}
-	torr.Preload(context.Background(), t, index)
+	torr.Preload(context.Background(), t, index, false)
 	return c.Respond(&tele.CallbackResponse{Text: fmt.Sprintf(tr(uid, "preload_btn"), indexStr)})
 }

@@ -45,7 +45,12 @@ const (
 // the head of the file: it raises priority + ordered deadlines on the piece
 // range and blocks until they arrive (or the torrent closes / 2 min elapses),
 // updating PreloadedBytes/PreloadSize for the UI to poll.
-func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
+// probe asks for the synchronous ffprobe BitRate/DurationSeconds population once
+// the head+tail buffer is resident — used only by the explicit &preload path
+// (TorrServe / Lampa, which show those in their preload dialog). The &play path
+// (a raw player opening / switching episodes) passes false: it doesn't need the
+// media info and shouldn't pay the extra probe time.
+func (t *Torrent) Preload(ctx context.Context, index int, size int64, probe bool) {
 	if t == nil || t.lh == nil || size <= 0 {
 		return
 	}
@@ -267,32 +272,6 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 	// head and the progress/gate loop below can start immediately.
 	prioritiseTail(tailFirst, tailLast)
 
-	// Probe BitRate/DurationSeconds NOW, concurrently with the fill — not after it.
-	// The original TorrServer surfaces these in the status so the client's preload
-	// dialog can show bitrate/duration while still buffering. ffprobe reads the
-	// container header (start of the head) and, for moov-at-end MP4, the tail index
-	// — both freshly prioritised above — so the values usually appear within a
-	// couple of seconds, long before the head+tail gate releases at 100%. The probe
-	// reads over a loopback /play stream tagged as an internal reader, so it never
-	// counts toward the playback hand-off gate below. Detached + deduped: it must
-	// never block playback start, fail the preload, or run twice at once.
-	t.mu.Lock()
-	needProbe := t.BitRate == "" && t.DurationSeconds == 0 && !t.probing
-	if needProbe {
-		t.probing = true
-	}
-	t.mu.Unlock()
-	if needProbe {
-		go func() {
-			defer func() {
-				t.mu.Lock()
-				t.probing = false
-				t.mu.Unlock()
-			}()
-			t.probeMediaInfo(index)
-		}()
-	}
-
 	// For MP4 the exact moov range can be auto-detected and buffered precisely (its
 	// size depends on the video, not the piece size). Run it CONCURRENTLY: LocateMoov
 	// reads container pieces and can block up to 30s, and serialising it in FRONT of
@@ -372,6 +351,22 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 		// "100% but not playing" this gate fix removes. Hold at <=99% until every
 		// gate piece is verified; clients gate on stat, and the bar now matches.
 		if done == gateCount {
+			// Head + tail are resident. For the explicit &preload path (TorrServe /
+			// Lampa) probe BitRate/DurationSeconds NOW — synchronously, reading from
+			// the just-filled cache, so ffprobe never blocks on a slow piece (it reads
+			// the header from the head and, for an unknown-size MKV, the duration from
+			// the EOF tail piece — both already verified) and the value is set BEFORE
+			// we report 100%, so it's in the very Status the polling client sees at
+			// gate release. The &play path (probe=false) skips this; a player switching
+			// episodes just continues the normal head->cache->tail download.
+			if probe {
+				t.mu.Lock()
+				needProbe := t.BitRate == "" && t.DurationSeconds == 0
+				t.mu.Unlock()
+				if needProbe {
+					t.probeMediaInfo(index)
+				}
+			}
 			got = total
 		} else if capBytes := total - total/100; got > capBytes {
 			got = capBytes
@@ -436,10 +431,12 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 // the file's BitRate and DurationSeconds on the torrent, so they surface in the
 // status JSON (state.TorrentStatus.BitRate / DurationSeconds) that clients read.
 // This is the auto-population the original TorrServer performs inside Preload;
-// the on-demand /ffp/{hash}/{id} endpoint is unaffected. Launched concurrently
-// with the fill (not after it) so the values appear in the preload dialog while
-// buffering; ffprobe simply blocks until the header pieces arrive. Detached and
-// defensive: a background task must never crash the process or disturb playback.
+// the on-demand /ffp/{hash}/{id} endpoint is unaffected. Called SYNCHRONOUSLY by
+// the &preload gate once head+tail are resident, so every byte ffprobe needs (the
+// header from the head, the duration from the EOF tail for unknown-size MKV) is
+// already in the cache — it returns in a moment and can't time out on a slow
+// piece. Defensive: a recover() keeps a probe failure from ever crashing the
+// process or aborting the preload.
 func (t *Torrent) probeMediaInfo(index int) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -482,10 +479,12 @@ func (t *Torrent) probeMediaInfo(index int) {
 		"duration", data.Format.DurationSeconds, "elapsed", time.Since(probeStart).Truncate(time.Millisecond).String())
 }
 
-// Preload (free function) keeps API parity with the legacy call sites
-// (web/api/stream.go) that do `torr.Preload(ctx, tor, index)`. ctx should be
-// the HTTP request's context so an abandoned preload stops blocking.
-func Preload(ctx context.Context, torr *Torrent, index int) {
+// Preload (free function) keeps API parity with the call sites
+// (web/api/stream.go, tgbot). ctx should be the HTTP request's context so an
+// abandoned preload stops blocking. probe=true (the explicit &preload endpoint
+// TorrServe/Lampa hit) runs the synchronous ffprobe media-info population once
+// the buffer is in; false (a raw &play, tgbot) skips it.
+func Preload(ctx context.Context, torr *Torrent, index int, probe bool) {
 	if torr == nil || settings.BTsets() == nil {
 		return
 	}
@@ -504,7 +503,7 @@ func Preload(ctx context.Context, torr *Torrent, index int) {
 	if size <= 0 {
 		return
 	}
-	torr.Preload(ctx, index, size)
+	torr.Preload(ctx, index, size, probe)
 }
 
 // playGateDebounce is how long, after a play-gated preload of one file, a play
@@ -609,7 +608,9 @@ func PreloadOnPlay(reqCtx context.Context, torr *Torrent, index int) {
 	torr.preloadGateMu.Unlock()
 
 	go func() {
-		Preload(context.Background(), torr, index)
+		// &play path: no ffprobe — a player opening/switching episodes just wants
+		// the buffer, not the media info (only TorrServe/Lampa's &preload need it).
+		Preload(context.Background(), torr, index, false)
 		torr.preloadGateMu.Lock()
 		torr.preloadGateIndex = 0
 		torr.preloadGateDone = nil

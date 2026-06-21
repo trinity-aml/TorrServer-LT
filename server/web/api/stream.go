@@ -203,7 +203,7 @@ func stream(c *gin.Context) {
 		// WORKING early — the polling client then launches the player on a
 		// half-filled buffer ("playback starts before preload"). Run it to
 		// completion (it still ends on torrent close / a 2-min cap inside Preload).
-		torr.Preload(context.Background(), tor, index)
+		torr.Preload(context.Background(), tor, index, true)
 	}
 	// return stat if query
 	if stat {
@@ -373,7 +373,7 @@ func streamNoAuth(c *gin.Context) {
 	if preload {
 		// Detached from the request context — see the note in stream(): a client's
 		// short preload-request timeout must not cancel the buffer fill.
-		torr.Preload(context.Background(), tor, index)
+		torr.Preload(context.Background(), tor, index, true)
 	}
 	// return m3u if query
 	if m3u {

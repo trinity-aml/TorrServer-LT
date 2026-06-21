@@ -65,10 +65,6 @@ type Torrent struct {
 
 	DurationSeconds float64
 	BitRate         string
-	// probing guards probeMediaInfo so only one ffprobe runs per torrent at a
-	// time (a preload can fire concurrently with reconnects). Reset when the
-	// probe ends so a failed probe re-runs on the next play. Held under mu.
-	probing bool
 
 	expiredTime time.Time
 
