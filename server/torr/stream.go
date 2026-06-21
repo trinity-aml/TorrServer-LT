@@ -4,8 +4,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -139,6 +141,24 @@ func (t *Torrent) Stream(fileID int, req *http.Request, resp http.ResponseWriter
 	}
 	if req.Header.Get("Range") != "" {
 		resp.Header().Set("Accept-Ranges", "bytes")
+	}
+
+	// The internal ffprobe media probe is served as a NON-SEEKABLE sized stream:
+	// advertise the real length (so ffprobe still computes bitrate = size*8/duration)
+	// but DON'T honour Range and DON'T send Accept-Ranges. ffmpeg then can't seek to
+	// the file END to read the matroska Cues / last cluster — on a multi-file torrent
+	// that EOF read lands on the slow boundary piece the preload gate also waits for,
+	// so an unbounded probe only finished WITH the preload (verified from the live
+	// log: a `Range: bytes=<size-789>-` connection blocked ~22 s). Reading sequentially
+	// from offset 0, ffprobe takes the duration from the container header and returns
+	// right after the head, long before the tail downloads. Files whose duration lives
+	// ONLY at EOF degrade gracefully (the probe returns without it; /ffp stays seekable).
+	if group == torrstor.ProbeReaderGroup {
+		resp.Header().Del("Accept-Ranges")
+		resp.Header().Set("Content-Length", strconv.FormatInt(file.Length, 10))
+		resp.WriteHeader(http.StatusOK)
+		_, _ = io.Copy(resp, reader)
+		return nil
 	}
 
 	if sets.BTsets() != nil && sets.BTsets().EnableDebug {
