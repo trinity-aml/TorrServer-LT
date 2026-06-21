@@ -466,19 +466,23 @@ func (t *Torrent) probeMediaInfo(index int) {
 	// clusters find_stream_info reads past the header (2 s ~ a couple of MB, inside
 	// the resident head). +ignidx stops the matroska demuxer from chasing the Cues
 	// index at EOF. The on-demand /ffp endpoint stays unbounded (full media info).
+	probeStart := time.Now()
+	log.TLogln("torr.probeMediaInfo: start", t.Name())
 	data, err := ffprobe.ProbeUrl(link,
 		"-fflags", "+ignidx",
 		"-probesize", "5000000",
 		"-analyzeduration", "2000000",
 	)
 	if err != nil || data == nil || data.Format == nil {
+		log.TLogln("torr.probeMediaInfo: failed after", time.Since(probeStart).Truncate(time.Millisecond).String(), "err:", err)
 		return
 	}
 	t.mu.Lock()
 	t.BitRate = data.Format.BitRate
 	t.DurationSeconds = data.Format.DurationSeconds
 	t.mu.Unlock()
-	log.TLogln("torr.probeMediaInfo:", t.Name(), "bitrate", data.Format.BitRate, "duration", data.Format.DurationSeconds)
+	log.TLogln("torr.probeMediaInfo:", t.Name(), "bitrate", data.Format.BitRate,
+		"duration", data.Format.DurationSeconds, "elapsed", time.Since(probeStart).Truncate(time.Millisecond).String())
 }
 
 // Preload (free function) keeps API parity with the legacy call sites

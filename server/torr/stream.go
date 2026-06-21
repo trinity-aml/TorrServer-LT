@@ -91,6 +91,21 @@ func (t *Torrent) Stream(fileID int, req *http.Request, resp http.ResponseWriter
 		return errors.New("torr.Stream: NewReader returned nil")
 	}
 	defer t.CloseReader(reader)
+
+	// Diagnostics for the internal ffprobe media probe: log every connection it
+	// opens with its Range, and how long that connection blocked. ffprobe seeking
+	// to the file END (a Range near `size`) shows up here — on a multi-file
+	// torrent that lands on the slow boundary piece the preload gate also waits
+	// for, which is what makes the series probe finish only with the preload.
+	if group == torrstor.ProbeReaderGroup {
+		probeStart := time.Now()
+		log.TLogln("torr.Stream: ffprobe probe open", "file=", file.Path,
+			"size=", file.Length, "range=", req.Header.Get("Range"))
+		defer func() {
+			log.TLogln("torr.Stream: ffprobe probe close", "range=", req.Header.Get("Range"),
+				"blocked=", time.Since(probeStart).Truncate(time.Millisecond).String())
+		}()
+	}
 	// Tear the reader down the moment the client disconnects: a player seek
 	// aborts this request and opens a new range — the old reader must not sit
 	// in a 60s piece wait keeping its stale window prioritised against the new
