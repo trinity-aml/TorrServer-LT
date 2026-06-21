@@ -199,6 +199,22 @@ func (c *Cache) ActiveReaders() int {
 	return len(c.readers)
 }
 
+// StreamingReaders counts only readers that represent a real playback client,
+// excluding internal loopback readers (the ffprobe media probe). The preload
+// hand-off gate uses this so an early media probe running alongside the fill is
+// never mistaken for a player taking over the stream.
+func (c *Cache) StreamingReaders() int {
+	c.readersMu.Lock()
+	defer c.readersMu.Unlock()
+	n := 0
+	for r := range c.readers {
+		if !r.internal {
+			n++
+		}
+	}
+	return n
+}
+
 // readerSnap is a lock-free snapshot of one reader's position + classification,
 // taken under readersMu so the anchor maths can run without holding it.
 type readerSnap struct {

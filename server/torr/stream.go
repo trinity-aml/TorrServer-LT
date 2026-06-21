@@ -17,6 +17,7 @@ import (
 	mt "server/mimetype"
 	sets "server/settings"
 	"server/torr/state"
+	"server/torr/storage/torrstor"
 )
 
 // activeStreams tracks the number of in-flight streaming clients. The
@@ -166,6 +167,12 @@ func streamGroupKey(req *http.Request) string {
 		return ""
 	}
 	if req.URL != nil {
+		// Internal ffprobe media probe (BitRate/DurationSeconds): a loopback read
+		// tagged with stat=ffprobe gets the reserved internal group so it is not
+		// counted as a streaming client by the preload hand-off gate.
+		if req.URL.Query().Get("stat") == "ffprobe" {
+			return torrstor.ProbeReaderGroup
+		}
 		if ss := req.URL.Query().Get("ss"); ss != "" {
 			return "ss:" + ss
 		}

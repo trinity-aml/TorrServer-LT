@@ -13,6 +13,13 @@ import (
 	"server/torr/storage/state"
 )
 
+// ProbeReaderGroup is the reserved cache-window group for the internal ffprobe
+// loopback reader (the early BitRate/DurationSeconds media probe). A reader in
+// this group is marked internal and excluded from StreamingReaders, so a probe
+// running CONCURRENTLY with a preload never looks like a playback client taking
+// over and so never trips the preload's hand-off gate.
+const ProbeReaderGroup = "probe:loopback"
+
 // readaheadBytes is the forward streaming window: ReaderReadAHead percent of
 // the cache budget (the slider exposed in the UI). Falls back to 16 MB when
 // settings aren't loaded.
@@ -123,6 +130,11 @@ type Reader struct {
 	// (DLNA index, tgbot, FUSE) — they all collapse into the default group.
 	group string
 
+	// internal marks a non-playback reader (the ffprobe media probe) so it is
+	// excluded from StreamingReaders: an early probe sharing the cache with a
+	// preload must not be mistaken for a player and trip the hand-off gate.
+	internal bool
+
 	mu     sync.Mutex // serialises Read/Seek bodies and scheduleWindow's window diff
 	closed bool
 
@@ -168,6 +180,7 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo, group ...string)
 	}
 	if len(group) > 0 {
 		r.group = group[0]
+		r.internal = r.group == ProbeReaderGroup
 	}
 	r.readahead.Store(readaheadBytes()) // ReaderReadAHead % of cache (UI slider)
 	r.winFirst.Store(-1)

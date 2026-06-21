@@ -267,6 +267,32 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 	// head and the progress/gate loop below can start immediately.
 	prioritiseTail(tailFirst, tailLast)
 
+	// Probe BitRate/DurationSeconds NOW, concurrently with the fill — not after it.
+	// The original TorrServer surfaces these in the status so the client's preload
+	// dialog can show bitrate/duration while still buffering. ffprobe reads the
+	// container header (start of the head) and, for moov-at-end MP4, the tail index
+	// — both freshly prioritised above — so the values usually appear within a
+	// couple of seconds, long before the head+tail gate releases at 100%. The probe
+	// reads over a loopback /play stream tagged as an internal reader, so it never
+	// counts toward the playback hand-off gate below. Detached + deduped: it must
+	// never block playback start, fail the preload, or run twice at once.
+	t.mu.Lock()
+	needProbe := t.BitRate == "" && t.DurationSeconds == 0 && !t.probing
+	if needProbe {
+		t.probing = true
+	}
+	t.mu.Unlock()
+	if needProbe {
+		go func() {
+			defer func() {
+				t.mu.Lock()
+				t.probing = false
+				t.mu.Unlock()
+			}()
+			t.probeMediaInfo(index)
+		}()
+	}
+
 	// For MP4 the exact moov range can be auto-detected and buffered precisely (its
 	// size depends on the video, not the piece size). Run it CONCURRENTLY: LocateMoov
 	// reads container pieces and can block up to 30s, and serialising it in FRONT of
@@ -371,7 +397,7 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 		// pure interference — stop it (priority release + reserve clear below).
 		// Guarded by head residency so the EOF-index-reader-first race still fills
 		// the head before yielding (never starts playback on an empty buffer).
-		if cache.ActiveReaders() > 0 && cache.Have(headLast) {
+		if cache.StreamingReaders() > 0 && cache.Have(headLast) {
 			break
 		}
 		select {
@@ -404,27 +430,16 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 
 	log.TLogln("torr.Preload:", t.Name(), "buffered head", headFirst, "..", headLast,
 		"+ tail", tailFirst, "..", tailLast)
-
-	// Fill BitRate/DurationSeconds for the torrent status the way the original
-	// TorrServer does at preload time (ffprobe over the play stream). The head and
-	// container index (tail) are resident now, so the probe reads from cache and
-	// returns in a second or two. Run it DETACHED so it never blocks playback start
-	// and never fails the preload, and only when not already known (re-plays of the
-	// same file shouldn't re-probe).
-	t.mu.Lock()
-	needProbe := t.BitRate == "" && t.DurationSeconds == 0
-	t.mu.Unlock()
-	if needProbe {
-		go t.probeMediaInfo(index)
-	}
 }
 
 // probeMediaInfo runs ffprobe against the torrent's own /play stream and stores
 // the file's BitRate and DurationSeconds on the torrent, so they surface in the
 // status JSON (state.TorrentStatus.BitRate / DurationSeconds) that clients read.
 // This is the auto-population the original TorrServer performs inside Preload;
-// the on-demand /ffp/{hash}/{id} endpoint is unaffected. Detached and defensive:
-// a background task must never crash the process or disturb playback.
+// the on-demand /ffp/{hash}/{id} endpoint is unaffected. Launched concurrently
+// with the fill (not after it) so the values appear in the preload dialog while
+// buffering; ffprobe simply blocks until the header pieces arrive. Detached and
+// defensive: a background task must never crash the process or disturb playback.
 func (t *Torrent) probeMediaInfo(index int) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -434,9 +449,12 @@ func (t *Torrent) probeMediaInfo(index int) {
 	if t == nil || !ffprobe.Exists() {
 		return
 	}
-	link := "http://127.0.0.1:" + settings.Port + "/play/" + t.Hash().HexString() + "/" + strconv.Itoa(index)
+	// stat=ffprobe tags this loopback reader as internal (see streamGroupKey /
+	// ProbeReaderGroup) so it isn't counted as a playback client by the preload's
+	// hand-off gate while the fill is still running.
+	link := "http://127.0.0.1:" + settings.Port + "/play/" + t.Hash().HexString() + "/" + strconv.Itoa(index) + "?stat=ffprobe"
 	if settings.Ssl {
-		link = "https://127.0.0.1:" + settings.SslPort + "/play/" + t.Hash().HexString() + "/" + strconv.Itoa(index)
+		link = "https://127.0.0.1:" + settings.SslPort + "/play/" + t.Hash().HexString() + "/" + strconv.Itoa(index) + "?stat=ffprobe"
 	}
 	data, err := ffprobe.ProbeUrl(link)
 	if err != nil || data == nil || data.Format == nil {
