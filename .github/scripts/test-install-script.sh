@@ -15,6 +15,10 @@ readonly NC='\033[0m' # No Color
 # version to special-case here — the latest release installs everywhere.
 readonly SCRIPT_NAME="installTorrServerLinux.sh"
 readonly INSTALL_DIR="/opt/torrserver"
+# Installed binary name pattern. Must track installTorrServerLinux.sh's
+# BINARY_NAME_PREFIX ("TorrServer-LT-linux") — the LT fork ships
+# TorrServer-LT-linux-<arch>, not the upstream TorrServer-linux-<arch>.
+readonly BINARY_GLOB="TorrServer-LT-linux-*"
 readonly MAX_RETRIES="${MAX_RETRIES:-3}"
 readonly RETRY_DELAY="${RETRY_DELAY:-2}"
 
@@ -224,8 +228,8 @@ main() {
   # Test 4: Check installation
   echo "::group::Test 4: Verify installation"
   log_test "4" "Checking installation..."
-  echo "Executing: ls $INSTALL_DIR/TorrServer-linux-*"
-  if ls "$INSTALL_DIR"/TorrServer-linux-* >/dev/null 2>&1; then
+  echo "Executing: ls $INSTALL_DIR/$BINARY_GLOB"
+  if ls "$INSTALL_DIR"/$BINARY_GLOB >/dev/null 2>&1; then
     log_info "Binary file exists"
   else
     log_error "Binary file not found"
