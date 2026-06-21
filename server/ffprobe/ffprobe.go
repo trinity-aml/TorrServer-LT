@@ -32,8 +32,12 @@ func Exists() bool {
 	return !os.IsNotExist(err)
 }
 
-func ProbeUrl(link string) (*ffprobe.ProbeData, error) {
-	data, err := ffprobe.ProbeURL(getCtx(), link)
+// ProbeUrl probes the media at link. extra passes additional ffprobe input
+// options (placed before the URL by the library), e.g. -analyzeduration /
+// -probesize caps to keep a probe near the file head instead of reading deep
+// into — or seeking to the end of — the file.
+func ProbeUrl(link string, extra ...string) (*ffprobe.ProbeData, error) {
+	data, err := ffprobe.ProbeURL(getCtx(), link, extra...)
 	return data, err
 }
 

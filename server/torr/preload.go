@@ -456,7 +456,21 @@ func (t *Torrent) probeMediaInfo(index int) {
 	if settings.Ssl {
 		link = "https://127.0.0.1:" + settings.SslPort + "/play/" + t.Hash().HexString() + "/" + strconv.Itoa(index) + "?stat=ffprobe"
 	}
-	data, err := ffprobe.ProbeUrl(link)
+	// Keep the probe near the file HEAD so it returns the format-level duration +
+	// bitrate (both derivable from the container header) without ffprobe reading
+	// deep into the file or seeking to its end. On a multi-file torrent (series)
+	// the file's EOF piece is the boundary piece shared with the next file — the
+	// slowest one, which the preload gate itself waits for — so an unbounded probe
+	// only finished WITH the preload. probesize stays generous so MKVs with large
+	// headers still parse; analyzeduration is the real lever — it bounds how many
+	// clusters find_stream_info reads past the header (2 s ~ a couple of MB, inside
+	// the resident head). +ignidx stops the matroska demuxer from chasing the Cues
+	// index at EOF. The on-demand /ffp endpoint stays unbounded (full media info).
+	data, err := ffprobe.ProbeUrl(link,
+		"-fflags", "+ignidx",
+		"-probesize", "5000000",
+		"-analyzeduration", "2000000",
+	)
 	if err != nil || data == nil || data.Format == nil {
 		return
 	}
