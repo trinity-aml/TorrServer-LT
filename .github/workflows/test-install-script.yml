@@ -17,10 +17,11 @@ on:
       - ".github/scripts/test-install-script.sh"
   workflow_dispatch:
 
-# OSes that require version 135 due to glibc < 2.32
-# Version 136+ requires glibc >= 2.32
+# Every TorrServer-LT build links libtorrent dynamically and requires glibc >= 2.38,
+# so only distros that ship glibc >= 2.38 can run it. The matrix below is limited to
+# such distros; older ones would just hit the installer's glibc refusal, so there is
+# nothing meaningful to test there.
 env:
-  GLIBC_LIMITED_OSES: "debian-11|almalinux-8|rocky-8|amazonlinux-2"
   MAX_RETRIES: "3"
   RETRY_DELAY: "60"
 
@@ -51,19 +52,9 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - ubuntu-22.04
           - ubuntu-24.04
-          - debian-11
-          - debian-12
           - debian-13
           - fedora-latest
-          - almalinux-8
-          - almalinux-9
-          - almalinux-10
-          - rocky-8
-          - rocky-9
-          - rocky-10
-          - amazonlinux-2
         test-user: [root, default]
 
     steps:
@@ -78,22 +69,12 @@ jobs:
         run: |
           # Map OS to Docker image
           case "${{ matrix.os }}" in
-            ubuntu-22.04) IMAGE="ubuntu:22.04" ;;
             ubuntu-24.04) IMAGE="ubuntu:24.04" ;;
-            debian-11) IMAGE="debian:11" ;;
-            debian-12) IMAGE="debian:12" ;;
             debian-13) IMAGE="debian:13" ;;
             fedora-latest) IMAGE="fedora:latest" ;;
-            almalinux-8) IMAGE="almalinux:8" ;;
-            almalinux-9) IMAGE="almalinux:9" ;;
-            almalinux-10) IMAGE="almalinux:10" ;;
-            rocky-8) IMAGE="rockylinux/rockylinux:8" ;;
-            rocky-9) IMAGE="rockylinux/rockylinux:9" ;;
-            rocky-10) IMAGE="rockylinux/rockylinux:10" ;;
-            amazonlinux-2) IMAGE="amazonlinux:2" ;;
             *)
-              echo "Warning: Unknown OS ${{ matrix.os }}, using ubuntu:22.04 as default"
-              IMAGE="ubuntu:22.04"
+              echo "Warning: Unknown OS ${{ matrix.os }}, using ubuntu:24.04 as default"
+              IMAGE="ubuntu:24.04"
               ;;
           esac
           echo "image=$IMAGE" >> $GITHUB_OUTPUT
@@ -107,7 +88,6 @@ jobs:
             --privileged \
             -e MATRIX_OS="${{ matrix.os }}" \
             -e TEST_USER="${{ matrix.test-user }}" \
-            -e GLIBC_LIMITED_OSES="${{ env.GLIBC_LIMITED_OSES }}" \
             -e MAX_RETRIES="${{ env.MAX_RETRIES }}" \
             -e RETRY_DELAY="${{ env.RETRY_DELAY }}" \
             "${{ steps.get-image.outputs.image }}" \

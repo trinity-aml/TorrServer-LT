@@ -10,11 +10,11 @@ readonly GREEN='\033[0;32m'
 readonly YELLOW='\033[1;33m'
 readonly NC='\033[0m' # No Color
 
-# Test configuration
+# Test configuration. The matrix only contains distros with glibc >= 2.38 (the
+# floor every TorrServer-LT build needs), so there is no glibc-limited fallback
+# version to special-case here — the latest release installs everywhere.
 readonly SCRIPT_NAME="installTorrServerLinux.sh"
 readonly INSTALL_DIR="/opt/torrserver"
-readonly GLIBC_LIMITED_VERSION="135"
-readonly MIN_GLIBC_VERSION="2.32"
 readonly MAX_RETRIES="${MAX_RETRIES:-3}"
 readonly RETRY_DELAY="${RETRY_DELAY:-2}"
 
@@ -33,32 +33,6 @@ log_warning() {
 
 log_test() {
   echo "Test $1: $2"
-}
-
-# Check if OS requires glibc-limited version
-is_glibc_limited_os() {
-  local os="$1"
-  local glibc_limited_oses="$2"
-  echo "$glibc_limited_oses" | grep -qE "(^|\|)$os(\||$)"
-}
-
-# Get glibc version message for OS
-get_glibc_message() {
-  local os="$1"
-  case "$os" in
-    debian-11)
-      echo "Note: Debian 11 has glibc 2.31, installing version $GLIBC_LIMITED_VERSION (version 136+ requires glibc >= $MIN_GLIBC_VERSION)"
-      ;;
-    almalinux-8)
-      echo "Note: AlmaLinux 8 has glibc 2.28, installing version $GLIBC_LIMITED_VERSION (version 136+ requires glibc >= $MIN_GLIBC_VERSION)"
-      ;;
-    rocky-8)
-      echo "Note: Rocky 8 has glibc 2.28, installing version $GLIBC_LIMITED_VERSION (version 136+ requires glibc >= $MIN_GLIBC_VERSION)"
-      ;;
-    amazonlinux-2)
-      echo "Note: Amazon Linux 2 has glibc 2.26, installing version $GLIBC_LIMITED_VERSION (version 136+ requires glibc >= $MIN_GLIBC_VERSION)"
-      ;;
-  esac
 }
 
 # Install RPM packages (dnf/yum)
@@ -191,18 +165,11 @@ run_test() {
 main() {
   local matrix_os="${MATRIX_OS:-}"
   local test_user="${TEST_USER:-default}"
-  local glibc_limited_oses="${GLIBC_LIMITED_OSES:-}"
 
   # Determine root flag
   local root_flag=''
   if [[ "$test_user" == 'root' ]]; then
     root_flag='--root'
-  fi
-
-  # Check if OS requires glibc-limited version
-  local is_glibc_limited=false
-  if is_glibc_limited_os "$matrix_os" "$glibc_limited_oses"; then
-    is_glibc_limited=true
   fi
 
   echo "========================================"
@@ -244,27 +211,12 @@ main() {
   # Test 3: Install in silent mode
   echo "::group::Test 3: Install TorrServer"
   log_test "3" "Installing TorrServer (silent mode)..."
-  if [[ "$is_glibc_limited" == "true" ]]; then
-    local glibc_msg
-    glibc_msg=$(get_glibc_message "$matrix_os")
-    if [[ -n "$glibc_msg" ]]; then
-      echo "$glibc_msg"
-    fi
-    if retry_command "Installation" "./$SCRIPT_NAME --install $GLIBC_LIMITED_VERSION --silent $root_flag"; then
-      log_info "Installation completed"
-    else
-      log_error "Installation failed after retries"
-      echo "::endgroup::"
-      exit 1
-    fi
+  if retry_command "Installation" "./$SCRIPT_NAME --install --silent $root_flag"; then
+    log_info "Installation completed"
   else
-    if retry_command "Installation" "./$SCRIPT_NAME --install --silent $root_flag"; then
-      log_info "Installation completed"
-    else
-      log_error "Installation failed after retries"
-      echo "::endgroup::"
-      exit 1
-    fi
+    log_error "Installation failed after retries"
+    echo "::endgroup::"
+    exit 1
   fi
   echo "::endgroup::"
   echo ""
@@ -286,17 +238,12 @@ main() {
   # Test 5: Check version
   echo "::group::Test 5: Check version"
   log_test "5" "Checking for updates..."
-  if [[ "$is_glibc_limited" == "true" ]]; then
-    echo "Note: Skipping version check (latest version requires glibc >= $MIN_GLIBC_VERSION)"
-    log_info "Version check skipped (expected)"
+  if retry_command "Version check" "./$SCRIPT_NAME --check --silent $root_flag"; then
+    log_info "Version check completed"
   else
-    if retry_command "Version check" "./$SCRIPT_NAME --check --silent $root_flag"; then
-      log_info "Version check completed"
-    else
-      log_error "Version check failed after retries"
-      echo "::endgroup::"
-      exit 1
-    fi
+    log_error "Version check failed after retries"
+    echo "::endgroup::"
+    exit 1
   fi
   echo "::endgroup::"
   echo ""
@@ -304,17 +251,12 @@ main() {
   # Test 6: Update (if available)
   echo "::group::Test 6: Test update command"
   log_test "6" "Testing update command..."
-  if [[ "$is_glibc_limited" == "true" ]]; then
-    echo "Note: Skipping update test (latest version requires glibc >= $MIN_GLIBC_VERSION)"
-    log_info "Update check skipped (expected)"
+  if retry_command "Update check" "./$SCRIPT_NAME --update --silent $root_flag"; then
+    log_info "Update check completed"
   else
-    if retry_command "Update check" "./$SCRIPT_NAME --update --silent $root_flag"; then
-      log_info "Update check completed"
-    else
-      log_error "Update check failed after retries"
-      echo "::endgroup::"
-      exit 1
-    fi
+    log_error "Update check failed after retries"
+    echo "::endgroup::"
+    exit 1
   fi
   echo "::endgroup::"
   echo ""
@@ -347,7 +289,7 @@ main() {
     echo ""
 
     # Test 8b: Change user back to default (only for Ubuntu to test full flow)
-    if [[ "$matrix_os" == 'ubuntu-22.04' ]] || [[ "$matrix_os" == 'ubuntu-24.04' ]]; then
+    if [[ "$matrix_os" == 'ubuntu-24.04' ]]; then
       echo "::group::Test 8b: Test change-user back to default"
       log_test "8b" "Testing change-user back to default..."
       if retry_command "User change back to default" "./$SCRIPT_NAME --change-user torrserver --silent"; then
