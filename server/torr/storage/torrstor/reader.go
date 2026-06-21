@@ -223,7 +223,9 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo, group ...string)
 	// the preloaded head/tail isn't dropped in the gap between preload completing
 	// and the reader establishing a window. scheduleWindow clears it once the
 	// window — which then protects the buffer — is in place.
-	if handle != nil {
+	// Internal probe readers stay passive (see scheduleWindow): no periodic
+	// re-prioritise, so they never set a window or fight the preload's priorities.
+	if handle != nil && !r.internal {
 		go r.reprioritizeLoop()
 	}
 	return r
@@ -465,6 +467,17 @@ func (r *Reader) Offset() int64 {
 // beyond readahead) are dropped back to priority 0 so we stop pulling them.
 func (r *Reader) scheduleWindow() {
 	if r.handle == nil {
+		return
+	}
+	// Internal probe reader (ffprobe): stay completely passive toward libtorrent
+	// priorities. It runs CONCURRENTLY with a detached preload that owns the
+	// head+tail priorities; if it scheduled a window it would (a) raise priority 7
+	// on its own readahead span and, worse, (b) record [winFirst,winLast] so that
+	// on Close the teardown zeroes SetPiecePriority on those head pieces — and with
+	// no streaming reader yet to "keep" them, that killed the preload's own head
+	// download the moment the probe finished ("preload stops after bitrate"). The
+	// probe just reads cache pieces the preload (or a real reader) brings in.
+	if r.internal {
 		return
 	}
 	plen := r.cache.PieceLength
