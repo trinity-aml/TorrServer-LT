@@ -456,20 +456,17 @@ func (t *Torrent) probeMediaInfo(index int) {
 	if settings.Ssl {
 		link = "https://127.0.0.1:" + settings.SslPort + "/play/" + t.Hash().HexString() + "/" + strconv.Itoa(index) + "?stat=ffprobe"
 	}
-	// Keep the probe near the file HEAD so it returns the format-level duration +
-	// bitrate (both derivable from the container header) without ffprobe reading
-	// deep into the file or seeking to its end. On a multi-file torrent (series)
-	// the file's EOF piece is the boundary piece shared with the next file — the
-	// slowest one, which the preload gate itself waits for — so an unbounded probe
-	// only finished WITH the preload. probesize stays generous so MKVs with large
-	// headers still parse; analyzeduration is the real lever — it bounds how many
-	// clusters find_stream_info reads past the header (2 s ~ a couple of MB, inside
-	// the resident head). +ignidx stops the matroska demuxer from chasing the Cues
-	// index at EOF. The on-demand /ffp endpoint stays unbounded (full media info).
+	// Bound how far ffprobe reads PAST the header: probesize stays generous so MKVs
+	// with large headers still parse, analyzeduration caps the clusters
+	// find_stream_info reads (2 s ~ a couple of MB, inside the resident head). This
+	// keeps the head read cheap; it can't avoid an EOF seek when the file's duration
+	// lives ONLY in the last cluster (unknown-size WEB-DL MKV), which is inherent to
+	// where the metadata is — for those the probe necessarily waits on the file's
+	// last (slowest, multi-file boundary) piece, the same one the preload gate waits
+	// for, so it appears at preload completion rather than earlier. Faststart MP4
+	// keeps all metadata at the front and probes early. /ffp stays unbounded.
 	probeStart := time.Now()
-	log.TLogln("torr.probeMediaInfo: start", t.Name())
 	data, err := ffprobe.ProbeUrl(link,
-		"-fflags", "+ignidx",
 		"-probesize", "5000000",
 		"-analyzeduration", "2000000",
 	)
