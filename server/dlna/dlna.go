@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/anacrolix/dms/dlna/dms"
@@ -21,10 +22,48 @@ import (
 
 var dmsServer *dms.Server
 
+// ssdpNoiseFilter wraps the real log handlers and drops the benign SSDP
+// datagram-parse errors the dms multicast listener emits on every malformed
+// read — almost always "EOF"/"unexpected EOF" from the M-SEARCH/NOTIFY packets
+// other UPnP devices on the LAN broadcast (ssdp.go: me.Logger.Println(err) in
+// handle()). They carry no level (logged at default), so they surfaced as a
+// constant "ssdp ... msg=EOF" drip in the server log without being actionable.
+// Every other dms/ssdp record (real errors, "started SSDP", HTTP, eventing) is
+// forwarded untouched, so this only quiets that one noise source.
+type ssdpNoiseFilter struct {
+	next []log.Handler
+}
+
+func (f ssdpNoiseFilter) Handle(r log.Record) {
+	if isSSDPNoise(r) {
+		return
+	}
+	for _, h := range f.next {
+		h.Handle(r)
+	}
+}
+
+func isSSDPNoise(r log.Record) bool {
+	isSSDP := false
+	for _, n := range r.Names {
+		if n == "ssdp" {
+			isSSDP = true
+			break
+		}
+	}
+	return isSSDP && strings.Contains(r.Msg.String(), "EOF")
+}
+
 func Start() {
 	logger := log.Default.WithNames("dlna")
+	// The ssdp listener (a child of this dms logger) logs a benign EOF on every
+	// malformed multicast datagram. Wrap the dms logger's handlers with a filter
+	// that swallows just that noise; the ssdp child inherits these handlers via
+	// WithNames, so its EOF spam is dropped while real records pass through.
+	dmsLogger := logger.WithNames("dms", "server")
+	dmsLogger.SetHandlers(ssdpNoiseFilter{next: dmsLogger.Handlers})
 	dmsServer = &dms.Server{
-		Logger: logger.WithNames("dms", "server"),
+		Logger: dmsLogger,
 		Interfaces: func() (ifs []net.Interface) {
 			var err error
 			ifaces, err := anet.Interfaces()
