@@ -97,6 +97,7 @@ declare -A MSG_EN=(
   [installed_version]="installed:"
   [target_label]="target:"
   [version_not_found]="ERROR: Version %s not found in releases"
+  [download_failed]="ERROR: Failed to download binary from %s\n"
   [check_versions]="Please check available versions at: $REPO_URL/releases"
   [already_installed]="You already have TorrServer %s installed"
   [have_latest]="You have latest TorrServer %s"
@@ -224,6 +225,7 @@ declare -A MSG_RU=(
   [installed_version]="установлен:"
   [target_label]="устанавливаемая:"
   [version_not_found]="ОШИБКА: Версия %s не найдена в релизах"
+  [download_failed]="ОШИБКА: Не удалось скачать бинарь с %s\n"
   [check_versions]="Проверьте доступные версии по адресу: $REPO_URL/releases"
   [already_installed]="TorrServer %s уже установлен"
   [have_latest]="Установлен TorrServer последней версии %s"
@@ -611,7 +613,10 @@ downloadBinary() {
   local destination="$2"
   local version_info="$3"
 
-  local curl_args=(-L)
+  # --fail: treat an HTTP error (404 from a missing/renamed release asset, etc.)
+  # as a download failure instead of silently writing the error page to disk and
+  # chmod +x-ing junk. -L follows the GitHub releases redirect.
+  local curl_args=(-L --fail)
 
   if [[ $SILENT_MODE -eq 0 ]]; then
     echo " - $(msg downloading) $version_info..."
@@ -620,8 +625,18 @@ downloadBinary() {
     curl_args+=(-s -S)
   fi
 
-  curl "${curl_args[@]}" -o "$destination" "$url"
-  chmod +x "$destination"
+  # Download to a temp file and move it into place only on success, so a failed
+  # download never truncates or replaces an already-installed good binary (the
+  # update path re-downloads over the live binary). On failure clean up the temp
+  # file and return non-zero; set -e then aborts the install with the message.
+  local tmp="${destination}.download"
+  if ! curl "${curl_args[@]}" -o "$tmp" "$url"; then
+    rm -f "$tmp"
+    msg download_failed "$url" >&2
+    return 1
+  fi
+  chmod +x "$tmp"
+  mv -f "$tmp" "$destination"
 }
 
 #############################################
