@@ -100,8 +100,10 @@ func streamConnLimit() int {
 // extends the protected ahead by this many BYTES (converted to whole pieces, so it
 // is ~1 piece on a 16 MB-piece torrent and a few on a small one) so that prefetch
 // lands inside protection instead of churning — without shrinking the priority
-// window, which left the far readahead filling slowly after a seek.
-const prefetchMarginBytes = 16 << 20
+// window, which left the far readahead filling slowly after a seek. Sized to the
+// prefetch libtorrent ACTUALLY does (~3 pieces on a 4 MB-piece torrent); reserving
+// more left a piece of the cache empty (window filled ~60 of 64 MB).
+const prefetchMarginBytes = 12 << 20
 
 // windowLingerDelay is how long a closed reader's streaming window stays
 // prioritised before being returned to lazy. It bridges the gap between the
