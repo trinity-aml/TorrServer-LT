@@ -766,6 +766,41 @@ func (c *Cache) evictIfOverCapacity() {
 		}
 	}
 
+	// Proactive seek cleanup: drop complete pieces that are FAR from every protected
+	// region — a seek left them in an abandoned part of the file — even when the
+	// cache is NOT over capacity. Without this, a small window (e.g. once the playhead
+	// reaches the file tail, where the window is clamped short) leaves room, so the
+	// old region from the seeked-from position lingers. "Far" = more than a window
+	// width (aheadP) from the nearest window/pin, so the near-behind (the snake's
+	// behind-margin + a per-chunk wobble) is KEPT and only genuine leftovers are
+	// reaped, after a short grace. The held anchor keeps the window stable, so this
+	// never touches the live playhead (the churn the old proactive pass caused).
+	if _, aheadP := c.readerWindowPieces(); len(protect) > 0 && aheadP > 0 {
+		farFrom := func(id int) int {
+			best := 1 << 30
+			for _, rg := range protect {
+				d := 0
+				if id < rg[0] {
+					d = rg[0] - id
+				} else if id > rg[1] {
+					d = id - rg[1]
+				}
+				if d < best {
+					best = d
+				}
+			}
+			return best
+		}
+		for _, p := range pieces {
+			if !evictable(p) || pieceInRanges(p.Id, protect) {
+				continue
+			}
+			if farFrom(p.Id) > aheadP && nowU-p.Accessed() > graceEvictSec {
+				evict(p)
+			}
+		}
+	}
+
 	// Capacity-driven sliding cache (the original TorrServer model): pieces are
 	// dropped ONLY when the resident set exceeds the cache, and then the
 	// least-recently-accessed pieces OUTSIDE the protected window go first — i.e.
@@ -774,9 +809,9 @@ func (c *Cache) evictIfOverCapacity() {
 	// piece inside the window (the playhead, its readahead, the behind-margin, the
 	// pins) is NEVER dropped — so a per-chunk player's just-read piece survives the
 	// gap between its connections instead of being proactively evicted and
-	// re-fetched (the REFETCH-piece-N churn). Nothing is dropped while the cache has
-	// room, so the behind-cache lingers as long as it fits, exactly as the user's
-	// model expects.
+	// re-fetched (the REFETCH-piece-N churn). Nothing else is dropped while the cache
+	// has room, so the near behind-cache lingers as long as it fits.
+	filled = c.Filled() // recompute: the seek cleanup above may have freed space
 	if filled <= cap {
 		return
 	}
