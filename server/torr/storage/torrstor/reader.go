@@ -160,13 +160,6 @@ type Reader struct {
 	winFirst atomic.Int64
 	winLast  atomic.Int64
 
-	// lastRead is the unix time of this reader's most recent Read. The anchor maths
-	// (groupReaderSnaps / groupPlaybackMin) ignores readers idle longer than
-	// staleReaderSec so a connection abandoned by a seek (the player jumped, its old
-	// connections linger before closing) can't pin the window at the old position —
-	// the window follows the ACTIVE playhead, and the seeked-past cache drops at once.
-	lastRead atomic.Int64
-
 	// stopTicker ends the periodic re-prioritize loop; closed once by Close.
 	stopTicker chan struct{}
 }
@@ -193,7 +186,6 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo, group ...string)
 	r.readahead.Store(readaheadBytes()) // ReaderReadAHead % of cache (UI slider)
 	r.winFirst.Store(-1)
 	r.winLast.Store(-1)
-	r.lastRead.Store(time.Now().Unix()) // fresh reader is active until proven idle
 	cache.registerReader(r)
 	// Capacity grows automatically to fit this reader's working set now that it
 	// is registered (capacity() sums every reader live), so eviction won't drop
@@ -269,11 +261,6 @@ func (r *Reader) Read(p []byte) (int, error) {
 	if r.closed {
 		return 0, io.EOF
 	}
-	// Stamp activity at the START of the Read (not only on success), so a reader
-	// blocked waiting for its piece still counts as the active playhead, while a
-	// reader that has stopped issuing Reads (a seek abandoned it) goes stale and
-	// drops out of the anchor maths.
-	r.lastRead.Store(time.Now().Unix())
 	off := r.offset.Load()
 	if off >= r.file.Length || len(p) == 0 {
 		return 0, io.EOF
@@ -337,49 +324,31 @@ func (r *Reader) ensurePieceLocked(piece int) error {
 	// abandoned): lift any straggler-drop suppression so its blocks are stored.
 	r.cache.clearAbandoned(piece)
 	if r.handle != nil {
-		// Force at TOP priority + deadline-0 only INSIDE the download horizon: the
-		// playhead window plus the pinned head/tail (container header + EOF index). A
-		// read FAR beyond the playhead is a speculative read-ahead connection (a player
-		// opens several at once); forcing it pulls pieces OUTSIDE the cache window,
-		// where eviction immediately drops them — wasted bandwidth re-fetched on every
-		// reconnect, and stolen from the actual playhead. Beyond the horizon, request
-		// it at the LOWEST priority and NO deadline-0: it then downloads only on spare
-		// bandwidth, and the sliding window re-prioritises it (scheduleWindow) once it
-		// reaches it, so it lands IN the window and is kept instead of churned. This
-		// never BLOCKS a read (the wait below is unchanged), so a mis-classified read
-		// is at worst slightly slower, never stalled.
-		urgent := r.pieceWithinHorizon(piece)
-		if urgent {
-			// In the download horizon (playhead window or pinned head/tail): force it
-			// at top priority + deadline-0. On-demand have/cache reconciliation: if
-			// libtorrent thinks it already has this piece but our cache evicted it, it
-			// would never re-request it — un-have it so the picker re-downloads it now.
-			if r.handle.HasPiece(piece) {
-				if s := settings.BTsets(); s != nil && s.EnableDebug {
-					log.TLogln("torrstor.Reader: REFETCH evicted piece", piece,
-						"file", r.file.Index, "playhead", r.currentPiece(),
-						"window", int(r.winFirst.Load()), "..", int(r.winLast.Load()))
-				}
-				_ = r.handle.WeDontHave(piece, ltTopPriority)
+		// On-demand have/cache reconciliation: if libtorrent thinks it already has
+		// this piece but our cache doesn't (we evicted it, or a seek landed in an
+		// evicted region), libtorrent would never re-request it and we'd block
+		// until timeout. Un-have just this one piece so the picker re-downloads it.
+		// This replaces un-having on every eviction, which churned the picker and
+		// stalled the whole download once the cache started evicting mid-stream.
+		if r.handle.HasPiece(piece) {
+			// Un-have it and leave it at top priority (applied atomically inside
+			// WeDontHave) so the picker re-requests it immediately.
+			if s := settings.BTsets(); s != nil && s.EnableDebug {
+				// libtorrent HAD this piece but the cache dropped it and a read needs it
+				// back — i.e. a re-download of an evicted piece. Pair with the matching
+				// "evict piece N" line to see the churn: how far ahead/behind the
+				// playhead the dropped-then-refetched piece is.
+				log.TLogln("torrstor.Reader: REFETCH evicted piece", piece,
+					"file", r.file.Index, "playhead", r.currentPiece(),
+					"window", int(r.winFirst.Load()), "..", int(r.winLast.Load()))
 			}
-			// deadline 0 = most urgent. alert_when_available is intentionally false:
-			// completion is signalled by piece_finished_alert via SignalPieceComplete.
-			_ = r.handle.SetPieceDeadline(piece, 0, false)
-		} else {
-			// BEYOND the window: do NOT download it now. A player opens speculative
-			// read-ahead connections that read far past the playhead; pulling those
-			// pieces fetches OUTSIDE the cache window, where eviction immediately drops
-			// them — wasted bandwidth re-fetched on every reconnect, stolen from the
-			// playhead. Leave the piece at the torrent's lazy priority 0; the sliding
-			// window re-prioritises it (scheduleWindow) only when the playhead reaches
-			// it, so it is fetched strictly IN window order. The read just waits below
-			// until the window brings it in. An evicted piece libtorrent still flags as
-			// "have" is un-had at priority 0 so a later in-window read re-fetches it
-			// cleanly (else WaitForPiece would block on a piece nobody re-requests).
-			if r.handle.HasPiece(piece) {
-				_ = r.handle.WeDontHave(piece, 0)
-			}
+			_ = r.handle.WeDontHave(piece, ltTopPriority)
 		}
+		// deadline 0 = most urgent. alert_when_available is intentionally false:
+		// completion is signalled by piece_finished_alert via SignalPieceComplete,
+		// and asking for the data back here would make libtorrent re-read the whole
+		// piece off our disk_io into a read_piece_alert we never consume.
+		_ = r.handle.SetPieceDeadline(piece, 0, false)
 	}
 	parent := r.ctx
 	if parent == nil {
@@ -534,19 +503,8 @@ func (r *Reader) scheduleWindow() {
 	// streamAnchor).
 	cur := r.currentPiece()
 	first := cur
-	if a, ok := r.cache.streamAnchorForGroup(r.group); ok {
-		// Normally take the lower of this reader's position and the group anchor. But a
-		// STALE reader (a connection a seek abandoned at the old position) must NOT keep
-		// asserting its OWN old window: that re-prioritised the seeked-past region every
-		// reprioritize tick, so libtorrent re-downloaded pieces eviction had just
-		// dropped ("keeps downloading pieces no longer needed"). Make it follow the
-		// active anchor instead, so its drop-pass below zeroes the abandoned region. The
-		// anchor already excludes stale readers (groupReaderSnaps), so for a single
-		// idle/paused reader it stays put; only a straggler beside an active playhead
-		// is pulled forward.
-		if a < first || r.isStale() {
-			first = a
-		}
+	if a, ok := r.cache.streamAnchorForGroup(r.group); ok && a < first {
+		first = a
 	}
 	_, aheadP := r.cache.streamWindowPieces()
 	last := first + aheadP
@@ -657,14 +615,6 @@ func (r *Reader) scheduleWindow() {
 	}
 }
 
-// isStale reports whether this reader hasn't issued a Read for staleReaderSec —
-// an idle/abandoned connection (typically left behind by a seek). The anchor
-// maths (groupReaderSnaps) and scheduleWindow use it so a straggler can't pin or
-// keep prioritising the seeked-past region while another connection plays on.
-func (r *Reader) isStale() bool {
-	return time.Now().Unix()-r.lastRead.Load() > staleReaderSec
-}
-
 // currentPiece reports the piece the reader is currently positioned in.
 func (r *Reader) currentPiece() int {
 	if r.cache.PieceLength <= 0 {
@@ -682,42 +632,6 @@ func (r *Reader) fileLastPiece() int {
 		return 0
 	}
 	return int((r.file.Offset + r.file.Length - 1) / plen)
-}
-
-// pieceWithinHorizon reports whether `piece` is inside the region the cache is
-// meant to download NOW: the pinned container header / EOF index, or the forward
-// playhead window [groupPlaybackMin .. +ahead]. ensurePieceLocked forces top
-// priority + deadline-0 only inside it; a read beyond it is a speculative read-
-// ahead connection that must not pull pieces the cache can't hold (they'd be
-// evicted and re-fetched, stealing the swarm from the playhead). The reader that
-// IS the playhead is the group min, so its own forward reads always pass; only a
-// connection sitting ABOVE the playhead is bounded to the window.
-func (r *Reader) pieceWithinHorizon(piece int) bool {
-	plen := r.cache.PieceLength
-	if plen <= 0 {
-		return true
-	}
-	// Fast path: already inside this reader's last scheduled window.
-	if wl := int(r.winLast.Load()); wl >= 0 && piece <= wl {
-		return true
-	}
-	// Pinned container header + EOF index: header/index reads must never be
-	// throttled, or the player can't open or seek the file.
-	fileFirst := int(r.file.Offset / plen)
-	if piece <= fileFirst+r.cache.headPinPieces()-1 {
-		return true
-	}
-	if piece >= r.fileLastPiece()-r.cache.tailPinPieces()+1 {
-		return true
-	}
-	// Forward window from the group's true (unheld) playhead. No playhead yet (only
-	// this just-opened reader): don't throttle.
-	gmin, ok := r.cache.groupPlaybackMin(r.group)
-	if !ok {
-		return true
-	}
-	_, aheadP := r.cache.streamWindowPieces()
-	return piece <= gmin+aheadP
 }
 
 // streamHeaderPinPieces / streamTailPinPieces are the MAX pieces pinned at the
