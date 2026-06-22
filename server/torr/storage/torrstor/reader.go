@@ -65,6 +65,16 @@ const reprioritizeInterval = time.Second
 // keeps no matter the settings — so the buffer never collapses to nothing.
 const streamWindowFloorPieces = 4
 
+// prefetchMarginPieces is how many pieces SHORT of the protected window edge the
+// PRIORITY/deadline window stops. libtorrent's time-critical (deadline) picker
+// prefetches a few pieces past the last deadlined piece to keep peers busy; the
+// trace showed those landing window_end+1..+5, getting evicted as the only spare
+// candidates, then re-fetched as the window slid in (the leading-edge churn).
+// Stopping the deadline ramp this many pieces early leaves that prefetch INSIDE
+// the protected window (readerProtectRanges keeps the full ahead), so it is never
+// evicted and the window slides over already-resident pieces.
+const prefetchMarginPieces = 5
+
 // windowLingerDelay is how long a closed reader's streaming window stays
 // prioritised before being returned to lazy. It bridges the gap between the
 // per-chunk HTTP connections an impatient player (VLC) opens, so libtorrent
@@ -206,14 +216,12 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo, group ...string)
 		if s := settings.BTsets(); s == nil || !s.DisableDHT {
 			_ = handle.ForceDhtAnnounce()
 		}
-		// sequential_download OFF: it kept downloading the NEXT pieces PAST the priority
-		// window (the trace showed pieces window_end+1..+5 fetched, never read, then
-		// evicted over capacity, then re-fetched as the window slid in — the leading-edge
-		// churn). The window already carries an ascending deadline ramp (windowPriority),
-		// so libtorrent's time-critical picker fetches the window IN ORDER from the
-		// playhead without prefetching beyond it. So order is kept, the prefetch churn is
-		// gone.
-		_ = handle.SetSequentialDownload(false)
+		// sequential_download ON: makes the cache fill predictably in piece order from
+		// the playhead. It is NOT what caused the leading-edge churn (that persists with
+		// it off — it's libtorrent's deadline pipeline prefetching past the window); the
+		// cure is the prefetch margin in scheduleWindow, which keeps that prefetch INSIDE
+		// the protected window so it isn't evicted.
+		_ = handle.SetSequentialDownload(true)
 	}
 	// Deliberately DON'T scheduleWindow() here. A reader is born at offset 0 and
 	// only seeked to the real Range position afterwards by http.ServeContent
@@ -517,7 +525,17 @@ func (r *Reader) scheduleWindow() {
 		first = a
 	}
 	_, aheadP := r.cache.readerWindowPieces()
-	last := first + aheadP
+	// Stop the priority/deadline window short of the protected edge so libtorrent's
+	// deadline-pipeline prefetch lands inside the protected window (see
+	// prefetchMarginPieces), not just past it where eviction would churn it.
+	priAhead := aheadP - prefetchMarginPieces
+	if priAhead < streamWindowFloorPieces {
+		priAhead = streamWindowFloorPieces
+	}
+	if priAhead > aheadP {
+		priAhead = aheadP
+	}
+	last := first + priAhead
 	// Never prioritise past THIS file's last piece. A reader streams a single
 	// file, so its forward window must not spill into the next file's pieces.
 	// Without this clamp a reader sitting near a file's end — e.g. the SECOND
