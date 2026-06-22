@@ -766,52 +766,31 @@ func (c *Cache) evictIfOverCapacity() {
 		}
 	}
 
-	// Proactive seek cleanup: drop complete pieces that are FAR from every protected
-	// region — a seek left them in an abandoned part of the file — even when the
-	// cache is NOT over capacity. Without this, a small window (e.g. once the playhead
-	// reaches the file tail, where the window is clamped short) leaves room, so the
-	// old region from the seeked-from position lingers. "Far" = more than a window
-	// width (aheadP) from the nearest window/pin, so the near-behind (the snake's
-	// behind-margin + a per-chunk wobble) is KEPT and only genuine leftovers are
-	// reaped, after a short grace. The held anchor keeps the window stable, so this
-	// never touches the live playhead (the churn the old proactive pass caused).
-	if _, aheadP := c.readerWindowPieces(); len(protect) > 0 && aheadP > 0 {
-		farFrom := func(id int) int {
-			best := 1 << 30
-			for _, rg := range protect {
-				d := 0
-				if id < rg[0] {
-					d = rg[0] - id
-				} else if id > rg[1] {
-					d = id - rg[1]
-				}
-				if d < best {
-					best = d
-				}
-			}
-			return best
-		}
+	// Proactive sliding cache: drop EVERY complete piece outside the protected set —
+	// the playhead window (behind-margin .. ahead) + the head/tail pins — once it's
+	// been untouched for graceEvictSec, even when the cache is NOT over capacity. So
+	// the resident set stays TIGHT: only [head pin] + [playhead window] + [tail pin],
+	// and the gaps a seek leaves between them (old region, head-to-window,
+	// window-to-tail) are reaped at once instead of lingering while there is room.
+	// The grace bridges a per-chunk player's re-read jitter; the held anchor keeps the
+	// window stable and the prefetch margin keeps libtorrent's read-ahead INSIDE the
+	// window, so the live playhead and its buffer are never dropped (the churn the
+	// earlier unconditional proactive pass caused, before those two were in place).
+	if len(protect) > 0 {
 		for _, p := range pieces {
 			if !evictable(p) || pieceInRanges(p.Id, protect) {
 				continue
 			}
-			if farFrom(p.Id) > aheadP && nowU-p.Accessed() > graceEvictSec {
+			if nowU-p.Accessed() > graceEvictSec {
 				evict(p)
 			}
 		}
 	}
 
-	// Capacity-driven sliding cache (the original TorrServer model): pieces are
-	// dropped ONLY when the resident set exceeds the cache, and then the
-	// least-recently-accessed pieces OUTSIDE the protected window go first — i.e.
-	// the furthest-behind tail. This is the "snake": fill forward, and as the
-	// forward fill pushes the cache over CacheSize the played-past tail drops. A
-	// piece inside the window (the playhead, its readahead, the behind-margin, the
-	// pins) is NEVER dropped — so a per-chunk player's just-read piece survives the
-	// gap between its connections instead of being proactively evicted and
-	// re-fetched (the REFETCH-piece-N churn). Nothing else is dropped while the cache
-	// has room, so the near behind-cache lingers as long as it fits.
-	filled = c.Filled() // recompute: the seek cleanup above may have freed space
+	// Capacity fallback: if the protected set itself still exceeds the cache (e.g. the
+	// window + pins are larger than CacheSize), trim the least-recently-accessed
+	// pieces outside the window. A piece inside the window is never dropped.
+	filled = c.Filled() // recompute: the proactive pass above may have freed space
 	if filled <= cap {
 		return
 	}

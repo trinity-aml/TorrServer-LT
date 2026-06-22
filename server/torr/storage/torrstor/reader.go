@@ -713,7 +713,25 @@ func (r *Reader) reservePins() [][2]int {
 	if headLast > last {
 		headLast = last
 	}
+	// Tail pin = the piece-count EOF window, extended down by ONE piece when the
+	// PreloadBufferEnd byte region the preload fetched straddles a piece boundary.
+	// The piece-count pin rounds a 4 MB / 4 MB region to [last]; but that region can
+	// span two pieces (e.g. AVI idx1 across 144-145), leaving the piece that holds
+	// the START of the container index unpinned — evicted at hand-off and
+	// re-downloaded by the player's EOF index read (~10 s before playback started).
+	// A byte region crosses at most one extra boundary, so extend by at most one
+	// piece (never the whole file when PreloadBufferEnd exceeds the file size).
 	tailFirst := last - r.cache.tailPinPieces() + 1
+	tailBytes := int64(streamHeaderPinBytes)
+	if s := settings.BTsets(); s != nil && s.PreloadBufferEnd > 0 {
+		tailBytes = s.PreloadBufferEnd
+	}
+	if tailBytes > r.file.Length {
+		tailBytes = r.file.Length
+	}
+	if bf := int((r.file.Offset + r.file.Length - tailBytes) / plen); bf >= tailFirst-1 && bf < tailFirst {
+		tailFirst = bf
+	}
 	if tailFirst < first {
 		tailFirst = first
 	}
