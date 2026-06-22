@@ -24,6 +24,16 @@ const graceEvictSec = 1
 // doesn't shove the window ahead onto its leading read-ahead connection.
 const anchorHoldSec = 2
 
+// staleReaderSec is how long (seconds) a registered reader may go without a Read
+// before the anchor maths ignores it. A forward seek abandons the old playback
+// connections, which linger (mid-chunk, or closing) and would otherwise pin the
+// window at the old position — so the seeked-past cache wouldn't drop and old
+// pieces would keep downloading. Dropping idle readers from the anchor lets the
+// window follow the ACTIVE playhead at once. A streaming connection Reads several
+// times a second, so this never drops a genuinely-playing reader; only ones the
+// player has stopped using (a seek, a closed tab) go stale.
+const staleReaderSec = 3
+
 // abandonEvictSec is how long (seconds) an INCOMPLETE piece outside the
 // streaming window may sit untouched before proactive eviction forgets it. A
 // seek leaves partially-downloaded pieces stranded in the old playback region;
@@ -224,6 +234,7 @@ type readerSnap struct {
 	isProbe   bool // offset-0 ServeContent probe (not a real playhead)
 	isTail    bool // sitting in the file's EOF index pin (a pinned re-read)
 	belowHead bool // inside the container-header pin (a header re-read)
+	stale     bool // no Read for staleReaderSec — a seek-abandoned / idle connection
 }
 
 // groupReaderSnaps buckets every active reader by its group (device), capturing
@@ -233,10 +244,17 @@ func (c *Cache) groupReaderSnaps() map[string][]readerSnap {
 	plen := c.PieceLength
 	c.readersMu.Lock()
 	defer c.readersMu.Unlock()
+	now := time.Now().Unix()
 	out := make(map[string][]readerSnap, len(c.readers))
 	for r := range c.readers {
 		cur := r.currentPiece()
 		s := readerSnap{group: r.group, cur: cur}
+		// Idle/abandoned connection (a seek left it behind): no Read for
+		// staleReaderSec. Excluded from the anchor so the window follows the active
+		// playhead, not a lingering old reader.
+		if now-r.lastRead.Load() > staleReaderSec {
+			s.stale = true
+		}
 		// Offset-0 probe (ServeContent's Seek(0,End)/Seek(0,Start) before the real
 		// seek): counting it would peg the anchor at the file head forever.
 		if r.winFirst.Load() < 0 && cur == 0 {
@@ -282,6 +300,17 @@ func (c *Cache) streamAnchors() map[string]int {
 	defer c.groupsMu.Unlock()
 	out := make(map[string]int, len(snaps))
 	for key, rs := range snaps {
+		// Ignore stale stragglers (a seek's abandoned connections) ONLY when this
+		// group still has an active reader. If EVERY reader is idle (paused video, or
+		// a momentary all-connections gap), keep them so the window stays protected
+		// instead of collapsing — staleProtects the group's last live position.
+		hasActive := false
+		for _, s := range rs {
+			if !s.isProbe && !s.isTail && !s.stale {
+				hasActive = true
+				break
+			}
+		}
 		// playMin = lowest PLAYBACK position; anyMin = lowest of any non-pin reader.
 		// Anchor on playMin (so a header re-read can't drag the window back), falling
 		// back to anyMin only when nothing but header/probe readers exist (the very
@@ -289,7 +318,7 @@ func (c *Cache) streamAnchors() map[string]int {
 		playMin, playOK := 0, false
 		anyMin, anyOK := 0, false
 		for _, s := range rs {
-			if s.isProbe || s.isTail {
+			if s.isProbe || s.isTail || (hasActive && s.stale) {
 				continue
 			}
 			if !anyOK || s.cur < anyMin {
@@ -376,9 +405,17 @@ func (c *Cache) groupPlaybackMin(group string) (int, bool) {
 	if !ok {
 		return 0, false
 	}
+	// Ignore stale stragglers only when an active reader exists (see streamAnchors).
+	hasActive := false
+	for _, s := range rs {
+		if !s.isProbe && !s.isTail && !s.belowHead && !s.stale {
+			hasActive = true
+			break
+		}
+	}
 	min, found := 0, false
 	for _, s := range rs {
-		if s.isProbe || s.isTail || s.belowHead {
+		if s.isProbe || s.isTail || s.belowHead || (hasActive && s.stale) {
 			continue
 		}
 		if !found || s.cur < min {
