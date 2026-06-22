@@ -363,6 +363,31 @@ func (c *Cache) streamAnchorForGroup(key string) (int, bool) {
 	return a, ok
 }
 
+// groupPlaybackMin is the lowest REAL playback piece in a group (device) — the
+// true playhead — excluding the offset-0 probe, the EOF index re-read, and a
+// container-header re-read (the same classification streamAnchors uses). It is
+// UNHELD (unlike streamAnchorForGroup, which applies the monotonic hold), so a
+// reader can tell live whether it is the playhead itself (cur == min) or a read-
+// ahead connection sitting above it. The download horizon (ensurePieceLocked)
+// uses it to throttle only genuine read-ahead beyond the window, never the
+// playhead. Returns false when the group has no real playback reader yet.
+func (c *Cache) groupPlaybackMin(group string) (int, bool) {
+	rs, ok := c.groupReaderSnaps()[group]
+	if !ok {
+		return 0, false
+	}
+	min, found := 0, false
+	for _, s := range rs {
+		if s.isProbe || s.isTail || s.belowHead {
+			continue
+		}
+		if !found || s.cur < min {
+			min, found = s.cur, true
+		}
+	}
+	return min, found
+}
+
 // streamWindowPieces is the forward (ahead) and behind reach of the cache window
 // in pieces. It mirrors the original TorrServer's getOffsetRange, which is
 // per-device and BYTE-based: the cache budget is split by ReaderReadAHead into a
