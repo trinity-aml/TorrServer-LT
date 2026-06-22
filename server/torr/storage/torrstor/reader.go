@@ -570,11 +570,23 @@ func (r *Reader) scheduleWindow() {
 	}
 	r.winFirst.Store(int64(first))
 	r.winLast.Store(int64(last))
-	// First time this reader establishes a window: hand the play-gated preload's
-	// buffer reservation over to it. Until now the reserve kept the preloaded
-	// head/tail resident through the gap since NewReader; now this window protects
-	// what it still needs and the rest (a played-past head) can be trimmed.
-	if prevF < 0 {
+	// First time this reader establishes a window, hand the play-gated preload's
+	// buffer reservation over to it — but ONLY if this reader is at the HEAD/BODY
+	// (a real playhead), never the EOF index reader. A player opens a SECOND
+	// connection to read the container index at the file's END (MKV cues / AVI
+	// idx1); that reader's first window sits in the tail-pin region, far from the
+	// preloaded head. If IT cleared the reserve, the head (everything past the
+	// tiny head pin) lost its only protection in the gap before the real bytes=0-
+	// playback reader established its window — so the preloaded head was evicted
+	// and then re-downloaded from scratch, and PreloadOnPlay (seeing headLast gone)
+	// even re-fired a full second preload: the "preload re-downloads instead of
+	// being served to the player" report. The index reader is identified exactly as
+	// in groupReaderSnaps/PreloadOnPlay (sitting in the tail pin). The head reader
+	// (or a mid-file resume reader) still performs the hand-off; until one does, the
+	// reserve keeps the preloaded head+tail resident.
+	tailStart := r.fileLastPiece() - r.cache.tailPinPieces() + 1
+	isIndexReader := cur >= tailStart
+	if prevF < 0 && !isIndexReader {
 		if s := settings.BTsets(); s != nil && s.EnableDebug {
 			// Streaming takes over: log the first window so a series trace shows
 			// whether the preloaded head [headFirst..] is INSIDE [first..last] (kept,
@@ -585,6 +597,12 @@ func (r *Reader) scheduleWindow() {
 				"ClearPreloadReserve, filled", r.cache.Filled()>>20, "MB")
 		}
 		r.cache.ClearPreloadReserve()
+	} else if prevF < 0 {
+		if s := settings.BTsets(); s != nil && s.EnableDebug {
+			log.TLogln("torrstor.Reader: first window group", r.group,
+				"file", r.file.Index, "playhead", cur, "window", first, "..", last,
+				"is EOF index reader — KEEP preload reserve (head stays protected)")
+		}
 	}
 }
 
