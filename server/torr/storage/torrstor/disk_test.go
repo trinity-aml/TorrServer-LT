@@ -241,9 +241,9 @@ func TestCache_EvictionSparesReaderWindow(t *testing.T) {
 			t.Fatalf("protected piece %d was evicted", keep)
 		}
 	}
-	// Pieces outside the working set and the pins are dropped, even old ones.
-	// Piece 28 is just past the capped window's far edge (27) and must drop.
-	for _, gone := range []int{2, 10, 17, 28, 29, 36} {
+	// Pieces outside the working set (window + prefetch margin) and the pins are
+	// dropped, even old ones.
+	for _, gone := range []int{2, 10, 17, 36} {
 		if present(gone) {
 			t.Fatalf("unprotected piece %d should have been evicted", gone)
 		}
@@ -315,9 +315,9 @@ func TestCache_EvictionSparesBothDeviceWindows(t *testing.T) {
 			t.Fatalf("protected piece %d was evicted (device isolation broken)", keep)
 		}
 	}
-	// Pieces outside both windows and the pins are dropped (28/68 are just past
-	// each capped window's far edge).
-	for _, gone := range []int{10, 28, 30, 45, 55, 68, 70} {
+	// Pieces well outside both windows (incl. the prefetch margin past each window)
+	// and the pins are dropped.
+	for _, gone := range []int{10, 40, 45, 50, 55} {
 		if present(gone) {
 			t.Fatalf("unprotected piece %d should have been evicted", gone)
 		}

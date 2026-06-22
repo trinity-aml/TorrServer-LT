@@ -92,15 +92,16 @@ func streamConnLimit() int {
 	return streamConnections
 }
 
-// prefetchMarginPieces is how many pieces SHORT of the protected window edge the
-// PRIORITY/deadline window stops. libtorrent's time-critical (deadline) picker
-// prefetches a few pieces past the last deadlined piece to keep peers busy; the
-// trace showed those landing window_end+1..+5, getting evicted as the only spare
-// candidates, then re-fetched as the window slid in (the leading-edge churn).
-// Stopping the deadline ramp this many pieces early leaves that prefetch INSIDE
-// the protected window (readerProtectRanges keeps the full ahead), so it is never
-// evicted and the window slides over already-resident pieces.
-const prefetchMarginPieces = 5
+// prefetchMarginBytes is how far PAST the deadlined window the eviction keeps
+// pieces protected. libtorrent's time-critical (deadline) picker prefetches a bit
+// past the last deadlined piece to keep peers busy; the trace showed those landing
+// window_end+1..+5 (on 4 MB pieces), evicted as the only spare candidates, then
+// re-fetched as the window slid in (the leading-edge churn). readerProtectRanges
+// extends the protected ahead by this many BYTES (converted to whole pieces, so it
+// is ~1 piece on a 16 MB-piece torrent and a few on a small one) so that prefetch
+// lands inside protection instead of churning — without shrinking the priority
+// window, which left the far readahead filling slowly after a seek.
+const prefetchMarginBytes = 16 << 20
 
 // windowLingerDelay is how long a closed reader's streaming window stays
 // prioritised before being returned to lazy. It bridges the gap between the
@@ -558,17 +559,14 @@ func (r *Reader) scheduleWindow() {
 		first = a
 	}
 	_, aheadP := r.cache.readerWindowPieces()
-	// Stop the priority/deadline window short of the protected edge so libtorrent's
-	// deadline-pipeline prefetch lands inside the protected window (see
-	// prefetchMarginPieces), not just past it where eviction would churn it.
-	priAhead := aheadP - prefetchMarginPieces
-	if priAhead < streamWindowFloorPieces {
-		priAhead = streamWindowFloorPieces
-	}
-	if priAhead > aheadP {
-		priAhead = aheadP
-	}
-	last := first + priAhead
+	// Deadline the FULL readahead window so all of it fills fast in parallel after a
+	// seek (the 200-peer streaming burst spreads across it), not just-in-time one
+	// piece at a time — critical for a high-bitrate file. libtorrent's deadline
+	// pipeline prefetches a few pieces PAST this edge; readerProtectRanges extends the
+	// PROTECTED zone by prefetchMarginPieces to cover them, so they aren't evicted and
+	// re-fetched (the leading-edge churn) — the prefetch lands inside protection
+	// instead of the priority window being shrunk to keep it there.
+	last := first + aheadP
 	// Never prioritise past THIS file's last piece. A reader streams a single
 	// file, so its forward window must not spill into the next file's pieces.
 	// Without this clamp a reader sitting near a file's end — e.g. the SECOND
