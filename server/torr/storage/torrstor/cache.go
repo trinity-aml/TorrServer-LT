@@ -196,6 +196,11 @@ func (c *Cache) unregisterReader(r *Reader) {
 	// readahead-sized buffer resident for a torrent nobody streams from. (The
 	// torrent itself is dropped later by the expiry watchdog, freeing the rest.)
 	if empty {
+		// Last reader gone — drop the streaming peer-cap boost back to the configured
+		// limit (it was raised in NewReader to fill the window ahead of playback).
+		if h := c.handle.Load(); h != nil {
+			_ = h.SetMaxConnections(configuredConnLimit())
+		}
 		go c.evictIfOverCapacity()
 	}
 }

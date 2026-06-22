@@ -285,7 +285,14 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64, probe bool
 	}
 	if cache.ActiveReaders() == 0 && preloadConnections > configuredConns {
 		_ = lh.SetMaxConnections(preloadConnections)
-		defer func() { _ = lh.SetMaxConnections(configuredConns) }()
+		// Restore the configured cap ONLY if no streaming reader took over — a joining
+		// reader raises its own streaming boost (NewReader) and must keep it, so the
+		// swarm stays wide enough to fill the read-ahead window ahead of playback.
+		defer func() {
+			if cache.StreamingReaders() == 0 {
+				_ = lh.SetMaxConnections(configuredConns)
+			}
+		}()
 	}
 
 	// Tail buffer: the player must read the container index (MP4 moov atom, MKV

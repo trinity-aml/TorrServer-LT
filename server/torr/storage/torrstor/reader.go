@@ -65,6 +65,33 @@ const reprioritizeInterval = time.Second
 // keeps no matter the settings — so the buffer never collapses to nothing.
 const streamWindowFloorPieces = 4
 
+// streamConnections is the per-torrent peer cap held while a reader STREAMS, so
+// the swarm has enough parallel peers to fill the read-ahead window FASTER than
+// playback consumes it (build a buffer ahead). Without it the limit dropped to the
+// configured ConnectionsLimit (~50) after the preload burst, and on a swarm whose
+// rate ~ the video bitrate the window filled just-in-time, one piece at a time —
+// no buffer after a seek. Mirrors the preload burst (preloadConnections). Restored
+// to the configured limit when the last reader leaves (unregisterReader).
+const streamConnections = 200
+
+// configuredConnLimit is the user's per-torrent peer cap (ConnectionsLimit), the
+// value the boost is restored to once nobody is streaming.
+func configuredConnLimit() int {
+	if s := settings.BTsets(); s != nil && s.ConnectionsLimit > 0 {
+		return s.ConnectionsLimit
+	}
+	return 50
+}
+
+// streamConnLimit is the peer cap to hold while streaming: the larger of the
+// streaming burst and the user's configured limit (never lower it).
+func streamConnLimit() int {
+	if c := configuredConnLimit(); c > streamConnections {
+		return c
+	}
+	return streamConnections
+}
+
 // prefetchMarginPieces is how many pieces SHORT of the protected window edge the
 // PRIORITY/deadline window stops. libtorrent's time-critical (deadline) picker
 // prefetches a few pieces past the last deadlined piece to keep peers busy; the
@@ -222,6 +249,12 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo, group ...string)
 		// cure is the prefetch margin in scheduleWindow, which keeps that prefetch INSIDE
 		// the protected window so it isn't evicted.
 		_ = handle.SetSequentialDownload(true)
+		// Hold a high peer cap while streaming so the read-ahead window fills ahead of
+		// playback (a buffer after a seek), not one just-in-time piece at a time. Set
+		// AFTER registerReader (above), and the preload's restore is skipped while a
+		// streaming reader exists, so the boost wins any ordering. unregisterReader
+		// drops it back to the configured limit when the last reader goes.
+		_ = handle.SetMaxConnections(streamConnLimit())
 	}
 	// Deliberately DON'T scheduleWindow() here. A reader is born at offset 0 and
 	// only seeked to the real Range position afterwards by http.ServeContent
