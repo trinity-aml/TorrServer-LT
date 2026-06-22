@@ -493,16 +493,19 @@ func (r *Reader) scheduleWindow() {
 	if plen <= 0 {
 		return
 	}
-	// Window from THIS reader's own live offset (original TorrServer model): the
-	// forward range [cur .. cur+ahead], where ahead is the cache budget /
-	// readerCount (so the union of all connections' ranges stays within CacheSize).
-	// Each connection drives its OWN range, so a read-ahead connection keeps the
-	// pieces it reads (they're inside its own window) instead of being forced
-	// outside a single group window and churned; eviction keeps the union of every
-	// reader's range (readerProtectRanges), so connections don't evict each other.
-	// No held anchor — the range tracks the live offset, so a seek moves it at once.
+	// ONE window per device, anchored on the device's live playhead — the lowest
+	// playback connection (groupPlayheadForGroup), taken DIRECTLY with no hold so a
+	// seek moves it at once. All of a player's clustered connections drive the SAME
+	// forward range [playhead .. playhead+ahead] = the FULL cache window, so they
+	// don't each extend their own window past the cluster and churn its edge (the
+	// trace had no reader past piece 6 yet pieces 16-21 thrashed — that was each
+	// connection's own full window). Falls back to this reader's own position before
+	// a playhead is established. Head/tail re-reads are served from their pins.
 	cur := r.currentPiece()
 	first := cur
+	if a, ok := r.cache.groupPlayheadForGroup(r.group); ok {
+		first = a
+	}
 	_, aheadP := r.cache.readerWindowPieces()
 	last := first + aheadP
 	// Never prioritise past THIS file's last piece. A reader streams a single
