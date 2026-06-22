@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"server/log"
 	"server/lt"
 	"server/settings"
 	"server/torr/storage/state"
@@ -593,6 +594,13 @@ func (c *Cache) evictIfOverCapacity() {
 		// churns the piece_picker and stalls the whole download once eviction
 		// starts mid-stream. The have-bitfield is reconciled lazily, on demand, by
 		// the Reader (ensurePieceLocked) if it ever needs an evicted piece back.
+		if s := settings.BTsets(); s != nil && s.EnableDebug {
+			// Pair with "REFETCH evicted piece N": a piece evicted here and refetched
+			// soon after is the download-then-drop-then-redownload churn. complete=false
+			// means an incomplete/abandoned leftover (a stranded seek partial).
+			log.TLogln("torrstor.Cache: evict piece", p.Id, "complete", p.Complete(),
+				"size", p.SizeBytes()>>20, "MB")
+		}
 		p.wipe()
 		c.mu.Lock()
 		delete(c.pieces, p.Id)

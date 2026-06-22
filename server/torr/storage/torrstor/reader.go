@@ -333,6 +333,15 @@ func (r *Reader) ensurePieceLocked(piece int) error {
 		if r.handle.HasPiece(piece) {
 			// Un-have it and leave it at top priority (applied atomically inside
 			// WeDontHave) so the picker re-requests it immediately.
+			if s := settings.BTsets(); s != nil && s.EnableDebug {
+				// libtorrent HAD this piece but the cache dropped it and a read needs it
+				// back — i.e. a re-download of an evicted piece. Pair with the matching
+				// "evict piece N" line to see the churn: how far ahead/behind the
+				// playhead the dropped-then-refetched piece is.
+				log.TLogln("torrstor.Reader: REFETCH evicted piece", piece,
+					"file", r.file.Index, "playhead", r.currentPiece(),
+					"window", int(r.winFirst.Load()), "..", int(r.winLast.Load()))
+			}
 			_ = r.handle.WeDontHave(piece, ltTopPriority)
 		}
 		// deadline 0 = most urgent. alert_when_available is intentionally false:
