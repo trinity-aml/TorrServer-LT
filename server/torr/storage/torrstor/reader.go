@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"server/log"
 	"server/lt"
 	"server/settings"
 	"server/torr/storage/state"
@@ -574,6 +575,15 @@ func (r *Reader) scheduleWindow() {
 	// head/tail resident through the gap since NewReader; now this window protects
 	// what it still needs and the rest (a played-past head) can be trimmed.
 	if prevF < 0 {
+		if s := settings.BTsets(); s != nil && s.EnableDebug {
+			// Streaming takes over: log the first window so a series trace shows
+			// whether the preloaded head [headFirst..] is INSIDE [first..last] (kept,
+			// seamless) or partly outside it (trimmed then re-fetched as the playhead
+			// advances — the re-buffer). filled is what's resident at hand-off.
+			log.TLogln("torrstor.Reader: first window group", r.group,
+				"file", r.file.Index, "playhead", cur, "window", first, "..", last,
+				"ClearPreloadReserve, filled", r.cache.Filled()>>20, "MB")
+		}
 		r.cache.ClearPreloadReserve()
 	}
 }

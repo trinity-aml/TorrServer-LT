@@ -31,6 +31,14 @@ func isMP4Container(path string) bool {
 // playing and seeking. ~4 MB covers typical indexes without much overhead.
 const tailPreloadBytes = 4 << 20
 
+// probeHeadBytes is the SMALL leading slice of the head the &preload two-phase
+// fill buffers before ffprobe, enough to hold the container header (MP4 moov /
+// MKV EBML+Info+Tracks) so ffprobe can read format+streams; combined with the
+// tail it covers everything ffprobe needs. Kept modest so the rest of the head
+// stays for phase 2 — that's what makes the media info appear at a low percent
+// and stay visible while the bulk of the buffer loads.
+const probeHeadBytes = 16 << 20
+
 // preloadConnections is the per-torrent peer cap raised during a preload burst;
 // defaultConnectionsLimit is what it's restored to when ConnectionsLimit isn't
 // configured (mirrors NewBTS's default).
@@ -147,6 +155,37 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64, probe bool
 		}
 	}
 
+	// Two-phase fill for the explicit &preload path (TorrServe / Lampa): buffer a
+	// SMALL leading head slice + the tail FIRST, so the moment they're resident
+	// ffprobe reads the header + the EOF duration straight from cache and we publish
+	// BitRate/DurationSeconds — then prioritise the REST of the head. The media info
+	// therefore appears at a low percent (head+tail ready, before the bulk loads)
+	// and stays visible the whole way to 100%, exactly in the preload dialog. Only
+	// when ffprobe is actually available; the &play path keeps the single-phase
+	// full-head fill for the fastest playback start. probePieces = the phase-1
+	// subset (small head + tail) the loop waits on before probing.
+	twoPhase := probe && ffprobe.Exists()
+	probeHeadLast := headLast
+	if twoPhase {
+		hb := int64(probeHeadBytes)
+		if hb > headBytes {
+			hb = headBytes
+		}
+		probeHeadLast = clamp(int((f.Offset + hb - 1) / plen))
+		if probeHeadLast > headLast {
+			probeHeadLast = headLast
+		}
+	}
+	probeHeadCount := probeHeadLast - headFirst + 1
+	var probePieces []int
+	if twoPhase {
+		probePieces = make([]int, 0, probeHeadCount+(len(gatePieces)-headCount))
+		for p := headFirst; p <= probeHeadLast; p++ {
+			probePieces = append(probePieces, p)
+		}
+		probePieces = append(probePieces, gatePieces[headCount:]...) // tail-extra pieces
+	}
+
 	// PreloadSize/PreloadedBytes report head + tail — both are required before
 	// playback starts (head = playback buffer, tail = the index the player reads
 	// to open/seek), so the bar reaches a true 100% only when the stream can
@@ -205,7 +244,13 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64, probe bool
 	// of the playback buffer, so on a cold torrent the head didn't even start
 	// downloading for ~30s (verified: head sat at piece 0 only). With the head
 	// prioritised and the swarm kicked first, detection overlaps the head fill.
-	prioritise(headPieces, 0)
+	// Two-phase (&preload): only the small probe head goes first; the rest of the
+	// head is prioritised after ffprobe, in the gate loop below.
+	if twoPhase {
+		prioritise(headPieces[:probeHeadCount], 0)
+	} else {
+		prioritise(headPieces, 0)
+	}
 
 	// libtorrent hack (cf. elementum): pause+resume kicks the piece picker so it
 	// re-evaluates and starts requesting the freshly-prioritised buffer pieces
@@ -324,6 +369,7 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64, probe bool
 	// no seeders) so the stream still starts. gateCount >= headCount >= 1.
 	gateCount := len(gatePieces)
 	total := int64(gateCount) * plen
+	probed := false
 	tick := time.NewTicker(200 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -344,6 +390,43 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64, probe bool
 			}
 			got += sz
 		}
+
+		// Phase 1 done: the small head + tail are resident. Probe BitRate/Duration
+		// NOW — synchronously, from the just-filled cache, so ffprobe reads the
+		// header (small head) and the duration (EOF tail, even for an unknown-size
+		// MKV) without ever blocking on a slow piece. The value is published while
+		// the bar is still low, then phase 2 prioritises the rest of the head so the
+		// info stays visible the whole way to 100%. Runs once, &preload path only.
+		if twoPhase && !probed {
+			probeDone := 0
+			for _, p := range probePieces {
+				if st, ok := snap[p]; ok && st.Completed {
+					probeDone++
+				}
+			}
+			if probeDone == len(probePieces) {
+				probed = true
+				t.mu.Lock()
+				needProbe := t.BitRate == "" && t.DurationSeconds == 0
+				t.mu.Unlock()
+				// Run ffprobe CONCURRENTLY, not inline: it reads the small head + EOF
+				// tail (both just made resident) off the cache, but parsing a big MKV
+				// header / the EOF cluster still costs a moment, and blocking here would
+				// stall BOTH the rest-of-head fill below AND — since the gate can reach
+				// done==gateCount while we're inside ffprobe — the whole preload->play
+				// hand-off, surfacing as the "100% then stop, re-buffer" on a series. The
+				// probe reader is internal/passive (never touches priorities), so letting
+				// it run alongside the fill is safe; BitRate/DurationSeconds populate a
+				// beat later, still inside the preload window. needProbe + probed guard
+				// against a double probe.
+				if needProbe {
+					go t.probeMediaInfo(index)
+				}
+				if probeHeadLast < headLast {
+					prioritise(headPieces[probeHeadCount:], probeHeadCount)
+				}
+			}
+		}
 		// Display rule: report exactly 100% only when the gate actually releases.
 		// The boundary/index piece usually has all its bytes (Size ~= plen) several
 		// seconds before its hash completes — it pulls the next file's overlap — so
@@ -351,22 +434,6 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64, probe bool
 		// "100% but not playing" this gate fix removes. Hold at <=99% until every
 		// gate piece is verified; clients gate on stat, and the bar now matches.
 		if done == gateCount {
-			// Head + tail are resident. For the explicit &preload path (TorrServe /
-			// Lampa) probe BitRate/DurationSeconds NOW — synchronously, reading from
-			// the just-filled cache, so ffprobe never blocks on a slow piece (it reads
-			// the header from the head and, for an unknown-size MKV, the duration from
-			// the EOF tail piece — both already verified) and the value is set BEFORE
-			// we report 100%, so it's in the very Status the polling client sees at
-			// gate release. The &play path (probe=false) skips this; a player switching
-			// episodes just continues the normal head->cache->tail download.
-			if probe {
-				t.mu.Lock()
-				needProbe := t.BitRate == "" && t.DurationSeconds == 0
-				t.mu.Unlock()
-				if needProbe {
-					t.probeMediaInfo(index)
-				}
-			}
 			got = total
 		} else if capBytes := total - total/100; got > capBytes {
 			got = capBytes
@@ -424,7 +491,9 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64, probe bool
 	}
 
 	log.TLogln("torr.Preload:", t.Name(), "buffered head", headFirst, "..", headLast,
-		"+ tail", tailFirst, "..", tailLast)
+		"+ tail", tailFirst, "..", tailLast,
+		"| done", preloadOK, "headLast_resident", cache.Have(headLast),
+		"tailLast_resident", cache.Have(tailLast), "filled", cache.Filled()>>20, "MB")
 }
 
 // probeMediaInfo runs ffprobe against the torrent's own /play stream and stores
@@ -549,9 +618,15 @@ func PreloadOnPlay(reqCtx context.Context, torr *Torrent, index int) {
 	// preload mid-playback: once the head was buffered it stays resident (the
 	// reader's window/behind-margin protect it), so an in-progress or finished
 	// playback short-circuits here without re-prioritising already-played pieces.
+	dbg := func(args ...interface{}) {
+		if s := settings.BTsets(); s != nil && s.EnableDebug {
+			log.TLogln(append([]interface{}{"torr.PreloadOnPlay: index", index}, args...)...)
+		}
+	}
 	if cache := torrstor.Global().CacheByHash([20]byte(torr.Hash())); cache != nil && cache.PieceLength > 0 {
 		if f := torr.fileByID(index); f != nil {
-			if cache.Have(preloadHeadLastPiece(f, cache.PieceLength, cache.NumPieces)) {
+			if hl := preloadHeadLastPiece(f, cache.PieceLength, cache.NumPieces); cache.Have(hl) {
+				dbg("skip: head already resident, headLast", hl)
 				return
 			}
 			// The file is ALREADY being played: a reader sits inside the file
@@ -579,6 +654,7 @@ func PreloadOnPlay(reqCtx context.Context, torr *Torrent, index int) {
 			tailFirst := int((f.Offset + f.Length - tailBytes) / plen)
 			for _, rs := range cache.ReadersSnapshot() {
 				if rs != nil && rs.Reader >= headFirst && rs.Reader < tailFirst {
+					dbg("skip: file already playing, body reader at", rs.Reader)
 					return
 				}
 			}
@@ -592,6 +668,7 @@ func PreloadOnPlay(reqCtx context.Context, torr *Torrent, index int) {
 	if torr.preloadGateDone != nil && torr.preloadGateIndex == index {
 		done := torr.preloadGateDone
 		torr.preloadGateMu.Unlock()
+		dbg("wait: fill already in flight for this file")
 		waitBounded(reqCtx, done)
 		return
 	}
@@ -599,6 +676,7 @@ func PreloadOnPlay(reqCtx context.Context, torr *Torrent, index int) {
 	// debounce: a playlist scan of other episodes — stream directly.
 	if torr.preloadGateDone != nil || time.Since(torr.preloadGateLast) < playGateDebounce {
 		torr.preloadGateMu.Unlock()
+		dbg("skip: other-file fill in flight or within debounce")
 		return
 	}
 	// Start a detached fill for this file and remember it so reconnects can wait.
@@ -606,6 +684,7 @@ func PreloadOnPlay(reqCtx context.Context, torr *Torrent, index int) {
 	torr.preloadGateIndex = index
 	torr.preloadGateDone = done
 	torr.preloadGateMu.Unlock()
+	dbg("START second-phase fill (head not resident) — this is the re-buffer if it fires after a preload reached 100%")
 
 	go func() {
 		// &play path: no ffprobe — a player opening/switching episodes just wants
