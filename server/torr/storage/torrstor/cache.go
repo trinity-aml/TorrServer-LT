@@ -401,6 +401,31 @@ func (c *Cache) groupPlayheads() map[string]int {
 	return c.streamAnchors()
 }
 
+// groupActivePlayheadMin is the DIRECT (unheld) lowest ACTIVE playback piece in a
+// device — excluding the offset-0 probe, the EOF index re-read, a header re-read,
+// AND idle/stale connections. ensurePieceLocked uses it to detect a speculative
+// read-ahead read (a connection more than a full window ahead of the real
+// playhead) and NOT force-download it, so those pieces aren't pulled outside the
+// cache window and churned; the sliding window fetches them in order instead. The
+// playhead reader is itself the min, so its own reads are never throttled. Returns
+// false when the device has no active playback reader (then nothing is throttled).
+func (c *Cache) groupActivePlayheadMin(group string) (int, bool) {
+	rs, ok := c.groupReaderSnaps()[group]
+	if !ok {
+		return 0, false
+	}
+	min, found := 0, false
+	for _, s := range rs {
+		if s.isProbe || s.isTail || s.belowHead || s.stale {
+			continue
+		}
+		if !found || s.cur < min {
+			min, found = s.cur, true
+		}
+	}
+	return min, found
+}
+
 // groupPlayheadForGroup is groupPlayheads for one device, used by a reader to
 // anchor its window on its device's held playhead.
 func (c *Cache) groupPlayheadForGroup(key string) (int, bool) {

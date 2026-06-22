@@ -330,7 +330,29 @@ func (r *Reader) ensurePieceLocked(piece int) error {
 	// This reader genuinely needs the piece now (e.g. a seek back into a region we
 	// abandoned): lift any straggler-drop suppression so its blocks are stored.
 	r.cache.clearAbandoned(piece)
-	if r.handle != nil {
+	// Speculative read-ahead throttle: a player opens connections that read PAST the
+	// cache window while playback continues at a lower position. Forcing those reads
+	// pulled pieces OUTSIDE the window, where eviction dropped them and the window
+	// then re-fetched them as it slid in — the leading-edge churn. If this piece is
+	// more than a full window AHEAD of the device's REAL active playhead (and isn't a
+	// pinned header/index piece), do NOT force it: leave it for the sliding window to
+	// fetch in playback order. The playhead reader is itself the active min, so its
+	// own reads are never throttled; with the held anchor + stale-connection drop the
+	// min is the true playback, so this can't stall a playing stream (the bug the
+	// earlier blanket throttle had). A throttled read simply waits below until the
+	// window reaches the piece.
+	throttle := false
+	// Fast path: a read inside this reader's own established window is never
+	// throttled (the common case); only a read PAST it needs the active-playhead
+	// check (which locks readersMu).
+	if r.handle != nil && piece > int(r.winLast.Load()) && !r.pieceInPin(piece) {
+		if m, ok := r.cache.groupActivePlayheadMin(r.group); ok {
+			if _, aheadP := r.cache.readerWindowPieces(); piece > m+aheadP {
+				throttle = true
+			}
+		}
+	}
+	if r.handle != nil && !throttle {
 		// On-demand have/cache reconciliation: if libtorrent thinks it already has
 		// this piece but our cache doesn't (we evicted it, or a seek landed in an
 		// evicted region), libtorrent would never re-request it and we'd block
@@ -640,6 +662,24 @@ func (r *Reader) fileLastPiece() int {
 		return 0
 	}
 	return int((r.file.Offset + r.file.Length - 1) / plen)
+}
+
+// pieceInPin reports whether piece is in this file's pinned container-header or
+// EOF-index region. A player's header / seek-index re-reads land there and are
+// ALWAYS served (never throttled as read-ahead), so it can open and seek the file.
+func (r *Reader) pieceInPin(piece int) bool {
+	plen := r.cache.PieceLength
+	if plen <= 0 {
+		return false
+	}
+	first := int(r.file.Offset / plen)
+	if piece <= first+r.cache.headPinPieces()-1 {
+		return true
+	}
+	if piece >= r.fileLastPiece()-r.cache.tailPinPieces()+1 {
+		return true
+	}
+	return false
 }
 
 // streamHeaderPinPieces / streamTailPinPieces are the MAX pieces pinned at the
