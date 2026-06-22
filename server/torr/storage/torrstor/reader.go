@@ -199,13 +199,12 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo, group ...string)
 		if s := settings.BTsets(); s == nil || !s.DisableDHT {
 			_ = handle.ForceDhtAnnounce()
 		}
-		// sequential_download is intentionally OFF now: the whole streaming window
-		// carries an ascending deadline ramp (windowPriority), so libtorrent's
-		// time-critical picker already fetches it in playback order — and leaving
-		// sequential on top of that only narrowed how many pieces the picker
-		// requested in parallel, capping throughput. (Experiment: re-enable with
-		// SetSequentialDownload(true) to compare.)
-		_ = handle.SetSequentialDownload(false)
+		// sequential_download ON: with the per-reader window from the live offset,
+		// sequential makes libtorrent fill the cache strictly in piece order from the
+		// playhead — predictable "snake" growth, no out-of-order holes the eviction
+		// then churns. The window priorities + deadline ramp still pull the playhead
+		// piece first; sequential just keeps everything behind it in order.
+		_ = handle.SetSequentialDownload(true)
 	}
 	// Deliberately DON'T scheduleWindow() here. A reader is born at offset 0 and
 	// only seeked to the real Range position afterwards by http.ServeContent
@@ -504,7 +503,7 @@ func (r *Reader) scheduleWindow() {
 	// No held anchor — the range tracks the live offset, so a seek moves it at once.
 	cur := r.currentPiece()
 	first := cur
-	_, aheadP := r.cache.readerWindowPieces(r.cache.groupReaderCount(r.group))
+	_, aheadP := r.cache.readerWindowPieces()
 	last := first + aheadP
 	// Never prioritise past THIS file's last piece. A reader streams a single
 	// file, so its forward window must not spill into the next file's pieces.

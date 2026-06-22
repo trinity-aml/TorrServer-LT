@@ -413,20 +413,18 @@ func (c *Cache) streamWindowPieces() (behind, ahead int) {
 	return behind, ahead
 }
 
-// readerWindowPieces is ONE reader's behind/ahead reach in pieces: the cache
-// budget split by ReaderReadAHead and DIVIDED by the active reader count n —
-// exactly the original TorrServer's getOffsetRange (capacity/readers·(100-prc)/100
-// behind, capacity/readers·prc/100 ahead). Each reader applies it to its OWN live
-// offset, so the UNION of all readers' ranges stays within the configured cache
-// (the snake stays at CacheSize, never grows per connection) and tracks the live
-// playhead with no held anchor — a seek moves it instantly.
-func (c *Cache) readerWindowPieces(n int) (behind, ahead int) {
+// readerWindowPieces is ONE reader's behind/ahead reach in pieces: the FULL cache
+// budget split by ReaderReadAHead (CacheSize*(100-prc)/100 behind, CacheSize*prc/100
+// ahead), clamped so it never exceeds the cache. Each reader applies it to its OWN
+// live offset (no held anchor, so a seek moves it instantly). It is NOT divided by
+// connection count: a player's connections cluster around the playhead, so their
+// full windows OVERLAP and merge to ~CacheSize in streamingReserve; dividing shrank
+// the real window whenever the player opened a second connection (the EOF index
+// read), evicting the just-preloaded head and thrashing.
+func (c *Cache) readerWindowPieces() (behind, ahead int) {
 	plen := c.PieceLength
 	if plen <= 0 {
 		return 0, streamWindowFloorPieces
-	}
-	if n < 1 {
-		n = 1
 	}
 	prc := int64(95)
 	if s := settings.BTsets(); s != nil {
@@ -438,9 +436,9 @@ func (c *Cache) readerWindowPieces(n int) (behind, ahead int) {
 			prc = 100
 		}
 	}
-	per := globalCacheSize() / int64(n)
-	behind = int((per*(100-prc)/100 + plen - 1) / plen)
-	ahead = int((per*prc/100 + plen - 1) / plen)
+	cacheB := globalCacheSize()
+	behind = int((cacheB*(100-prc)/100 + plen - 1) / plen)
+	ahead = int((cacheB*prc/100 + plen - 1) / plen)
 	if ahead < 1 {
 		ahead = 1 // always some readahead, even at a tiny cache
 	}
@@ -448,7 +446,7 @@ func (c *Cache) readerWindowPieces(n int) (behind, ahead int) {
 	// large piece size; trim ahead first (keep >=1) then behind so the range never
 	// exceeds its share of the cache (the original used byte offsets, so it had no
 	// rounding overshoot — we clamp instead).
-	budget := int(per / plen)
+	budget := int(cacheB / plen)
 	if budget < 1 {
 		budget = 1
 	}
@@ -459,24 +457,6 @@ func (c *Cache) readerWindowPieces(n int) (behind, ahead int) {
 		behind--
 	}
 	return behind, ahead
-}
-
-// groupReaderCount is the live count of active non-internal readers in one group
-// (device) — the n readerWindowPieces divides the device's cache window by, so a
-// device's connections share its window while other devices keep their own.
-func (c *Cache) groupReaderCount(group string) int {
-	c.readersMu.Lock()
-	defer c.readersMu.Unlock()
-	n := 0
-	for r := range c.readers {
-		if !r.internal && r.group == group {
-			n++
-		}
-	}
-	if n < 1 {
-		n = 1
-	}
-	return n
 }
 
 // piecesForBytes converts a byte budget into a piece count for this cache's piece
@@ -774,7 +754,7 @@ func (c *Cache) readerProtectRanges() [][2]int {
 	// fit both, so two viewers don't evict each other) — keeping the concurrent-
 	// viewer isolation while matching the original's per-connection division.
 	for _, r := range rs {
-		behindP, aheadP := c.readerWindowPieces(groupN[r.group])
+		behindP, aheadP := c.readerWindowPieces()
 		cur := r.currentPiece()
 		lo := cur - behindP
 		if lo < 0 {
@@ -1011,7 +991,7 @@ func (c *Cache) ReadersSnapshot() []*state.ReaderState {
 	}
 	byGroup := make(map[string]*ext, len(groupN))
 	for _, r := range rs {
-		behindP, aheadP := c.readerWindowPieces(groupN[r.group])
+		behindP, aheadP := c.readerWindowPieces()
 		cur := r.currentPiece()
 		lo := cur - behindP
 		if lo < 0 {
