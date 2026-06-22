@@ -206,12 +206,14 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo, group ...string)
 		if s := settings.BTsets(); s == nil || !s.DisableDHT {
 			_ = handle.ForceDhtAnnounce()
 		}
-		// sequential_download ON: with the per-reader window from the live offset,
-		// sequential makes libtorrent fill the cache strictly in piece order from the
-		// playhead — predictable "snake" growth, no out-of-order holes the eviction
-		// then churns. The window priorities + deadline ramp still pull the playhead
-		// piece first; sequential just keeps everything behind it in order.
-		_ = handle.SetSequentialDownload(true)
+		// sequential_download OFF: it kept downloading the NEXT pieces PAST the priority
+		// window (the trace showed pieces window_end+1..+5 fetched, never read, then
+		// evicted over capacity, then re-fetched as the window slid in — the leading-edge
+		// churn). The window already carries an ascending deadline ramp (windowPriority),
+		// so libtorrent's time-critical picker fetches the window IN ORDER from the
+		// playhead without prefetching beyond it. So order is kept, the prefetch churn is
+		// gone.
+		_ = handle.SetSequentialDownload(false)
 	}
 	// Deliberately DON'T scheduleWindow() here. A reader is born at offset 0 and
 	// only seeked to the real Range position afterwards by http.ServeContent
