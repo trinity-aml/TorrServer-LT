@@ -516,11 +516,16 @@ func (c *Cache) readerWindowPieces() (behind, ahead int) {
 	if ahead < 1 {
 		ahead = 1 // always some readahead, even at a tiny cache
 	}
-	// Round-up of behind+ahead can push one piece over the per-reader budget on a
-	// large piece size; trim ahead first (keep >=1) then behind so the range never
-	// exceeds its share of the cache (the original used byte offsets, so it had no
-	// rounding overshoot — we clamp instead).
+	// Trim the window so the WHOLE resident set — window + head/tail pins + the
+	// prefetch lookahead the eviction keeps past the window — stays within the
+	// configured CacheSize, instead of letting capacity() grow above it. Reserve room
+	// for the pins (+1 for a straddling tail index) and the margin; trim ahead first
+	// (keep >=1) then behind. A player's connections cluster, so their windows merge
+	// to one in streamingReserve — this single window is what must fit.
 	budget := int(cacheB / plen)
+	if reserve := c.headPinPieces() + c.tailPinPieces() + 1 + c.prefetchMarginPieces(); budget-reserve >= streamWindowFloorPieces {
+		budget -= reserve
+	}
 	if budget < 1 {
 		budget = 1
 	}
@@ -531,6 +536,20 @@ func (c *Cache) readerWindowPieces() (behind, ahead int) {
 		behind--
 	}
 	return behind, ahead
+}
+
+// prefetchMarginPieces is the libtorrent deadline-pipeline lookahead the eviction
+// keeps protected past the window, in whole pieces covering prefetchMarginBytes,
+// capped so it can't dominate the cache on a small piece size.
+func (c *Cache) prefetchMarginPieces() int {
+	if c.PieceLength <= 0 {
+		return 0
+	}
+	n := int((int64(prefetchMarginBytes) + c.PieceLength - 1) / c.PieceLength)
+	if n > 6 {
+		n = 6
+	}
+	return n
 }
 
 // piecesForBytes converts a byte budget into a piece count for this cache's piece
@@ -831,13 +850,7 @@ func (c *Cache) readerProtectRanges() [][2]int {
 	// prefetchMarginBytes) so libtorrent's deadline-pipeline prefetch past the
 	// deadlined window is kept, not evicted and re-fetched — the priority window
 	// itself is the full readahead, so it all fills fast after a seek.
-	margin := 0
-	if c.PieceLength > 0 {
-		margin = int((int64(prefetchMarginBytes) + c.PieceLength - 1) / c.PieceLength)
-		if margin > 6 {
-			margin = 6
-		}
-	}
+	margin := c.prefetchMarginPieces()
 	for _, ph := range c.groupPlayheads() {
 		lo := ph - behindP
 		if lo < 0 {
