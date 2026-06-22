@@ -347,8 +347,21 @@ func (r *Reader) ensurePieceLocked(piece int) error {
 	// check (which locks readersMu).
 	if r.handle != nil && piece > int(r.winLast.Load()) && !r.pieceInPin(piece) {
 		if m, ok := r.cache.groupActivePlayheadMin(r.group); ok {
-			if _, aheadP := r.cache.readerWindowPieces(); piece > m+aheadP {
+			// Throttle ONLY the NEAR read-ahead zone — just past the window, up to one
+			// more window ahead. That is the contiguous buffer-ahead a player pulls past
+			// the playhead (the leading-edge churn). A read FAR beyond that is NOT
+			// read-ahead: it's a JUMP — a forward seek, or the player reading the
+			// container index at EOF (AVI idx1 / MKV cues) while playback continues at
+			// the start. Those MUST be served (the player blocks on the index before it
+			// can start), so they are never throttled; the new position becomes the
+			// playhead (seek) or is served from the tail (index).
+			if _, aheadP := r.cache.readerWindowPieces(); piece > m+aheadP && piece <= m+2*aheadP {
 				throttle = true
+				if s := settings.BTsets(); s != nil && s.EnableDebug {
+					log.TLogln("torrstor.Reader: THROTTLE read-ahead piece", piece,
+						"file", r.file.Index, "playhead", m, "ahead", aheadP,
+						"(waits for window; not force-downloaded)")
+				}
 			}
 		}
 	}
