@@ -494,19 +494,17 @@ func (r *Reader) scheduleWindow() {
 	if plen <= 0 {
 		return
 	}
-	// Anchor the download window on the single cache playhead (the lowest
-	// streaming position), not this reader's own offset, so every connection a
-	// player opens drives the SAME forward window [anchor .. anchor+ahead]. A
-	// reader reading ahead within the span finds its piece already in that window;
-	// without this each connection scheduled its own window and they evicted /
-	// re-fetched each other's pieces as the demuxer jumped around (see
-	// streamAnchor).
+	// Window from THIS reader's own live offset (original TorrServer model): the
+	// forward range [cur .. cur+ahead], where ahead is the cache budget /
+	// readerCount (so the union of all connections' ranges stays within CacheSize).
+	// Each connection drives its OWN range, so a read-ahead connection keeps the
+	// pieces it reads (they're inside its own window) instead of being forced
+	// outside a single group window and churned; eviction keeps the union of every
+	// reader's range (readerProtectRanges), so connections don't evict each other.
+	// No held anchor — the range tracks the live offset, so a seek moves it at once.
 	cur := r.currentPiece()
 	first := cur
-	if a, ok := r.cache.streamAnchorForGroup(r.group); ok && a < first {
-		first = a
-	}
-	_, aheadP := r.cache.streamWindowPieces()
+	_, aheadP := r.cache.readerWindowPieces(r.cache.groupReaderCount(r.group))
 	last := first + aheadP
 	// Never prioritise past THIS file's last piece. A reader streams a single
 	// file, so its forward window must not spill into the next file's pieces.

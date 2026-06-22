@@ -413,6 +413,72 @@ func (c *Cache) streamWindowPieces() (behind, ahead int) {
 	return behind, ahead
 }
 
+// readerWindowPieces is ONE reader's behind/ahead reach in pieces: the cache
+// budget split by ReaderReadAHead and DIVIDED by the active reader count n —
+// exactly the original TorrServer's getOffsetRange (capacity/readers·(100-prc)/100
+// behind, capacity/readers·prc/100 ahead). Each reader applies it to its OWN live
+// offset, so the UNION of all readers' ranges stays within the configured cache
+// (the snake stays at CacheSize, never grows per connection) and tracks the live
+// playhead with no held anchor — a seek moves it instantly.
+func (c *Cache) readerWindowPieces(n int) (behind, ahead int) {
+	plen := c.PieceLength
+	if plen <= 0 {
+		return 0, streamWindowFloorPieces
+	}
+	if n < 1 {
+		n = 1
+	}
+	prc := int64(95)
+	if s := settings.BTsets(); s != nil {
+		prc = int64(s.ReaderReadAHead)
+		if prc < 5 {
+			prc = 5
+		}
+		if prc > 100 {
+			prc = 100
+		}
+	}
+	per := globalCacheSize() / int64(n)
+	behind = int((per*(100-prc)/100 + plen - 1) / plen)
+	ahead = int((per*prc/100 + plen - 1) / plen)
+	if ahead < 1 {
+		ahead = 1 // always some readahead, even at a tiny cache
+	}
+	// Round-up of behind+ahead can push one piece over the per-reader budget on a
+	// large piece size; trim ahead first (keep >=1) then behind so the range never
+	// exceeds its share of the cache (the original used byte offsets, so it had no
+	// rounding overshoot — we clamp instead).
+	budget := int(per / plen)
+	if budget < 1 {
+		budget = 1
+	}
+	for behind+ahead+1 > budget && ahead > 1 {
+		ahead--
+	}
+	for behind+ahead+1 > budget && behind > 0 {
+		behind--
+	}
+	return behind, ahead
+}
+
+// groupReaderCount is the live count of active non-internal readers in one group
+// (device) — the n readerWindowPieces divides the device's cache window by, so a
+// device's connections share its window while other devices keep their own.
+func (c *Cache) groupReaderCount(group string) int {
+	c.readersMu.Lock()
+	defer c.readersMu.Unlock()
+	n := 0
+	for r := range c.readers {
+		if !r.internal && r.group == group {
+			n++
+		}
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
 // piecesForBytes converts a byte budget into a piece count for this cache's piece
 // size: at least 1, never more than maxPieces. A small piece size keeps the full
 // cap (a header/index/behind-cushion can span several pieces); a large piece
@@ -686,33 +752,35 @@ func (c *Cache) evictIfOverCapacity() {
 // of jumping to whichever connection read last and dropping the others' pieces.
 func (c *Cache) readerProtectRanges() [][2]int {
 	out := make([][2]int, 0, 8)
-	behindP, aheadP := c.streamWindowPieces()
-	// One sliding window per group (device): two devices at different positions add
-	// two disjoint ranges, so streamingReserve grows the capacity to fit both and
-	// neither's window is evicted to make room for the other.
-	for _, anchor := range c.streamAnchors() {
-		lo := anchor - behindP
+	// Snapshot the readers + count once. The window is taken PER READER from its
+	// LIVE offset (no held anchor), exactly like the original TorrServer's
+	// getOffsetRange — so a seek moves the range at once and the old region drops
+	// immediately — and the budget is DIVIDED by the reader count so the UNION of
+	// every reader's range stays within the configured cache instead of growing
+	// per connection (the cache "snake" stays at CacheSize).
+	c.readersMu.Lock()
+	rs := make([]*Reader, 0, len(c.readers))
+	groupN := make(map[string]int, len(c.readers))
+	for r := range c.readers {
+		if r.internal {
+			continue
+		}
+		rs = append(rs, r)
+		groupN[r.group]++
+	}
+	c.readersMu.Unlock()
+	// Budget is divided WITHIN a group (device): a device's connections share its
+	// cache window, but a SECOND device gets its OWN full window (capacity grows to
+	// fit both, so two viewers don't evict each other) — keeping the concurrent-
+	// viewer isolation while matching the original's per-connection division.
+	for _, r := range rs {
+		behindP, aheadP := c.readerWindowPieces(groupN[r.group])
+		cur := r.currentPiece()
+		lo := cur - behindP
 		if lo < 0 {
 			lo = 0
 		}
-		out = append(out, [2]int{lo, anchor + aheadP})
-	}
-	c.readersMu.Lock()
-	rs := make([]*Reader, 0, len(c.readers))
-	for r := range c.readers {
-		rs = append(rs, r)
-	}
-	c.readersMu.Unlock()
-	for _, r := range rs {
-		// A reader that hasn't read yet (just opened by ServeContent, about to be
-		// seeked to its Range start) protects ONLY the piece it currently sits on,
-		// so its first-read piece — a fresh mid-file position not yet in the window
-		// — isn't evicted right before the read (seen as `piece=N cur=N
-		// evictedButHad=true`).
-		if r.winFirst.Load() < 0 {
-			cur := r.currentPiece()
-			out = append(out, [2]int{cur, cur})
-		}
+		out = append(out, [2]int{lo, cur + aheadP})
 		// Keep this file's container header + end-of-file index pinned (reservePins).
 		out = append(out, r.reservePins()...)
 	}
@@ -924,15 +992,49 @@ func (c *Cache) State() *state.CacheState {
 // for a stable display. ALWAYS non-nil — the web UI iterates Readers without a
 // null guard.
 func (c *Cache) ReadersSnapshot() []*state.ReaderState {
-	anchors := c.streamAnchors()
-	behindP, aheadP := c.streamWindowPieces()
-	out := make([]*state.ReaderState, 0, len(anchors))
-	for _, anchor := range anchors {
-		lo := anchor - behindP
+	c.readersMu.Lock()
+	rs := make([]*Reader, 0, len(c.readers))
+	groupN := make(map[string]int, len(c.readers))
+	for r := range c.readers {
+		if r.internal {
+			continue
+		}
+		rs = append(rs, r)
+		groupN[r.group]++
+	}
+	c.readersMu.Unlock()
+	// One marker per group (device): the extent of its connections' union window,
+	// each taken from the live offset (matches readerProtectRanges).
+	type ext struct {
+		lo, hi, head int
+		set          bool
+	}
+	byGroup := make(map[string]*ext, len(groupN))
+	for _, r := range rs {
+		behindP, aheadP := c.readerWindowPieces(groupN[r.group])
+		cur := r.currentPiece()
+		lo := cur - behindP
 		if lo < 0 {
 			lo = 0
 		}
-		out = append(out, &state.ReaderState{Start: lo, End: anchor + aheadP, Reader: anchor})
+		hi := cur + aheadP
+		if e := byGroup[r.group]; e == nil || !e.set {
+			byGroup[r.group] = &ext{lo: lo, hi: hi, head: cur, set: true}
+		} else {
+			if lo < e.lo {
+				e.lo = lo
+			}
+			if hi > e.hi {
+				e.hi = hi
+			}
+			if cur < e.head {
+				e.head = cur
+			}
+		}
+	}
+	out := make([]*state.ReaderState, 0, len(byGroup))
+	for _, e := range byGroup {
+		out = append(out, &state.ReaderState{Start: e.lo, End: e.hi, Reader: e.head})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Reader < out[j].Reader })
 	return out
