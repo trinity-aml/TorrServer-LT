@@ -703,18 +703,32 @@ func (c *Cache) evictIfOverCapacity() {
 		pieces = append(pieces, p)
 	}
 	c.mu.Unlock()
+	// Diagnostic context: the live held playhead window so an evict line can be read
+	// against the ACTUAL window (the first-window log is stale). Single device in the
+	// common case; with two, the last wins — enough to spot an in-window evict.
+	dbg := false
+	winLo, winHi := -1, -1
+	if s := settings.BTsets(); s != nil && s.EnableDebug {
+		dbg = true
+		_, aheadP := c.readerWindowPieces()
+		for _, ph := range c.groupPlayheads() {
+			winLo, winHi = ph, ph+aheadP
+		}
+	}
 
 	evict := func(p *Piece) {
 		// We deliberately do NOT WeDontHave here: un-having every evicted piece
 		// churns the piece_picker and stalls the whole download once eviction
 		// starts mid-stream. The have-bitfield is reconciled lazily, on demand, by
 		// the Reader (ensurePieceLocked) if it ever needs an evicted piece back.
-		if s := settings.BTsets(); s != nil && s.EnableDebug {
+		if dbg {
 			// Pair with "REFETCH evicted piece N": a piece evicted here and refetched
 			// soon after is the download-then-drop-then-redownload churn. complete=false
-			// means an incomplete/abandoned leftover (a stranded seek partial).
+			// means an incomplete/abandoned leftover (a stranded seek partial). An
+			// evicted piece INSIDE [win] is a real bug; one above it is read-ahead.
 			log.TLogln("torrstor.Cache: evict piece", p.Id, "complete", p.Complete(),
-				"size", p.SizeBytes()>>20, "MB")
+				"size", p.SizeBytes()>>20, "MB win", winLo, "..", winHi,
+				"filled", int(filled>>20), "cap", int(cap>>20))
 		}
 		p.wipe()
 		c.mu.Lock()

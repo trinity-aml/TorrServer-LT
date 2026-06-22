@@ -330,42 +330,7 @@ func (r *Reader) ensurePieceLocked(piece int) error {
 	// This reader genuinely needs the piece now (e.g. a seek back into a region we
 	// abandoned): lift any straggler-drop suppression so its blocks are stored.
 	r.cache.clearAbandoned(piece)
-	// Speculative read-ahead throttle: a player opens connections that read PAST the
-	// cache window while playback continues at a lower position. Forcing those reads
-	// pulled pieces OUTSIDE the window, where eviction dropped them and the window
-	// then re-fetched them as it slid in — the leading-edge churn. If this piece is
-	// more than a full window AHEAD of the device's REAL active playhead (and isn't a
-	// pinned header/index piece), do NOT force it: leave it for the sliding window to
-	// fetch in playback order. The playhead reader is itself the active min, so its
-	// own reads are never throttled; with the held anchor + stale-connection drop the
-	// min is the true playback, so this can't stall a playing stream (the bug the
-	// earlier blanket throttle had). A throttled read simply waits below until the
-	// window reaches the piece.
-	throttle := false
-	// Fast path: a read inside this reader's own established window is never
-	// throttled (the common case); only a read PAST it needs the active-playhead
-	// check (which locks readersMu).
-	if r.handle != nil && piece > int(r.winLast.Load()) && !r.pieceInPin(piece) {
-		if m, ok := r.cache.groupActivePlayheadMin(r.group); ok {
-			// Throttle ONLY the NEAR read-ahead zone — just past the window, up to one
-			// more window ahead. That is the contiguous buffer-ahead a player pulls past
-			// the playhead (the leading-edge churn). A read FAR beyond that is NOT
-			// read-ahead: it's a JUMP — a forward seek, or the player reading the
-			// container index at EOF (AVI idx1 / MKV cues) while playback continues at
-			// the start. Those MUST be served (the player blocks on the index before it
-			// can start), so they are never throttled; the new position becomes the
-			// playhead (seek) or is served from the tail (index).
-			if _, aheadP := r.cache.readerWindowPieces(); piece > m+aheadP && piece <= m+2*aheadP {
-				throttle = true
-				if s := settings.BTsets(); s != nil && s.EnableDebug {
-					log.TLogln("torrstor.Reader: THROTTLE read-ahead piece", piece,
-						"file", r.file.Index, "playhead", m, "ahead", aheadP,
-						"(waits for window; not force-downloaded)")
-				}
-			}
-		}
-	}
-	if r.handle != nil && !throttle {
+	if r.handle != nil {
 		// On-demand have/cache reconciliation: if libtorrent thinks it already has
 		// this piece but our cache doesn't (we evicted it, or a seek landed in an
 		// evicted region), libtorrent would never re-request it and we'd block
