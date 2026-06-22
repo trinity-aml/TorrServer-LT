@@ -160,6 +160,12 @@ type Reader struct {
 	winFirst atomic.Int64
 	winLast  atomic.Int64
 
+	// lastRead is the unix time of this reader's most recent Read. The playhead
+	// maths (groupReaderSnaps) ignores a connection idle longer than staleReaderSec
+	// when the device still has an active one, so a connection abandoned by a seek
+	// can't pin the window at the old position while a new one plays on.
+	lastRead atomic.Int64
+
 	// stopTicker ends the periodic re-prioritize loop; closed once by Close.
 	stopTicker chan struct{}
 }
@@ -186,6 +192,7 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo, group ...string)
 	r.readahead.Store(readaheadBytes()) // ReaderReadAHead % of cache (UI slider)
 	r.winFirst.Store(-1)
 	r.winLast.Store(-1)
+	r.lastRead.Store(time.Now().Unix()) // fresh reader is active until proven idle
 	cache.registerReader(r)
 	// Capacity grows automatically to fit this reader's working set now that it
 	// is registered (capacity() sums every reader live), so eviction won't drop
@@ -260,6 +267,7 @@ func (r *Reader) Read(p []byte) (int, error) {
 	if r.closed {
 		return 0, io.EOF
 	}
+	r.lastRead.Store(time.Now().Unix()) // mark active for the playhead maths
 	off := r.offset.Load()
 	if off >= r.file.Length || len(p) == 0 {
 		return 0, io.EOF
@@ -503,7 +511,7 @@ func (r *Reader) scheduleWindow() {
 	// a playhead is established. Head/tail re-reads are served from their pins.
 	cur := r.currentPiece()
 	first := cur
-	if a, ok := r.cache.groupPlayheadForGroup(r.group); ok {
+	if a, ok := r.cache.groupPlayheadForGroup(r.group); ok && a < first {
 		first = a
 	}
 	_, aheadP := r.cache.readerWindowPieces()

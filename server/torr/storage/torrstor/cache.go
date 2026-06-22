@@ -24,6 +24,14 @@ const graceEvictSec = 1
 // doesn't shove the window ahead onto its leading read-ahead connection.
 const anchorHoldSec = 2
 
+// staleReaderSec is how long (seconds) a connection may go without a Read before
+// the playhead maths ignores it (when the device still has an active connection).
+// A forward seek abandons the old connections, which linger before closing and
+// would otherwise pin the window at the old position; dropping idle ones lets the
+// window snap to the new playhead. A streaming connection Reads several times a
+// second, so a genuinely-playing one is never dropped — only abandoned/closed ones.
+const staleReaderSec = 3
+
 // abandonEvictSec is how long (seconds) an INCOMPLETE piece outside the
 // streaming window may sit untouched before proactive eviction forgets it. A
 // seek leaves partially-downloaded pieces stranded in the old playback region;
@@ -224,6 +232,7 @@ type readerSnap struct {
 	isProbe   bool // offset-0 ServeContent probe (not a real playhead)
 	isTail    bool // sitting in the file's EOF index pin (a pinned re-read)
 	belowHead bool // inside the container-header pin (a header re-read)
+	stale     bool // no Read for staleReaderSec — an idle/seek-abandoned connection
 }
 
 // groupReaderSnaps buckets every active reader by its group (device), capturing
@@ -231,12 +240,20 @@ type readerSnap struct {
 // never call while holding it.
 func (c *Cache) groupReaderSnaps() map[string][]readerSnap {
 	plen := c.PieceLength
+	now := time.Now().Unix()
 	c.readersMu.Lock()
 	defer c.readersMu.Unlock()
 	out := make(map[string][]readerSnap, len(c.readers))
 	for r := range c.readers {
 		cur := r.currentPiece()
 		s := readerSnap{group: r.group, cur: cur}
+		// Idle/abandoned connection (a seek left it behind): no Read for
+		// staleReaderSec. Dropped from the playhead when the device still has an
+		// active connection (see streamAnchors), so a lingering old reader can't pin
+		// the window at the seeked-past position.
+		if now-r.lastRead.Load() > staleReaderSec {
+			s.stale = true
+		}
 		// Offset-0 probe (ServeContent's Seek(0,End)/Seek(0,Start) before the real
 		// seek): counting it would peg the anchor at the file head forever.
 		if r.winFirst.Load() < 0 && cur == 0 {
@@ -282,6 +299,17 @@ func (c *Cache) streamAnchors() map[string]int {
 	defer c.groupsMu.Unlock()
 	out := make(map[string]int, len(snaps))
 	for key, rs := range snaps {
+		// Ignore idle/abandoned (stale) connections ONLY when this device still has
+		// an active one — so a seek's lingering old connection can't pin the window,
+		// while a momentarily all-idle device (paused, a brief gap) keeps its readers
+		// and the window holds in place.
+		hasActive := false
+		for _, s := range rs {
+			if !s.isProbe && !s.isTail && !s.stale {
+				hasActive = true
+				break
+			}
+		}
 		// playMin = lowest PLAYBACK position; anyMin = lowest of any non-pin reader.
 		// Anchor on playMin (so a header re-read can't drag the window back), falling
 		// back to anyMin only when nothing but header/probe readers exist (the very
@@ -289,7 +317,7 @@ func (c *Cache) streamAnchors() map[string]int {
 		playMin, playOK := 0, false
 		anyMin, anyOK := 0, false
 		for _, s := range rs {
-			if s.isProbe || s.isTail {
+			if s.isProbe || s.isTail || (hasActive && s.stale) {
 				continue
 			}
 			if !anyOK || s.cur < anyMin {
@@ -363,49 +391,20 @@ func (c *Cache) streamAnchorForGroup(key string) (int, bool) {
 	return a, ok
 }
 
-// groupPlayheads returns each group's (device's) CURRENT playhead piece — the
-// lowest real playback reader, excluding the offset-0 probe, the EOF index re-read
-// and a container-header re-read — taken DIRECTLY from live offsets with NO hold
-// timer, so the window tracks the playhead instantly (a seek moves it at once) and
-// the device's many connections all share ONE window anchored here instead of each
-// extending its own. The head/tail re-reads are served from their pins, not the
-// window. Falls back to the lowest non-pin reader when only header/probe readers
-// exist (the very start, before the playhead leaves the head pin).
+// groupPlayheads returns each device's playhead piece for the single per-device
+// window. It is the HELD anchor (streamAnchors): the lowest active playback
+// connection, held DOWN through brief per-chunk gaps so the window doesn't
+// oscillate up onto a read-ahead connection, advanced at once on a real forward
+// seek, and ignoring idle/abandoned connections so a seek isn't pinned by a
+// lingering old one. Head/tail re-reads are served from their pins, not the window.
 func (c *Cache) groupPlayheads() map[string]int {
-	snaps := c.groupReaderSnaps()
-	out := make(map[string]int, len(snaps))
-	for key, rs := range snaps {
-		min, ok := 0, false
-		for _, s := range rs {
-			if s.isProbe || s.isTail || s.belowHead {
-				continue
-			}
-			if !ok || s.cur < min {
-				min, ok = s.cur, true
-			}
-		}
-		if !ok { // only header/probe readers: anchor at the lowest non-pin reader
-			for _, s := range rs {
-				if s.isProbe || s.isTail {
-					continue
-				}
-				if !ok || s.cur < min {
-					min, ok = s.cur, true
-				}
-			}
-		}
-		if ok {
-			out[key] = min
-		}
-	}
-	return out
+	return c.streamAnchors()
 }
 
 // groupPlayheadForGroup is groupPlayheads for one device, used by a reader to
-// anchor its window on its device's live playhead.
+// anchor its window on its device's held playhead.
 func (c *Cache) groupPlayheadForGroup(key string) (int, bool) {
-	a, ok := c.groupPlayheads()[key]
-	return a, ok
+	return c.streamAnchorForGroup(key)
 }
 
 // streamWindowPieces is the forward (ahead) and behind reach of the cache window
