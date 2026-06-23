@@ -350,19 +350,40 @@ func (c *Cache) streamAnchors() map[string]int {
 		}
 		// Ignore idle/abandoned (stale) connections ONLY when this device still has an
 		// active one — so a seek's lingering old connection can't pin the window, while
-		// a momentarily all-idle device (paused, a brief gap) keeps its readers.
+		// a momentarily all-idle device (paused, a brief gap) keeps its readers. Track
+		// the lowest ACTIVE reader too: it is the reference for what counts as a seek
+		// leftover (below), NOT the committed anchor, which can itself be a stale
+		// leftover after a seek and would then never let go.
 		hasActive := false
+		activeMin, activeOK := 0, false
 		for _, s := range rs {
 			if eligible(s) && !s.stale {
 				hasActive = true
-				break
+				if !activeOK || s.cur < activeMin {
+					activeMin, activeOK = s.cur, true
+				}
 			}
+		}
+		// A stale connection is dropped from the playhead maths ONLY when it is a
+		// forward-seek LEFTOVER: more than a window BELOW the lowest ACTIVE reader. A
+		// stale connection CLOSE to the active cluster is a TRAILING playback connection
+		// between chunks — a per-chunk player (VLC/AVI) keeps one lagging the leading
+		// read-ahead one by a few pieces. Dropping it let the anchor lurch UP to the
+		// leading edge, which (a) evicted the in-between pieces as "behind" and then
+		// REFETCHED them when the trailing reader read again — the 1-2 chunk GAPS inside
+		// the window — and (b) extended the forward fill past the true playhead, leaving
+		// those far pieces half-downloaded and stuck when the anchor snapped back. Keeping
+		// the near trailing reader holds the anchor DOWN at the real playhead, so the
+		// window slides smoothly. A real forward seek leaves the old connection a full
+		// window below the new active reads, so it is still abandoned and the anchor moves.
+		isSeekLeftover := func(s readerSnap) bool {
+			return s.stale && activeOK && s.cur < activeMin-aheadP
 		}
 		// playMin = lowest PLAYBACK position; anyMin = lowest of any non-pin reader.
 		playMin, playOK := 0, false
 		anyMin, anyOK := 0, false
 		for _, s := range rs {
-			if !eligible(s) || (hasActive && s.stale) {
+			if !eligible(s) || (hasActive && isSeekLeftover(s)) {
 				continue
 			}
 			if !anyOK || s.cur < anyMin {
