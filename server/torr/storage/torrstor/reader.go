@@ -628,81 +628,20 @@ func (r *Reader) fileLastPiece() int {
 	return int((r.file.Offset + r.file.Length - 1) / plen)
 }
 
-// pieceInPin reports whether piece is in this file's pinned container-header or
-// EOF-index region. A player's header / seek-index re-reads land there and are
-// ALWAYS served (never throttled as read-ahead), so it can open and seek the file.
-func (r *Reader) pieceInPin(piece int) bool {
-	plen := r.cache.PieceLength
-	if plen <= 0 {
-		return false
-	}
-	first := int(r.file.Offset / plen)
-	if piece <= first+r.cache.headPinPieces()-1 {
-		return true
-	}
-	if piece >= r.fileLastPiece()-r.cache.tailPinPieces()+1 {
-		return true
-	}
-	return false
-}
-
-// streamHeaderPinPieces / streamTailPinPieces are the MAX pieces pinned at the
-// file START and END while it streams: the container header (AVI main header,
-// MKV/MP4 header) at the front and the seek index (AVI idx1, MKV cues, MP4 moov)
-// at the back. A player re-reads these on the fly; the preload fetches them up
-// front, but on a small cache they get evicted as the playhead window advances,
-// and the re-read then re-downloads them and stalls (verified: VLC re-reads
-// bytes=0- mid-stream, and the end-index read stalled ~14 s on a re-download).
-// The actual pin is BYTE-bounded (streamHeaderPinBytes / PreloadBufferEnd) and
-// only rounded UP to these caps — so on a small piece size the header/index can
-// span the full cap, but on a LARGE piece size (e.g. 16 MB) a single piece
-// already covers the few-MB header/index and the pin shrinks to 1 instead of
-// reserving cap*pieceLen (3*16 MB = 48 MB of "tail index" on a 64 MB cache).
-// Mirrors the original TorrServer (head AND last-startend bytes) / Elementum.
+// streamHeaderPinPieces / streamTailPinPieces are the MAX pieces the preload holds
+// at the file START and END: the container header (AVI main header, MKV/MP4 header)
+// at the front and the seek index (AVI idx1, MKV cues, MP4 moov) at the back. They
+// are kept resident ONLY during preload (preloadProtect) — the strict streaming
+// window carves out nothing for them. The size is BYTE-bounded (streamHeaderPinBytes
+// / PreloadBufferEnd) and only rounded UP to these caps, so a large piece size
+// covers the few-MB header/index in one piece. groupReaderSnaps / scheduleWindow use
+// headPinPieces / tailPinPieces to recognise the EOF-index reader (so it doesn't
+// drive a streaming window) — the actual pinning is the preload's job.
 const (
 	streamHeaderPinPieces = 2
 	streamTailPinPieces   = 3
 	streamHeaderPinBytes  = 4 << 20 // container header / default EOF-index budget
 )
-
-// reservePins returns the container-header and end-of-file index piece ranges to
-// keep resident for this reader's file for its whole streaming life, regardless
-// of the playhead position.
-func (r *Reader) reservePins() [][2]int {
-	plen := r.cache.PieceLength
-	if plen <= 0 {
-		return nil
-	}
-	first := int(r.file.Offset / plen)
-	last := r.fileLastPiece()
-	headLast := first + r.cache.headPinPieces() - 1
-	if headLast > last {
-		headLast = last
-	}
-	// Tail pin = the piece-count EOF window, extended down by ONE piece when the
-	// PreloadBufferEnd byte region the preload fetched straddles a piece boundary.
-	// The piece-count pin rounds a 4 MB / 4 MB region to [last]; but that region can
-	// span two pieces (e.g. AVI idx1 across 144-145), leaving the piece that holds
-	// the START of the container index unpinned — evicted at hand-off and
-	// re-downloaded by the player's EOF index read (~10 s before playback started).
-	// A byte region crosses at most one extra boundary, so extend by at most one
-	// piece (never the whole file when PreloadBufferEnd exceeds the file size).
-	tailFirst := last - r.cache.tailPinPieces() + 1
-	tailBytes := int64(streamHeaderPinBytes)
-	if s := settings.BTsets(); s != nil && s.PreloadBufferEnd > 0 {
-		tailBytes = s.PreloadBufferEnd
-	}
-	if tailBytes > r.file.Length {
-		tailBytes = r.file.Length
-	}
-	if bf := int((r.file.Offset + r.file.Length - tailBytes) / plen); bf >= tailFirst-1 && bf < tailFirst {
-		tailFirst = bf
-	}
-	if tailFirst < first {
-		tailFirst = first
-	}
-	return [][2]int{{first, headLast}, {tailFirst, last}}
-}
 
 // State snapshots this reader's position + prioritised window for the /cache
 // detail view (the web UI highlights it on the piece grid). Lock-free so the

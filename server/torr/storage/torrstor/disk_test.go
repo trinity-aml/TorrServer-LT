@@ -186,16 +186,12 @@ func TestCache_LRUEvictsOldestWhenOverCapacity(t *testing.T) {
 
 func TestCache_EvictionSparesReaderWindow(t *testing.T) {
 	// A 40-piece file is fully resident; a single reader streams from the middle.
-	// Eviction must keep that reader's working set — behind margin + forward
-	// window (keepBehind/keepAhead) — plus the pinned container header and tail
-	// index, and drop everything else, even though some kept pieces are older
-	// (lower accessed) than some dropped ones. With CacheSize 10 pieces and
-	// ReadAhead 80%, the window is sized so the whole resident set (window + the
-	// head/tail pins) fits the 10-piece budget: the head pin [0..1] (2) and tail
-	// pin [37..39] (3) reserve 5, so the window is behind 2 + anchor + ahead
-	// trimmed to 1 = [18..21] at cur=20. (No prefetch margin is reserved any more —
-	// the read-ahead is contained by holding the DEADLINE edge back inside the
-	// window, see fillerContainmentPieces, so nothing is protected past it.)
+	// Strict model: the whole CacheSize is the sliding window (behind + current +
+	// ahead == budget), and NOTHING is carved out for pins — head/tail are held only
+	// during preload. With CacheSize 10 pieces and ReadAhead 80%, budget is 10,
+	// behind = round(10*20%) = 2, ahead = 10-1-2 = 7, so at cur=20 the window is
+	// exactly [18..27] and everything else (including the former head/tail pins) is
+	// dropped.
 	prev := settings.BTsets()
 	settings.StoreBTsets(&settings.BTSets{UseDisk: false, CacheSize: 10 * pieceLen, ReaderReadAHead: 80})
 	t.Cleanup(func() { settings.StoreBTsets(prev) })
@@ -238,15 +234,16 @@ func TestCache_EvictionSparesReaderWindow(t *testing.T) {
 		defer c.mu.RUnlock()
 		return c.pieces[id] != nil
 	}
-	// Forward window + behind margin and the head/tail pins survive.
-	for _, keep := range []int{0, 1, 18, 20, 21, 37, 39} {
+	// The whole [18..27] window survives — behind margin + current + forward readahead.
+	for _, keep := range []int{18, 19, 20, 24, 27} {
 		if !present(keep) {
 			t.Fatalf("protected piece %d was evicted", keep)
 		}
 	}
-	// Pieces outside the working set (the [18..21] window) and the pins are
-	// dropped, even old ones — including 27, which the tight window no longer reaches.
-	for _, gone := range []int{2, 10, 17, 27, 36} {
+	// Everything outside the window is dropped, even old ones — INCLUDING the former
+	// head pin [0..1] and tail index [37..39], which the strict model no longer pins
+	// during streaming (held only at preload).
+	for _, gone := range []int{0, 1, 2, 10, 17, 28, 36, 37, 39} {
 		if present(gone) {
 			t.Fatalf("unprotected piece %d should have been evicted", gone)
 		}
@@ -260,11 +257,10 @@ func TestCache_EvictionSparesReaderWindow(t *testing.T) {
 // devices (distinct groups) stream the same torrent from far-apart positions.
 // Each group must get its OWN protected sliding window — neither device's
 // just-about-to-play pieces may be evicted to make room for the other's. With
-// CacheSize 10 pieces / ReadAhead 80%, each window is sized to fit the budget
-// alongside the pins (2 behind + anchor + 1 ahead), so device A at piece 20
-// protects [18..21] and device B at piece 60 protects [58..61]; capacity grows
-// (streamingReserve) to fit both plus the shared head/tail pins, and everything
-// outside both windows is dropped.
+// CacheSize 10 pieces / ReadAhead 80% the strict window is behind 2 + current +
+// ahead 7 == the full budget, so device A at piece 20 protects [18..27] and device
+// B at piece 60 protects [58..67]; capacity grows (streamingReserve) to fit both,
+// and everything outside both windows is dropped.
 func TestCache_EvictionSparesBothDeviceWindows(t *testing.T) {
 	prev := settings.BTsets()
 	settings.StoreBTsets(&settings.BTSets{UseDisk: false, CacheSize: 10 * pieceLen, ReaderReadAHead: 80})
@@ -312,15 +308,15 @@ func TestCache_EvictionSparesBothDeviceWindows(t *testing.T) {
 		defer c.mu.RUnlock()
 		return c.pieces[id] != nil
 	}
-	// BOTH device windows + the shared head/tail pins survive.
-	for _, keep := range []int{0, 1, 18, 20, 21, 58, 60, 61, 77, 79} {
+	// BOTH device windows survive: [18..27] (A) and [58..67] (B).
+	for _, keep := range []int{18, 20, 27, 58, 60, 67} {
 		if !present(keep) {
 			t.Fatalf("protected piece %d was evicted (device isolation broken)", keep)
 		}
 	}
-	// Pieces well outside both windows and the pins are dropped — including 27/67,
-	// which the tight windows no longer reach.
-	for _, gone := range []int{10, 27, 40, 45, 50, 55, 67} {
+	// Pieces well outside both windows are dropped — including the former head pin
+	// [0..1] and tail index [77..79], which the strict model no longer pins.
+	for _, gone := range []int{0, 1, 10, 28, 40, 45, 50, 55, 57, 68, 77, 79} {
 		if present(gone) {
 			t.Fatalf("unprotected piece %d should have been evicted", gone)
 		}

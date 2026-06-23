@@ -474,14 +474,11 @@ func (c *Cache) groupPlayheadForGroup(key string) (int, bool) {
 	return c.streamAnchorForGroup(key)
 }
 
-// Streaming piece priorities used by applyStreamPriorities. Pins (header/EOF index)
-// and the in-flight preload buffer are kept clearly downloadable. Behind pieces are
-// NOT prioritised — they are a retention zone (already played, kept resident by
-// readerProtectRanges for a short rewind), so only the forward window drives downloads.
-const (
-	streamPinPriority     = 6
-	streamPreloadPriority = 7
-)
+// streamPreloadPriority is the priority applyStreamPriorities gives an in-flight
+// preload's head+tail buffer. Behind pieces are NOT prioritised — they are a
+// retention zone (already played, kept resident by readerProtectRanges for a short
+// rewind), so only the forward window drives downloads.
+const streamPreloadPriority = 7
 
 // applyStreamPriorities rebuilds libtorrent's ENTIRE piece-priority vector from the
 // live streaming state and applies it in one prioritize_pieces call: every device's
@@ -536,13 +533,6 @@ func (c *Cache) applyStreamPriorities() {
 		}
 	}
 	for _, r := range rs {
-		// Pins (container header + EOF index) stay downloadable for a player's
-		// header/seek-index re-reads regardless of the playhead.
-		for _, pin := range r.reservePins() {
-			for i := pin[0]; i <= pin[1]; i++ {
-				raise(i, streamPinPriority)
-			}
-		}
 		ph, ok := anchors[r.group]
 		if !ok {
 			continue // no playhead yet for this group (only probe/tail/header readers)
@@ -670,30 +660,35 @@ func (c *Cache) readerWindowPieces() (behind, ahead int) {
 			prc = 100
 		}
 	}
+	// Strict model: the cache holds exactly budget = CacheSize / pieceSize chunks,
+	// and the WHOLE budget is the sliding window — behind + current + ahead == budget
+	// — split by ReaderReadAHead. So with a 64 MB cache, 4 MB pieces and ReadAhead
+	// 95%, budget is 16, behind 1, ahead 14: the window is [playhead-1 .. playhead+14],
+	// a full 64 MB that slides as a snake. Nothing is reserved out of it — head/tail
+	// are held only during preload (preloadProtect), never carved out of the streaming
+	// window. behind is rounded from the slider; ahead takes the rest.
 	cacheB := globalCacheSize()
-	behind = int((cacheB*(100-prc)/100 + plen - 1) / plen)
-	ahead = int((cacheB*prc/100 + plen - 1) / plen)
-	if ahead < 1 {
-		ahead = 1 // always some readahead, even at a tiny cache
-	}
-	// Trim the window so the WHOLE resident set — window + head/tail pins + the
-	// prefetch lookahead the eviction keeps past the window — stays within the
-	// configured CacheSize, instead of letting capacity() grow above it. Reserve room
-	// for the pins (+1 for a straddling tail index) and the margin; trim ahead first
-	// (keep >=1) then behind. A player's connections cluster, so their windows merge
-	// to one in streamingReserve — this single window is what must fit.
 	budget := int(cacheB / plen)
-	if reserve := c.headPinPieces() + c.tailPinPieces() + 1 + c.prefetchMarginPieces(); budget-reserve >= streamWindowFloorPieces {
-		budget -= reserve
-	}
 	if budget < 1 {
 		budget = 1
 	}
-	for behind+ahead+1 > budget && ahead > 1 {
-		ahead--
+	behind = int((int64(budget)*(100-prc) + 50) / 100) // rounded share of the budget
+	if behind > budget-1 {
+		behind = budget - 1
 	}
-	for behind+ahead+1 > budget && behind > 0 {
-		behind--
+	if behind < 0 {
+		behind = 0
+	}
+	ahead = budget - 1 - behind
+	if ahead < 1 {
+		// Tiny cache: guarantee at least one piece of readahead, shrinking behind.
+		ahead = 1
+		if behind > budget-2 {
+			behind = budget - 2
+		}
+		if behind < 0 {
+			behind = 0
+		}
 	}
 	return behind, ahead
 }
@@ -1019,21 +1014,12 @@ func (c *Cache) readerProtectRanges() [][2]int {
 		}
 		out = append(out, [2]int{lo, ph + aheadP + margin})
 	}
-	// Plus every streamed file's pinned container header + EOF index (served to a
-	// player's header/index re-reads without dragging the window there).
-	c.readersMu.Lock()
-	rs := make([]*Reader, 0, len(c.readers))
-	for r := range c.readers {
-		if !r.internal {
-			rs = append(rs, r)
-		}
-	}
-	c.readersMu.Unlock()
-	for _, r := range rs {
-		out = append(out, r.reservePins()...)
-	}
-	// An in-flight preload has no reader yet — keep its buffer resident until a
-	// reader's window takes over (cleared on the first scheduleWindow).
+	// An in-flight preload has no reader yet — keep its head+tail buffer resident
+	// until a reader's window takes over (cleared on the first scheduleWindow). This
+	// is the ONLY head/tail protection: per the strict model the streaming window is
+	// the whole cache (behind+current+ahead == CacheSize) and carves out nothing, so
+	// once playback starts the head/tail are held only while they fall inside the
+	// sliding window.
 	c.preloadMu.Lock()
 	out = append(out, c.preloadProtect...)
 	c.preloadMu.Unlock()
