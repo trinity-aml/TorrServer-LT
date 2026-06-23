@@ -128,13 +128,6 @@ type Cache struct {
 type group struct {
 	playhead     int64
 	playheadTime int64
-	// pendingUp is a candidate BIG upward jump (a higher playMin past the whole
-	// window) that must persist for anchorHoldSec before it commits — so a transient
-	// high reader (the EOF moov probe becoming the only active reader while the head
-	// reader is briefly idle) can't shove the anchor to the file end and evict the
-	// head. -1 = no pending candidate. Reset whenever playMin returns at/below ph.
-	pendingUp     int64
-	pendingUpTime int64
 }
 
 func newCache(s *Storage, sid int64, hash [20]byte, numPieces int, pieceLength int64) *Cache {
@@ -338,26 +331,38 @@ func (c *Cache) streamAnchors() map[string]int {
 	defer c.groupsMu.Unlock()
 	out := make(map[string]int, len(snaps))
 	for key, rs := range snaps {
-		// Ignore idle/abandoned (stale) connections ONLY when this device still has
-		// an active one — so a seek's lingering old connection can't pin the window,
-		// while a momentarily all-idle device (paused, a brief gap) keeps its readers
-		// and the window holds in place.
+		// A reader reading within a window's reach of the file END (nearEOF) is the EOF
+		// moov/index probe the player opens before playback starts — NOT the playhead.
+		// Exclude it from the anchor whenever the device ALSO has a non-EOF reader (the
+		// head, even idle): otherwise, while the head reader is briefly idle right after
+		// preload, the probe was the only "active" reader and the anchor lurched to the
+		// file end, evicting the preloaded head. If the ONLY readers are near EOF, it is
+		// a genuine seek-to-end, so honour them.
+		hasNonEOF := false
+		for _, s := range rs {
+			if !s.isProbe && !s.isTail && !s.nearEOF {
+				hasNonEOF = true
+				break
+			}
+		}
+		eligible := func(s readerSnap) bool {
+			return !s.isProbe && !s.isTail && !(hasNonEOF && s.nearEOF)
+		}
+		// Ignore idle/abandoned (stale) connections ONLY when this device still has an
+		// active one — so a seek's lingering old connection can't pin the window, while
+		// a momentarily all-idle device (paused, a brief gap) keeps its readers.
 		hasActive := false
 		for _, s := range rs {
-			if !s.isProbe && !s.isTail && !s.stale {
+			if eligible(s) && !s.stale {
 				hasActive = true
 				break
 			}
 		}
 		// playMin = lowest PLAYBACK position; anyMin = lowest of any non-pin reader.
-		// Anchor on playMin (so a header re-read can't drag the window back), falling
-		// back to anyMin only when nothing but header/probe readers exist (the very
-		// start, before the playhead leaves the head pin).
 		playMin, playOK := 0, false
-		playMinNearEOF := false
 		anyMin, anyOK := 0, false
 		for _, s := range rs {
-			if s.isProbe || s.isTail || (hasActive && s.stale) {
+			if !eligible(s) || (hasActive && s.stale) {
 				continue
 			}
 			if !anyOK || s.cur < anyMin {
@@ -367,21 +372,18 @@ func (c *Cache) streamAnchors() map[string]int {
 				continue
 			}
 			if !playOK || s.cur < playMin {
-				playMin, playOK, playMinNearEOF = s.cur, true, s.nearEOF
+				playMin, playOK = s.cur, true
 			}
 		}
 
 		g := c.groups[key]
 		if g == nil {
-			g = &group{pendingUp: -1}
+			g = &group{}
 			c.groups[key] = g
 		}
 
 		if playOK {
 			ph := int(g.playhead)
-			if playMin <= ph {
-				g.pendingUp = -1 // playhead back at/below anchor: cancel any pending up-jump
-			}
 			// Follow the lowest reader DOWN immediately (a real lower read must be
 			// covered), but UP only after a hold — a player keeps a trailing playback
 			// connection AND a leading read-ahead one a few pieces apart; when the
@@ -400,10 +402,9 @@ func (c *Cache) streamAnchors() map[string]int {
 			// A reader a FULL window+ BELOW the committed anchor is either a backward
 			// seek (its low reads persist) or an abandoned read-ahead connection a
 			// forward seek left behind (a brief twitch, then stale). Don't snap the
-			// committed window back down onto it — that is exactly the oscillation that
-			// re-downloaded the old region after a forward seek (the anchor flipping
-			// between the new cluster and a lingering low one). Hold; a real backward
-			// seek commits after anchorHoldSec, a straggler ages out (stale) first.
+			// committed window back down onto it at once — that oscillation re-downloaded
+			// the old region after a forward seek. Hold; a real backward seek commits
+			// after anchorHoldSec, a straggler ages out (stale) first.
 			case ph-playMin > aheadP:
 				if now-g.playheadTime > anchorHoldSec {
 					g.playhead, g.playheadTime = int64(playMin), now
@@ -411,32 +412,11 @@ func (c *Cache) streamAnchors() map[string]int {
 				} else {
 					out[key] = ph
 				}
-			// A BIG step up — past the whole window — toward the FILE END is either a
-			// forward seek-to-end OR a transient (the EOF moov probe is briefly the only
-			// active reader while the head reader is idle). Require it to PERSIST for
-			// anchorHoldSec before committing: a real seek keeps reading there, a probe
-			// vanishes when the head reader reads again (which cancels pendingUp above),
-			// so the anchor never lurches to the tail and evicts the preloaded head. A
-			// big jump NOT near EOF is a normal mid-file forward seek — commit at once
-			// (no probe lives there) so seeks stay snappy and the new window fills.
-			case playMin-ph > aheadP && playMinNearEOF:
-				if g.pendingUp != int64(playMin) {
-					g.pendingUp, g.pendingUpTime = int64(playMin), now
-					out[key] = ph
-				} else if now-g.pendingUpTime > anchorHoldSec {
-					g.playhead, g.playheadTime, g.pendingUp = int64(playMin), now, -1
-					out[key] = playMin
-				} else {
-					out[key] = ph
-				}
-			// A big step up that is NOT near EOF is a normal mid-file forward seek (no
-			// EOF probe lives mid-file) — advance at once so the seek is snappy.
-			case playMin-ph > aheadP:
-				g.playhead, g.playheadTime, g.pendingUp = int64(playMin), now, -1
-				out[key] = playMin
-			// A small step up is the trailing connection between chunks: hold briefly,
-			// then follow it.
-			case now-g.playheadTime > anchorHoldSec:
+			// A BIG step up — past the whole window — is a forward SEEK (the EOF probe is
+			// excluded above, so this is a real mid-file/late seek): advance at once so
+			// the window snaps to the new position. A small step up is the trailing
+			// connection between chunks — hold briefly, then follow it.
+			case playMin-ph > aheadP || now-g.playheadTime > anchorHoldSec:
 				g.playhead, g.playheadTime = int64(playMin), now
 				out[key] = playMin
 			default:
@@ -444,15 +424,14 @@ func (c *Cache) streamAnchors() map[string]int {
 			}
 			continue
 		}
-		// No playback reader (only a header re-read / probe): hold the last playhead
-		// through the gap, else fall back to whatever reader exists.
-		if anyOK && now-g.playheadTime <= anchorHoldSec {
-			if ph := int(g.playhead); ph > anyMin {
-				out[key] = ph
-				continue
-			}
-		}
-		if anyOK {
+		// No playback reader right now (only header/probe readers, or the head is idle
+		// while an EOF probe is excluded). Hold the last committed playhead so the
+		// window stays on the head through the gap (the player will resume there); the
+		// group is pruned below once all its readers leave, so this can't persist after
+		// the stream really stops. Before any anchor is committed, fall back to anyMin.
+		if g.playheadTime != 0 {
+			out[key] = int(g.playhead)
+		} else if anyOK {
 			out[key] = anyMin
 		}
 	}
