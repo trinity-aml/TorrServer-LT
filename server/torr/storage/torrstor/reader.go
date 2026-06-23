@@ -587,7 +587,7 @@ func (r *Reader) scheduleWindow() {
 	// preloadWindowTakesOver keeps the reserve until a reader whose window covers the
 	// head takes over (and applyStreamPriorities keeps head+tail priority>0 meanwhile).
 	if prevF < 0 {
-		if r.cache.preloadWindowTakesOver(first, last) {
+		if r.cache.preloadHeadTakenOver(cur) {
 			if s := settings.BTsets(); s != nil && s.EnableDebug {
 				log.TLogln("torrstor.Reader: first window group", r.group,
 					"file", r.file.Index, "playhead", cur, "window", first, "..", last,

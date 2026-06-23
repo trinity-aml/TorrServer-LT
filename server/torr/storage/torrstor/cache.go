@@ -128,6 +128,13 @@ type Cache struct {
 type group struct {
 	playhead     int64
 	playheadTime int64
+	// pendingUp is a candidate BIG upward jump (a higher playMin past the whole
+	// window) that must persist for anchorHoldSec before it commits — so a transient
+	// high reader (the EOF moov probe becoming the only active reader while the head
+	// reader is briefly idle) can't shove the anchor to the file end and evict the
+	// head. -1 = no pending candidate. Reset whenever playMin returns at/below ph.
+	pendingUp     int64
+	pendingUpTime int64
 }
 
 func newCache(s *Storage, sid int64, hash [20]byte, numPieces int, pieceLength int64) *Cache {
@@ -356,12 +363,15 @@ func (c *Cache) streamAnchors() map[string]int {
 
 		g := c.groups[key]
 		if g == nil {
-			g = &group{}
+			g = &group{pendingUp: -1}
 			c.groups[key] = g
 		}
 
 		if playOK {
 			ph := int(g.playhead)
+			if playMin <= ph {
+				g.pendingUp = -1 // playhead back at/below anchor: cancel any pending up-jump
+			}
 			// Follow the lowest reader DOWN immediately (a real lower read must be
 			// covered), but UP only after a hold — a player keeps a trailing playback
 			// connection AND a leading read-ahead one a few pieces apart; when the
@@ -391,10 +401,25 @@ func (c *Cache) streamAnchors() map[string]int {
 				} else {
 					out[key] = ph
 				}
-			// A small step up is the trailing connection between chunks (hold); a BIG
-			// step up — past the whole window — is a forward SEEK, so advance at once
-			// and let the old window drop immediately.
-			case playMin-ph > aheadP || now-g.playheadTime > anchorHoldSec:
+			// A BIG step up — past the whole window — is EITHER a forward seek OR a
+			// transient (the EOF moov probe is briefly the only active reader while the
+			// head reader is idle). Require it to PERSIST for anchorHoldSec before
+			// committing: a real seek keeps reading there, a probe vanishes when the
+			// head reader reads again (which cancels pendingUp above). This stops the
+			// anchor lurching to the file end and evicting the preloaded head.
+			case playMin-ph > aheadP:
+				if g.pendingUp != int64(playMin) {
+					g.pendingUp, g.pendingUpTime = int64(playMin), now
+					out[key] = ph
+				} else if now-g.pendingUpTime > anchorHoldSec {
+					g.playhead, g.playheadTime, g.pendingUp = int64(playMin), now, -1
+					out[key] = playMin
+				} else {
+					out[key] = ph
+				}
+			// A small step up is the trailing connection between chunks: hold briefly,
+			// then follow it.
+			case now-g.playheadTime > anchorHoldSec:
 				g.playhead, g.playheadTime = int64(playMin), now
 				out[key] = playMin
 			default:
@@ -1130,23 +1155,23 @@ func (c *Cache) SetPreloadReserve(ranges [][2]int) {
 	c.preloadMu.Unlock()
 }
 
-// preloadWindowTakesOver reports whether a reader window [first,last] should take
-// the preload reservation over (and clear it). True when there is no reserve
-// (clearing is a no-op) OR the window overlaps the reserve's HEAD range (the
-// container head/body the player starts from). The player opens an END-OF-FILE
-// probe first (reading the container moov/index before seeking to the start); its
-// window sits near EOF, far from the head, and must NOT clear the reserve — doing
-// so dropped the just-preloaded head, which then re-downloaded from scratch ("after
-// preload the cache resets and downloads anew"). Only the real head/body playback
-// reader, whose window reaches the head, hands the protection off to itself.
-func (c *Cache) preloadWindowTakesOver(first, last int) bool {
+// preloadHeadTakenOver reports whether the reader at piece `cur` should take the
+// preload reservation over (and clear it). True when there is no reserve (clearing
+// is a no-op) OR cur sits inside the reserve's HEAD range (the container head/body
+// the player starts from). It keys on the reader's REAL position, not its window:
+// the player opens an END-OF-FILE probe first (reading the moov before seeking to
+// the start), and that probe's window is anchor-derived (it looked like a head
+// window and wrongly cleared the reserve), but its cur is near EOF — far from the
+// head — so it must NOT clear. Dropping the reserve there evicted the just-preloaded
+// head, which re-downloaded from scratch ("after preload the cache resets").
+func (c *Cache) preloadHeadTakenOver(cur int) bool {
 	c.preloadMu.Lock()
 	defer c.preloadMu.Unlock()
 	if len(c.preloadProtect) == 0 {
 		return true
 	}
 	head := c.preloadProtect[0] // SetPreloadReserve always lists the head range first
-	return last >= head[0] && first <= head[1]
+	return cur >= head[0] && cur <= head[1]
 }
 
 // ClearPreloadReserve releases the preload reservation (the joining client's
