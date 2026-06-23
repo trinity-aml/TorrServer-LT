@@ -1174,13 +1174,25 @@ func (c *Cache) preloadHeadTakenOver(cur int) bool {
 		return true
 	}
 	head := c.preloadProtect[0] // SetPreloadReserve always lists the head range first
-	return cur >= head[0] && cur <= head[1]
+	// cur must be PAST the first piece, not just inside the head: a player reads the
+	// container header AND (for AVI idx1 / MKV cues at the file END) the tail index
+	// before it can start, while the head reader still sits on piece 0. Clearing then
+	// drops the still-needed tail (the idx1 read then times out and the stream never
+	// starts). Requiring cur > head[0] holds head+tail until real playback advances,
+	// by when the index has been read. The EOF index probe (cur near EOF) never matches.
+	return cur > head[0] && cur <= head[1]
 }
 
 // ClearPreloadReserve releases the preload reservation (the joining client's
-// own reader now protects the head) and trims any overage.
+// own reader now protects the head) and trims any overage. A no-op if there is no
+// reserve — scheduleWindow calls it on every read once a reader has taken over, so
+// it must not spawn an eviction pass each time.
 func (c *Cache) ClearPreloadReserve() {
 	c.preloadMu.Lock()
+	if c.preloadProtect == nil {
+		c.preloadMu.Unlock()
+		return
+	}
 	c.preloadProtect = nil
 	c.preloadMu.Unlock()
 	go c.evictIfOverCapacity()
