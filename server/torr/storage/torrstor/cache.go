@@ -782,12 +782,28 @@ func (c *Cache) headPinPieces() int {
 	return piecesForBytes(streamHeaderPinBytes, c.PieceLength, streamHeaderPinPieces)
 }
 
+// tailPinPieces is the UPPER BOUND on the EOF-index pin in pieces — what the window
+// budget reserves against (readerWindowPieces) and how groupReaderSnaps recognises a
+// tail reader. The pin is the last `want` BYTES of the file (mirror of the preload's
+// tail window), which is a byte range that rarely aligns to a piece boundary and so
+// can touch one MORE piece than ceil(want/plen): the AVI idx1 lived in 144..145 while
+// ceil(4MB/4MB)=1 pinned only 145, leaving 144 to be evicted. So add the straddle
+// piece here. tailReserve computes the exact per-file range; this only needs to be a
+// correct upper bound. Capped so a large PreloadBufferEnd can't swallow the window.
 func (c *Cache) tailPinPieces() int {
+	plen := c.PieceLength
+	if plen <= 0 {
+		return 1
+	}
 	want := int64(streamHeaderPinBytes) // default EOF-index window
 	if s := settings.BTsets(); s != nil && s.PreloadBufferEnd > 0 {
 		want = s.PreloadBufferEnd
 	}
-	return piecesForBytes(want, c.PieceLength, streamTailPinPieces)
+	n := int((want+plen-1)/plen) + 1 // ceil + the straddle piece
+	if n > streamTailPinPieces+1 {
+		n = streamTailPinPieces + 1
+	}
+	return n
 }
 
 // close drops the in-memory state for every piece but leaves on-disk

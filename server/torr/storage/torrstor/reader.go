@@ -631,15 +631,34 @@ func (r *Reader) fileLastPiece() int {
 // (AVI idx1 / MKV cues / MP4 moov). The player reads it to parse the container and
 // on every seek, but it never falls inside the forward sliding window, so it is
 // pinned separately for the WHOLE stream: readerProtectRanges keeps it resident and
-// applyStreamPriorities keeps it priority>0. Its size is byte-bounded by
-// PreloadBufferEnd via tailPinPieces and clamped to this file's first piece.
+// applyStreamPriorities keeps it priority>0.
+//
+// It is the last PreloadBufferEnd (default streamHeaderPinBytes) BYTES of the file,
+// computed EXACTLY like the preload's tail window (torr/preload.go) so the pin covers
+// precisely the pieces the preload buffered — including the straddle piece when that
+// byte range crosses a boundary (the AVI idx1 spans 144..145; a piece-count pin of 1
+// covered only 145 and 144 was evicted, REFETCHed and the stream stalled). Capped by
+// tailPinPieces so a large PreloadBufferEnd can't eat the window, and clamped to this
+// file's first piece.
 func (r *Reader) tailReserve() [2]int {
+	plen := r.cache.PieceLength
 	last := r.fileLastPiece()
-	first := last - r.cache.tailPinPieces() + 1
-	if plen := r.cache.PieceLength; plen > 0 {
-		if ffirst := int(r.file.Offset / plen); first < ffirst {
-			first = ffirst
-		}
+	if plen <= 0 || r.file.Length <= 0 {
+		return [2]int{last, last}
+	}
+	tailBytes := int64(streamHeaderPinBytes)
+	if s := settings.BTsets(); s != nil && s.PreloadBufferEnd > 0 {
+		tailBytes = s.PreloadBufferEnd
+	}
+	if tailBytes > r.file.Length {
+		tailBytes = r.file.Length
+	}
+	first := int((r.file.Offset + r.file.Length - tailBytes) / plen)
+	if floor := last - r.cache.tailPinPieces() + 1; first < floor {
+		first = floor // bound the pin span (large PreloadBufferEnd)
+	}
+	if ffirst := int(r.file.Offset / plen); first < ffirst {
+		first = ffirst
 	}
 	if first < 0 {
 		first = 0

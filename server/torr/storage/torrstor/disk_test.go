@@ -188,9 +188,10 @@ func TestCache_EvictionSparesReaderWindow(t *testing.T) {
 	// A 40-piece file is fully resident; a single reader streams from the middle.
 	// Strict model: the cache budget is the sliding window (behind + current + ahead)
 	// PLUS the EOF seek-index tail pin held outside it. With CacheSize 10 pieces and
-	// ReadAhead 80% the tail pin is 3 pieces, so the window budget is 10-3 = 7:
-	// behind = round(7*20%) = 1, ahead = 7-1-1 = 5, so at cur=20 the window is exactly
-	// [19..25], the tail index [37..39] stays pinned, and everything else (including
+	// ReadAhead 80% the tail pin is 4 pieces (the byte-range default clamps to this
+	// tiny file and is bounded to the last 4), so the window budget is 10-4 = 6:
+	// behind = round(6*20%) = 1, ahead = 6-1-1 = 4, so at cur=20 the window is exactly
+	// [19..24], the tail index [36..39] stays pinned, and everything else (including
 	// the former head pin [0..1]) is dropped.
 	prev := settings.BTsets()
 	settings.StoreBTsets(&settings.BTSets{UseDisk: false, CacheSize: 10 * pieceLen, ReaderReadAHead: 80})
@@ -234,16 +235,16 @@ func TestCache_EvictionSparesReaderWindow(t *testing.T) {
 		defer c.mu.RUnlock()
 		return c.pieces[id] != nil
 	}
-	// The whole [19..25] window survives — behind margin + current + forward readahead
-	// — plus the pinned EOF seek index [37..39].
-	for _, keep := range []int{19, 20, 24, 25, 37, 39} {
+	// The whole [19..24] window survives — behind margin + current + forward readahead
+	// — plus the pinned EOF seek index [36..39].
+	for _, keep := range []int{19, 20, 24, 36, 39} {
 		if !present(keep) {
 			t.Fatalf("protected piece %d was evicted", keep)
 		}
 	}
 	// Everything outside the window is dropped, even old ones — INCLUDING the former
-	// head pin [0..1]. The tail index [37..39] now survives (pinned the whole stream).
-	for _, gone := range []int{0, 1, 2, 10, 17, 18, 26, 27, 28, 36} {
+	// head pin [0..1]. The tail index [36..39] now survives (pinned the whole stream).
+	for _, gone := range []int{0, 1, 2, 10, 17, 18, 25, 27, 35} {
 		if present(gone) {
 			t.Fatalf("unprotected piece %d should have been evicted", gone)
 		}
@@ -257,10 +258,10 @@ func TestCache_EvictionSparesReaderWindow(t *testing.T) {
 // devices (distinct groups) stream the same torrent from far-apart positions.
 // Each group must get its OWN protected sliding window — neither device's
 // just-about-to-play pieces may be evicted to make room for the other's. With
-// CacheSize 10 pieces / ReadAhead 80% the tail pin is 3 pieces, so the window budget
-// is 10-3 = 7 (behind 1 + current + ahead 5): device A at piece 20 protects [19..25]
-// and device B at piece 60 protects [59..65], plus the shared EOF seek index
-// [77..79]; capacity grows (streamingReserve) to fit both, and everything outside is
+// CacheSize 10 pieces / ReadAhead 80% the tail pin is 4 pieces, so the window budget
+// is 10-4 = 6 (behind 1 + current + ahead 4): device A at piece 20 protects [19..24]
+// and device B at piece 60 protects [59..64], plus the shared EOF seek index
+// [76..79]; capacity grows (streamingReserve) to fit both, and everything outside is
 // dropped.
 func TestCache_EvictionSparesBothDeviceWindows(t *testing.T) {
 	prev := settings.BTsets()
@@ -309,19 +310,105 @@ func TestCache_EvictionSparesBothDeviceWindows(t *testing.T) {
 		defer c.mu.RUnlock()
 		return c.pieces[id] != nil
 	}
-	// BOTH device windows survive: [19..25] (A) and [59..65] (B), plus the pinned EOF
-	// seek index [77..79].
-	for _, keep := range []int{19, 20, 25, 59, 60, 65, 77, 79} {
+	// BOTH device windows survive: [19..24] (A) and [59..64] (B), plus the pinned EOF
+	// seek index [76..79].
+	for _, keep := range []int{19, 20, 24, 59, 60, 64, 76, 79} {
 		if !present(keep) {
 			t.Fatalf("protected piece %d was evicted (device isolation broken)", keep)
 		}
 	}
 	// Pieces well outside both windows are dropped — including the former head pin
-	// [0..1]. The tail index [77..79] now survives (pinned the whole stream).
-	for _, gone := range []int{0, 1, 10, 18, 26, 40, 45, 50, 55, 57, 58, 66, 68, 76} {
+	// [0..1]. The tail index [76..79] now survives (pinned the whole stream).
+	for _, gone := range []int{0, 1, 10, 18, 25, 40, 45, 50, 55, 57, 58, 65, 68, 75} {
 		if present(gone) {
 			t.Fatalf("unprotected piece %d should have been evicted", gone)
 		}
+	}
+}
+
+// TestCache_TailPinSurvivesPreloadHandoff reproduces the AVI idx1 stall from the
+// field log (Cherniy.dvor ...AVI): the EOF seek index lives in the last bytes of the
+// file, which the preload buffered as tail pieces 144..145 — a BYTE range that
+// STRADDLES the 144/145 boundary. After the head reader advances to piece 1 and the
+// preload reserve is handed off, the capacity fallback (filled 72 MB > 64 MB cache)
+// must NOT evict piece 144: the standing per-reader tail pin (tailReserve) keeps the
+// WHOLE idx1 resident so the player's EOF probe reads it and playback starts. Before
+// the straddle fix the pin covered only piece 145, so 144 was evicted, REFETCHed, and
+// the stream never started ("после прелоада стрим не стартовал").
+func TestCache_TailPinSurvivesPreloadHandoff(t *testing.T) {
+	const MB = int64(1) << 20
+	plen := 4 * MB
+	prev := settings.BTsets()
+	settings.StoreBTsets(&settings.BTSets{UseDisk: false, CacheSize: 64 * MB, ReaderReadAHead: 95})
+	t.Cleanup(func() { settings.StoreBTsets(prev) })
+
+	s := NewStorage()
+	h := mkHash(0xA1)
+	const numPieces = 146
+	// File ends 2 MB into the last piece (145), so the 4 MB tail window straddles down
+	// into piece 144 — exactly the idx1 layout from the log (tail 144..145).
+	fileLen := int64(145)*plen + 2*MB
+	s.callbackOpen(1, h, numPieces, plen)
+	c := s.CacheByHash(h)
+
+	// Preload state: head 0..15 + tail 144..145 resident == filled 72 MB (> 64 MB cache).
+	// Write one byte at plen-1 so SizeBytes reports a full 4 MB piece without the alloc.
+	present := []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 144, 145}
+	c.mu.Lock()
+	for n, i := range present {
+		p := newPiece(c, i)
+		if _, err := p.WriteAt([]byte{0x9}, plen-1); err != nil {
+			c.mu.Unlock()
+			t.Fatalf("write %d: %v", i, err)
+		}
+		p.setComplete(true)
+		p.accessed.Store(int64(n)) // head pieces are oldest (LRU drops them first)
+		c.pieces[i] = p
+	}
+	c.mu.Unlock()
+
+	// Preload reserve exactly as torr/preload.go sets it: head window + tail window.
+	c.SetPreloadReserve([][2]int{{0, 15}, {144, 145}})
+
+	// Head reader advanced to piece 1 — window established (non-probe).
+	rHead := &Reader{cache: c, group: "dev", file: FileInfo{Offset: 0, Length: fileLen}}
+	rHead.readahead.Store(60 * MB)
+	rHead.offset.Store(1 * plen)
+	rHead.winFirst.Store(0)
+	rHead.winLast.Store(13)
+	rHead.lastRead.Store(time.Now().Unix())
+	c.registerReader(rHead)
+
+	// EOF index probe: a second connection reading the idx1 at piece 144 (no window).
+	rTail := &Reader{cache: c, group: "dev", file: FileInfo{Offset: 0, Length: fileLen}}
+	rTail.readahead.Store(60 * MB)
+	rTail.offset.Store(144 * plen)
+	rTail.winFirst.Store(-1)
+	rTail.winLast.Store(-1)
+	rTail.lastRead.Store(time.Now().Unix())
+	c.registerReader(rTail)
+
+	// Head reader hands the preload reservation over to its window (as scheduleWindow
+	// does once cur advances past the head's first piece): the tail must stay protected
+	// by the standing tail pin, NOT by the now-cleared preload reserve.
+	c.ClearPreloadReserve()
+
+	c.evictIfOverCapacity()
+
+	got := func(id int) bool {
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		return c.pieces[id] != nil
+	}
+	// The idx1 tail — BOTH 144 and 145 — must survive the handoff. This is the fix.
+	for _, keep := range []int{144, 145} {
+		if !got(keep) {
+			t.Fatalf("EOF index piece %d evicted after preload handoff (idx1 stall)", keep)
+		}
+	}
+	// And it converged to the budget by dropping head leftovers past the window.
+	if c.Filled() > c.capacity() {
+		t.Fatalf("eviction did not converge: filled=%d cap=%d", c.Filled(), c.capacity())
 	}
 }
 
