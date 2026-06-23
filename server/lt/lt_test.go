@@ -454,6 +454,28 @@ func TestSetFilePriority(t *testing.T) {
 	}
 }
 
+func TestPrioritizePieces(t *testing.T) {
+	s := newSession(t)
+	tor, _ := s.AddTorrent(AddTorrentParams{InfoBytes: minimalTorrent(), SavePath: t.TempDir(), Paused: true})
+	n := tor.NumPieces()
+	// A full-length vector applies (the cache rebuilds this every tick).
+	prios := make([]int, n)
+	for i := range prios {
+		prios[i] = 4
+	}
+	if err := tor.PrioritizePieces(prios); err != nil {
+		t.Fatalf("PrioritizePieces(len=%d): %v", n, err)
+	}
+	// A wrong-length vector is rejected (guards against stale metadata).
+	if err := tor.PrioritizePieces(make([]int, n+1)); err == nil {
+		t.Fatalf("PrioritizePieces(len=%d) on %d-piece torrent: want error, got nil", n+1, n)
+	}
+	// Empty is a no-op, not an error.
+	if err := tor.PrioritizePieces(nil); err != nil {
+		t.Fatalf("PrioritizePieces(nil): %v", err)
+	}
+}
+
 // ---------- status ----------
 
 func TestStatus(t *testing.T) {

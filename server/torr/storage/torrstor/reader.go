@@ -103,18 +103,6 @@ func streamConnLimit() int {
 // nothing is pulled there.
 const prefetchMarginBytes = 0
 
-// fillerContainmentPieces is how far libtorrent's time-critical picker reads ahead
-// PAST the last deadlined piece to keep its peers' request queues full — it does so
-// REGARDLESS of priority (a live trace showed complete pieces pulled ~6 past the
-// deadline edge on a 4 MB-piece torrent). scheduleWindow holds the deadline edge
-// this many pieces BACK from the window edge, so that read-ahead lands on the
-// window's own (priority>0, picker-filled) pieces instead of spilling into the
-// priority-0 region past the window and churning (download→evict→re-download). The
-// near pieces are still deadlined for urgency; only the far slice of the window
-// trades its deadline for being the read-ahead landing zone (the picker fills it by
-// priority either way). Sized to the observed read-ahead depth.
-const fillerContainmentPieces = 6
-
 // windowLingerDelay is how long a closed reader's streaming window stays
 // prioritised before being returned to lazy. It bridges the gap between the
 // per-chunk HTTP connections an impatient player (VLC) opens, so libtorrent
@@ -545,25 +533,22 @@ func (r *Reader) Offset() int64 {
 	return r.offset.Load()
 }
 
-// scheduleWindow communicates the streaming priority window to libtorrent.
-// The torrent sits at piece priority 0 (lazy, see Torrent.signalGotInfo), so
-// the reader is what actually drives downloading: it raises priority on the
-// [current .. current+readahead] window and attaches deadlines (NOW=0ms, the
-// next one 100ms, then 500/1500/3000ms tiers) so the picker fetches them in
-// playback order. Pieces that scrolled out of the window (already played, or
-// beyond readahead) are dropped back to priority 0 so we stop pulling them.
+// scheduleWindow recomputes this reader's window snapshot (for the /cache view and
+// the preload hand-off) and triggers the cache's DECLARATIVE priority pass, which
+// is what actually drives libtorrent. The torrent sits at piece priority 0 (lazy,
+// see Torrent.signalGotInfo); applyStreamPriorities rebuilds the WHOLE priority
+// vector each tick from every device's live window + pins + preload, so the reader
+// no longer pokes individual piece priorities/deadlines (the old per-reader set +
+// drop loop left stale priority>0 on pieces an abandoned connection still "held",
+// which kept downloading past the window and churned). See applyStreamPriorities.
 func (r *Reader) scheduleWindow() {
 	if r.handle == nil {
 		return
 	}
-	// Internal probe reader (ffprobe): stay completely passive toward libtorrent
-	// priorities. It runs CONCURRENTLY with a detached preload that owns the
-	// head+tail priorities; if it scheduled a window it would (a) raise priority 7
-	// on its own readahead span and, worse, (b) record [winFirst,winLast] so that
-	// on Close the teardown zeroes SetPiecePriority on those head pieces — and with
-	// no streaming reader yet to "keep" them, that killed the preload's own head
-	// download the moment the probe finished ("preload stops after bitrate"). The
-	// probe just reads cache pieces the preload (or a real reader) brings in.
+	// Internal probe reader (ffprobe): stay completely passive. It runs CONCURRENTLY
+	// with a detached preload that owns the head+tail priorities; it just reads cache
+	// pieces the preload (or a real reader) brings in, and must not record a window
+	// or drive priorities.
 	if r.internal {
 		return
 	}
@@ -571,172 +556,41 @@ func (r *Reader) scheduleWindow() {
 	if plen <= 0 {
 		return
 	}
-	// ONE window per device, anchored on the device's live playhead — the lowest
-	// playback connection (groupPlayheadForGroup), taken DIRECTLY with no hold so a
-	// seek moves it at once. All of a player's clustered connections drive the SAME
-	// forward range [playhead .. playhead+ahead] = the FULL cache window, so they
-	// don't each extend their own window past the cluster and churn its edge (the
-	// trace had no reader past piece 6 yet pieces 16-21 thrashed — that was each
-	// connection's own full window). Falls back to this reader's own position before
-	// a playhead is established. Head/tail re-reads are served from their pins.
+	// This reader's window snapshot, anchored on the device's held playhead
+	// (groupPlayheadForGroup), clamped to THIS file. Used only for the /cache view
+	// (State) and to decide the preload hand-off below — the actual priorities come
+	// from applyStreamPriorities, which derives the same windows from groupPlayheads.
 	cur := r.currentPiece()
-	anchor, hasAnchor := r.cache.groupPlayheadForGroup(r.group)
-	_, aheadP := r.cache.readerWindowPieces()
-	// Straggler teardown. A connection the player abandoned on a FORWARD seek lingers
-	// a few seconds before it closes; its reprioritizeLoop keeps calling this method
-	// at the OLD position. With first=min(cur,anchor) below, that would re-deadline
-	// the seeked-past region every second — which eviction (anchored on the NEW
-	// playhead) then drops and the loop re-pulls: the "old cache re-downloads then
-	// drops again" churn seen in the trace (a low piece evicted twice in one second
-	// while the window sat far ahead). Once this reader has gone idle (no Read for
-	// staleReaderSec) AND the device's playhead has moved more than a full window
-	// past it (a real forward seek, not a brief pause in place — a backward seek
-	// instead lowers the anchor and is handled by the min() below), it is a dead
-	// connection: zero its old window's priorities/deadlines so libtorrent abandons
-	// the region, forget the window, and stay passive until it Reads again (which
-	// re-establishes one at the real position) or Close tears it down.
-	if hasAnchor && anchor-cur > aheadP && time.Now().Unix()-r.lastRead.Load() > staleReaderSec {
-		if prevF := int(r.winFirst.Load()); prevF >= 0 {
-			prevL := int(r.winLast.Load())
-			others := r.cache.readerWindowsExcept(r)
-			for i := prevF; i <= prevL; i++ {
-				if !pieceInRanges(i, others) {
-					_ = r.handle.SetPiecePriority(i, 0)
-					_ = r.handle.ResetPieceDeadline(i)
-				}
-			}
-			r.winFirst.Store(-1)
-			r.winLast.Store(-1)
-		}
-		return
-	}
 	first := cur
-	if hasAnchor && anchor < first {
+	if anchor, ok := r.cache.groupPlayheadForGroup(r.group); ok && anchor < first {
 		first = anchor
 	}
-	// The window has TWO edges. `last` is the WINDOW edge: the whole readahead
-	// budget, every piece priority>0 so the normal (sequential) picker fills it
-	// deterministically up to the full CacheSize. `deadlineLast` is the DEADLINE
-	// edge, held back from the window edge by fillerContainmentPieces. Why the gap:
-	// libtorrent's time-critical picker reads ~fillerContainmentPieces PAST the last
-	// deadline to keep its peers busy, IGNORING priority; if the deadline ran to the
-	// window edge that read-ahead spilled into the priority-0 region past the window
-	// and churned (download→evict→re-download). Holding the deadline back lands that
-	// read-ahead on the window's own far pieces (still priority>0, the picker fills
-	// them anyway) instead of past it. So the near window is deadline-urgent, the far
-	// slice is the read-ahead landing zone, and NOTHING is pulled past the window.
+	_, aheadP := r.cache.readerWindowPieces()
 	last := first + aheadP
-	// Never prioritise past THIS file's last piece. A reader streams a single
-	// file, so its forward window must not spill into the next file's pieces.
-	// Without this clamp a reader sitting near a file's end — e.g. the SECOND
-	// connection VLC/libavformat opens to read an AVI's idx1 index at EOF —
-	// schedules a full readahead window of the *next* file at deadline 0 and
-	// steals the swarm from the actually-playing head. Verified live: a few-KB
-	// index read pulled ~64 MB of the next episode (pieces past E01's end) with
-	// deadline 0 while the real playhead's pieces 3-5 starved → stall at high
-	// download speed. The boundary piece that straddles two files stays included
-	// (it holds this file's last bytes), so seeking to EOF still works.
 	if fl := r.fileLastPiece(); last > fl {
 		last = fl
 	}
 	if last >= r.cache.NumPieces {
 		last = r.cache.NumPieces - 1
 	}
-	deadlineLast := last - fillerContainmentPieces
-	if deadlineLast < first {
-		deadlineLast = first
-	}
-
-	prevF, prevL := int(r.winFirst.Load()), int(r.winLast.Load())
-
-	// Drop pieces that left the window back to "don't download" — except
-	// pieces inside ANOTHER reader's window. With two clients streaming the
-	// same torrent (second device trailing the first within a window-width),
-	// the leader's slide would otherwise keep zeroing priorities the trailing
-	// stream just asked for: its reprioritize pass only re-asserts the graded
-	// head (priorities are sticky inside the window), so its far readahead
-	// stopped downloading and the trailing buffer collapsed to a few pieces.
-	if prevF >= 0 {
-		others := r.cache.readerWindowsExcept(r)
-		for i := prevF; i <= prevL; i++ {
-			if (i < first || i > last) && !pieceInRanges(i, others) {
-				_ = r.handle.SetPiecePriority(i, 0)
-				// Take it off the time-critical list too. SetPiecePriority(0) alone
-				// leaves the deadline set, and a deadlined piece stays time-critical
-				// — re-requested with top urgency regardless of priority. After a seek
-				// the abandoned old window kept its deadlines, so libtorrent
-				// re-downloaded that region, eviction dropped it, libtorrent re-fetched
-				// it again: the "old cache re-downloads then drops again" churn.
-				// Resetting keeps the invariant deadlined-pieces == current window.
-				_ = r.handle.ResetPieceDeadline(i)
-			}
-		}
-	}
-
-	// Raise priority + deadline on the current window, graded by distance ahead
-	// of the playhead (closest = highest priority, tightest deadline; the far
-	// tail gets priority only — see windowPriority). Pieces already inside the
-	// window keep their sticky priority, so only the graded head (whose tier
-	// shifts as the window slides) and newly-entered pieces need touching. The
-	// loop runs to `last` (the whole window); pieces past `deadlineLast` get
-	// priority but no deadline (see the two-edge rationale above) — that far slice
-	// is where libtorrent's time-critical read-ahead lands, kept inside the window.
-	for i := first; i <= last; i++ {
-		pos := i - first
-		prio, deadlineMs := windowPriority(pos)
-		if i > deadlineLast {
-			deadlineMs = -1 // read-ahead landing zone: priority only, no deadline
-		}
-		entered := prevF < 0 || i < prevF || i > prevL
-		// Resurrect a piece libtorrent thinks it has but our cache evicted (a seek
-		// into a previously played region, or — with a player that opens a fresh
-		// connection per chunk — a piece a sibling connection prefetched and that
-		// then got evicted). Un-have it so the picker re-fetches it. But do this
-		// ONLY inside the time-critical part of the window (deadlineMs >= 0, i.e.
-		// pos <= 8), NOT across the whole readahead window. The far edge (pos > 8)
-		// has no deadline — resurrecting it speculatively re-downloaded pieces a
-		// dozen ahead of the playhead that were promptly evicted again on a cache
-		// with no slack (ReadAhead ~= CacheSize), so the same far piece was
-		// re-fetched many times (live log: one piece pulled 9×) while STEALING the
-		// swarm from the playhead → playback stutter. Gating on the deadline tier
-		// makes the refill just-in-time: each evicted piece is re-fetched once, as
-		// it enters the 8-piece deadlined horizon, where it's actually about to be
-		// read. Not gated on `entered`, so a piece that slid into the horizon while
-		// still evicted is refilled even though it was already in the window.
-		needRefill := !r.cache.Have(i) && r.handle.HasPiece(i)
-		if needRefill && deadlineMs >= 0 {
-			_ = r.handle.WeDontHave(i, prio)
-		} else if entered || pos <= 8 {
-			_ = r.handle.SetPiecePriority(i, prio)
-		}
-		if deadlineMs >= 0 {
-			_ = r.handle.SetPieceDeadline(i, deadlineMs, false)
-		}
-	}
+	prevF := int(r.winFirst.Load())
 	r.winFirst.Store(int64(first))
 	r.winLast.Store(int64(last))
+
 	// First time this reader establishes a window, hand the play-gated preload's
 	// buffer reservation over to it — but ONLY if this reader is at the HEAD/BODY
 	// (a real playhead), never the EOF index reader. A player opens a SECOND
-	// connection to read the container index at the file's END (MKV cues / AVI
-	// idx1); that reader's first window sits in the tail-pin region, far from the
-	// preloaded head. If IT cleared the reserve, the head (everything past the
-	// tiny head pin) lost its only protection in the gap before the real bytes=0-
-	// playback reader established its window — so the preloaded head was evicted
-	// and then re-downloaded from scratch, and PreloadOnPlay (seeing headLast gone)
-	// even re-fired a full second preload: the "preload re-downloads instead of
-	// being served to the player" report. The index reader is identified exactly as
-	// in groupReaderSnaps/PreloadOnPlay (sitting in the tail pin). The head reader
-	// (or a mid-file resume reader) still performs the hand-off; until one does, the
-	// reserve keeps the preloaded head+tail resident.
+	// connection to read the container index at the file's END (MKV cues / AVI idx1);
+	// that reader sits in the tail-pin region, far from the preloaded head. If IT
+	// cleared the reserve, the head lost its only protection before the real bytes=0-
+	// playback reader established its window — so the preloaded head was evicted and
+	// re-downloaded. The index reader is identified as in groupReaderSnaps (sitting in
+	// the tail pin); until a head/body reader hands off, the reserve keeps the
+	// preloaded head+tail resident (and applyStreamPriorities keeps them priority>0).
 	tailStart := r.fileLastPiece() - r.cache.tailPinPieces() + 1
 	isIndexReader := cur >= tailStart
 	if prevF < 0 && !isIndexReader {
 		if s := settings.BTsets(); s != nil && s.EnableDebug {
-			// Streaming takes over: log the first window so a series trace shows
-			// whether the preloaded head [headFirst..] is INSIDE [first..last] (kept,
-			// seamless) or partly outside it (trimmed then re-fetched as the playhead
-			// advances — the re-buffer). filled is what's resident at hand-off.
 			log.TLogln("torrstor.Reader: first window group", r.group,
 				"file", r.file.Index, "playhead", cur, "window", first, "..", last,
 				"ClearPreloadReserve, filled", r.cache.Filled()>>20, "MB")
@@ -749,6 +603,10 @@ func (r *Reader) scheduleWindow() {
 				"is EOF index reader — KEEP preload reserve (head stays protected)")
 		}
 	}
+
+	// Drive the declarative priority/deadline recompute (global, from all device
+	// windows). Debounced inside; the reprioritize loop guarantees a periodic refresh.
+	r.cache.applyStreamPriorities()
 }
 
 // currentPiece reports the piece the reader is currently positioned in.

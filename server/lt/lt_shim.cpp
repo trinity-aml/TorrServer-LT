@@ -992,6 +992,33 @@ int lt_torrent_set_all_pieces_priority(lt_torrent tid, int prio) {
     WRAP_END(LT_ERR_INTERNAL)
 }
 
+// Set the FULL piece-priority vector in one prioritize_pieces call. `prios` is an
+// array of length `count` (== num_pieces); entry i is piece i's priority (0..7,
+// clamped). This drives streaming DECLARATIVELY: each tick the cache rebuilds the
+// whole vector (window pieces graded, pins/preload raised, everything else 0) and
+// applies it atomically, so no piece can be left at a stale priority>0 and keep
+// downloading past the window. Mismatched count is rejected (stale metadata).
+int lt_torrent_prioritize_pieces(lt_torrent tid, const int* prios, int count) {
+    WRAP_BEGIN
+    auto h = get_torrent(tid);
+    if (!h.is_valid()) return set_err(LT_ERR_NOT_FOUND, "torrent not found");
+    if (!prios || count < 0) return set_err(LT_ERR_INVALID, "bad priorities");
+    auto ti = h.torrent_file();
+    if (!ti) return set_err(LT_ERR_NOT_FOUND, "no metadata yet");
+    if (count != ti->num_pieces()) return set_err(LT_ERR_INVALID, "count != num_pieces");
+    std::vector<lt::download_priority_t> v;
+    v.reserve(static_cast<std::size_t>(count));
+    for (int i = 0; i < count; ++i) {
+        int p = prios[i];
+        if (p < 0) p = 0;
+        if (p > 7) p = 7;
+        v.push_back(static_cast<lt::download_priority_t>(static_cast<std::uint8_t>(p)));
+    }
+    h.prioritize_pieces(v);
+    return LT_OK;
+    WRAP_END(LT_ERR_INTERNAL)
+}
+
 // Per-piece "un-have". The streaming cache evicts pieces that libtorrent still
 // records as "have"; a seek back into an evicted region (or a playhead piece
 // that was downloaded ahead, cached, then evicted before the reader reached it)

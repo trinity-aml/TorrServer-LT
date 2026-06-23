@@ -182,6 +182,9 @@ size_t  lt_torrent_info_hash_hex(lt_torrent t, char* buf, size_t cap);
 /* ----- priorities & streaming ----- */
 int lt_torrent_set_piece_priority(lt_torrent t, int piece_idx, int prio);
 int lt_torrent_set_all_pieces_priority(lt_torrent t, int prio);
+/* Set the whole piece-priority vector in one call (prios[count], count ==
+ * num_pieces). Drives streaming declaratively so no stale priority>0 survives. */
+int lt_torrent_prioritize_pieces(lt_torrent t, const int* prios, int count);
 int lt_torrent_set_piece_deadline(lt_torrent t, int piece_idx, int deadline_ms, int alert_when_ready);
 /* Remove a single piece from the time-critical (deadline) list. Setting its
  * priority to 0 does NOT do this — a deadlined piece stays time-critical and is

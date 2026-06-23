@@ -106,6 +106,18 @@ type Cache struct {
 	// once a group's last reader leaves. Guarded by groupsMu.
 	groupsMu sync.Mutex
 	groups   map[string]*group
+
+	// Declarative streaming priorities. applyStreamPriorities rebuilds the WHOLE
+	// libtorrent piece-priority vector each tick from the live device windows + pins
+	// + preload (everything else 0), so no piece is ever left at a stale priority>0
+	// that keeps downloading past the window. priMu serialises that apply (readers
+	// trigger it concurrently); deadlined tracks which pieces currently carry a
+	// streaming deadline so the apply can clear the ones that scrolled out (a
+	// deadlined piece stays time-critical regardless of priority); lastApplyMs
+	// debounces bursts of triggers from a per-chunk player's many connections.
+	priMu       sync.Mutex
+	deadlined   map[int]bool
+	lastApplyMs atomic.Int64
 }
 
 // group is the sliding-window state of one playback session (device). playhead
@@ -130,6 +142,7 @@ func newCache(s *Storage, sid int64, hash [20]byte, numPieces int, pieceLength i
 		waiters:     map[int]chan struct{}{},
 		readers:     map[*Reader]struct{}{},
 		groups:      map[string]*group{},
+		deadlined:   map[int]bool{},
 	}
 }
 
@@ -459,6 +472,129 @@ func (c *Cache) groupActivePlayheadMin(group string) (int, bool) {
 // anchor its window on its device's held playhead.
 func (c *Cache) groupPlayheadForGroup(key string) (int, bool) {
 	return c.streamAnchorForGroup(key)
+}
+
+// Streaming piece priorities used by applyStreamPriorities. Pins (header/EOF index)
+// and the in-flight preload buffer are kept clearly downloadable. Behind pieces are
+// NOT prioritised — they are a retention zone (already played, kept resident by
+// readerProtectRanges for a short rewind), so only the forward window drives downloads.
+const (
+	streamPinPriority     = 6
+	streamPreloadPriority = 7
+)
+
+// applyStreamPriorities rebuilds libtorrent's ENTIRE piece-priority vector from the
+// live streaming state and applies it in one prioritize_pieces call: every device's
+// forward window (graded by distance from its held playhead) + each streamed file's
+// head/tail pins + any in-flight preload buffer get priority>0, EVERYTHING else 0.
+//
+// This is the load-bearing fix for the leading-edge churn. libtorrent's normal
+// picker only fetches priority>0 pieces and its time-critical picker never reads
+// past the deadlined set (verified in torrent.cpp:request_time_critical_pieces), so
+// this vector is the SOLE thing that pulls pieces — nothing outside the window can
+// download. The old per-reader SetPiecePriority + drop loop left pieces at a stale
+// priority>0 (an abandoned read-ahead connection's window kept "protecting" them),
+// which is exactly what kept downloading past the window and churning. Rebuilding
+// the whole vector every tick makes that impossible: a piece no window covers is 0.
+//
+// Deadlines are reconciled the same way — a deadlined piece stays time-critical
+// regardless of priority, so ones that scrolled out are cleared. Driven from
+// groupPlayheads (which already excludes stale/probe/tail readers), so it is
+// consistent no matter which reader triggers it. Debounced + serialised by priMu.
+func (c *Cache) applyStreamPriorities() {
+	h := c.handle.Load()
+	if h == nil || c.NumPieces <= 0 || c.PieceLength <= 0 {
+		return
+	}
+	now := time.Now().UnixMilli()
+	// A per-chunk player triggers this from dozens of connections (each new one on
+	// its first Read); the 1s reprioritize loop guarantees a periodic refresh, so
+	// coalesce bursts. A seek applies within the debounce; the head stays protected
+	// from eviction by readerProtectRanges regardless of when priorities re-apply.
+	if last := c.lastApplyMs.Load(); now-last < 250 {
+		return
+	}
+
+	anchors := c.groupPlayheads() // group -> playhead (excludes stale/probe/tail)
+	_, aheadP := c.readerWindowPieces()
+
+	c.readersMu.Lock()
+	rs := make([]*Reader, 0, len(c.readers))
+	for r := range c.readers {
+		if !r.internal {
+			rs = append(rs, r)
+		}
+	}
+	c.readersMu.Unlock()
+
+	plen := c.PieceLength
+	prios := make([]int, c.NumPieces)
+	desired := make(map[int]int) // piece -> deadlineMs
+	raise := func(i, p int) {
+		if i >= 0 && i < c.NumPieces && prios[i] < p {
+			prios[i] = p
+		}
+	}
+	for _, r := range rs {
+		// Pins (container header + EOF index) stay downloadable for a player's
+		// header/seek-index re-reads regardless of the playhead.
+		for _, pin := range r.reservePins() {
+			for i := pin[0]; i <= pin[1]; i++ {
+				raise(i, streamPinPriority)
+			}
+		}
+		ph, ok := anchors[r.group]
+		if !ok {
+			continue // no playhead yet for this group (only probe/tail/header readers)
+		}
+		ffirst := int(r.file.Offset / plen)
+		flast := r.fileLastPiece()
+		lo, hi := ph, ph+aheadP // forward window only; behind is retention (not pulled)
+		if lo < ffirst {
+			lo = ffirst
+		}
+		if hi > flast {
+			hi = flast
+		}
+		if hi >= c.NumPieces {
+			hi = c.NumPieces - 1
+		}
+		for i := lo; i <= hi; i++ {
+			prio, dlMs := windowPriority(i - ph)
+			raise(i, prio)
+			if dlMs >= 0 {
+				if cur, ok := desired[i]; !ok || dlMs < cur {
+					desired[i] = dlMs
+				}
+			}
+		}
+	}
+	// In-flight preload buffer (no reader window has taken over yet).
+	c.preloadMu.Lock()
+	for _, rng := range c.preloadProtect {
+		for i := rng[0]; i <= rng[1]; i++ {
+			raise(i, streamPreloadPriority)
+		}
+	}
+	c.preloadMu.Unlock()
+
+	c.priMu.Lock()
+	defer c.priMu.Unlock()
+	c.lastApplyMs.Store(now)
+	if err := h.PrioritizePieces(prios); err != nil {
+		return
+	}
+	// Reconcile deadlines: clear the ones that scrolled out, set/refresh the rest.
+	for piece := range c.deadlined {
+		if _, ok := desired[piece]; !ok {
+			_ = h.ResetPieceDeadline(piece)
+			delete(c.deadlined, piece)
+		}
+	}
+	for piece, dl := range desired {
+		_ = h.SetPieceDeadline(piece, dl, false)
+		c.deadlined[piece] = true
+	}
 }
 
 // streamWindowPieces is the forward (ahead) and behind reach of the cache window

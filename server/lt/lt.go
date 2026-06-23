@@ -482,6 +482,23 @@ func (t *Torrent) SetAllPiecesPriority(prio int) error {
 	return codeToErr(C.lt_torrent_set_all_pieces_priority(t.id, C.int(prio)))
 }
 
+// PrioritizePieces sets the WHOLE piece-priority vector in one call: prios[i] is
+// piece i's priority (0..7, clamped), and len(prios) must equal NumPieces. The
+// streaming cache drives priorities with this — rebuilding the entire vector each
+// tick (window graded, pins/preload raised, everything else 0) — so no piece is
+// ever left at a stale priority>0 that would keep downloading past the window. A
+// no-op for an empty slice.
+func (t *Torrent) PrioritizePieces(prios []int) error {
+	if len(prios) == 0 {
+		return nil
+	}
+	cprios := make([]C.int, len(prios))
+	for i, p := range prios {
+		cprios[i] = C.int(p)
+	}
+	return codeToErr(C.lt_torrent_prioritize_pieces(t.id, &cprios[0], C.int(len(cprios))))
+}
+
 // WeDontHave tells libtorrent's piece_picker to forget that it has the given
 // piece, so the picker will re-request it from peers — needed when the streaming
 // cache has evicted a piece libtorrent still records as "have" (the picker skips
