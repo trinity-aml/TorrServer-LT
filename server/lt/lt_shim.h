@@ -183,6 +183,12 @@ size_t  lt_torrent_info_hash_hex(lt_torrent t, char* buf, size_t cap);
 int lt_torrent_set_piece_priority(lt_torrent t, int piece_idx, int prio);
 int lt_torrent_set_all_pieces_priority(lt_torrent t, int prio);
 int lt_torrent_set_piece_deadline(lt_torrent t, int piece_idx, int deadline_ms, int alert_when_ready);
+/* Remove a single piece from the time-critical (deadline) list. Setting its
+ * priority to 0 does NOT do this — a deadlined piece stays time-critical and is
+ * re-requested with top urgency regardless of priority. The streaming reader
+ * calls this when a piece scrolls out of its window so libtorrent stops pulling
+ * the abandoned region after a seek. */
+int lt_torrent_reset_piece_deadline(lt_torrent t, int piece_idx);
 int lt_torrent_clear_piece_deadlines(lt_torrent t);
 /* Sequential download: make the piece_picker prefer the lowest-indexed wanted
  * (priority>0) piece. Scoped to the reader's window because the rest of the

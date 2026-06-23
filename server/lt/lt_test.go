@@ -436,6 +436,11 @@ func TestSetPieceDeadline_AndClear(t *testing.T) {
 	if err := tor.SetPieceDeadline(0, 500, true); err != nil {
 		t.Fatalf("SetPieceDeadline: %v", err)
 	}
+	// Single-piece reset takes just that piece off the time-critical list (the
+	// streaming reader uses it to stop pulling a scrolled-out window after a seek).
+	if err := tor.ResetPieceDeadline(0); err != nil {
+		t.Fatalf("ResetPieceDeadline: %v", err)
+	}
 	if err := tor.ClearPieceDeadlines(); err != nil {
 		t.Fatalf("ClearPieceDeadlines: %v", err)
 	}

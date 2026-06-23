@@ -503,6 +503,16 @@ func (t *Torrent) SetPieceDeadline(piece, deadlineMs int, alertWhenReady bool) e
 	return codeToErr(C.lt_torrent_set_piece_deadline(t.id, C.int(piece), C.int(deadlineMs), a))
 }
 
+// ResetPieceDeadline removes a single piece from the time-critical (deadline)
+// list. Dropping a piece's priority to 0 does NOT clear its deadline — a
+// deadlined piece stays time-critical and is re-requested with top urgency
+// regardless of priority — so the streaming reader calls this when a piece
+// scrolls out of its window, otherwise libtorrent keeps pulling the abandoned
+// region after a seek (download-then-evict-then-redownload churn).
+func (t *Torrent) ResetPieceDeadline(piece int) error {
+	return codeToErr(C.lt_torrent_reset_piece_deadline(t.id, C.int(piece)))
+}
+
 // ClearPieceDeadlines drops all streaming deadlines on this torrent.
 func (t *Torrent) ClearPieceDeadlines() error {
 	return codeToErr(C.lt_torrent_clear_piece_deadlines(t.id))

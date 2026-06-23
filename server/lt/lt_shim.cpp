@@ -1071,6 +1071,17 @@ int lt_torrent_set_sequential_download(lt_torrent tid, int enable) {
     WRAP_END(LT_ERR_INTERNAL)
 }
 
+int lt_torrent_reset_piece_deadline(lt_torrent tid, int piece_idx) {
+    WRAP_BEGIN
+    auto h = get_torrent(tid);
+    if (!h.is_valid()) return set_err(LT_ERR_NOT_FOUND, "torrent not found");
+    // reset_piece_deadline takes the piece off the time-critical list. Public
+    // torrent_handle API, so this always links (no internals needed).
+    h.reset_piece_deadline(lt::piece_index_t{piece_idx});
+    return LT_OK;
+    WRAP_END(LT_ERR_INTERNAL)
+}
+
 int lt_torrent_clear_piece_deadlines(lt_torrent tid) {
     WRAP_BEGIN
     auto h = get_torrent(tid);

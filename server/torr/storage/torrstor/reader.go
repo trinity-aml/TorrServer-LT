@@ -93,17 +93,22 @@ func streamConnLimit() int {
 }
 
 // prefetchMarginBytes is how far PAST the deadlined window the eviction keeps
-// pieces protected. libtorrent's time-critical (deadline) picker prefetches a bit
-// past the last deadlined piece to keep peers busy; the trace showed those landing
-// window_end+1..+5 (on 4 MB pieces), evicted as the only spare candidates, then
-// re-fetched as the window slid in (the leading-edge churn). readerProtectRanges
-// extends the protected ahead by this many BYTES (converted to whole pieces, so it
-// is ~1 piece on a 16 MB-piece torrent and a few on a small one) so that prefetch
-// lands inside protection instead of churning — without shrinking the priority
-// window, which left the far readahead filling slowly after a seek. Sized to the
-// prefetch libtorrent ACTUALLY does (~3 pieces on a 4 MB-piece torrent); reserving
-// more left a piece of the cache empty (window filled ~60 of 64 MB).
-const prefetchMarginBytes = 12 << 20
+// pieces protected. libtorrent's time-critical picker reads ahead a few pieces past
+// the LAST deadlined piece to keep its peers' request queues full, and it does so
+// REGARDLESS of priority — a live trace (EnableDebug) showed it pulling complete
+// pieces at exactly window_end+1 .. window_end+4 (4 MB pieces, ~200 peers), which
+// then got evicted as the only spare candidates and re-fetched as the window slid
+// in: the leading-edge churn ("впереди окна циклично загружаются и дропаются
+// несколько чанков"). readerProtectRanges extends the protected zone by this many
+// BYTES (→ whole pieces) so that read-ahead lands inside protection instead of
+// churning. readerWindowPieces reserves the same amount out of the window budget,
+// so window + margin + pins == CacheSize: the deadlined window fills its part and
+// the filler reliably fills the margin (it pulls exactly this far every slide), so
+// the cache still reaches the full configured size. Sized to the OBSERVED depth (4
+// pieces); it is NOT a stale-deadline artifact (scheduleWindow now resets the
+// deadline on every piece leaving the window) — it is libtorrent's genuine
+// time-critical read-ahead, which scales with the streaming peer burst.
+const prefetchMarginBytes = 16 << 20
 
 // windowLingerDelay is how long a closed reader's streaming window stays
 // prioritised before being returned to lazy. It bridges the gap between the
@@ -247,10 +252,11 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo, group ...string)
 			_ = handle.ForceDhtAnnounce()
 		}
 		// sequential_download ON: makes the cache fill predictably in piece order from
-		// the playhead. It is NOT what caused the leading-edge churn (that persists with
-		// it off — it's libtorrent's deadline pipeline prefetching past the window); the
-		// cure is the prefetch margin in scheduleWindow, which keeps that prefetch INSIDE
-		// the protected window so it isn't evicted.
+		// the playhead. It is NOT what caused the leading-edge churn (that persisted
+		// with it off); the real cause was scrolled-out pieces keeping their
+		// set_piece_deadline (so libtorrent stayed time-critical on them and re-fetched
+		// the abandoned region), now cured by scheduleWindow resetting the deadline as
+		// each piece leaves the window.
 		_ = handle.SetSequentialDownload(true)
 		// Hold a high peer cap while streaming so the read-ahead window fills ahead of
 		// playback (a buffer after a seek), not one just-in-time piece at a time. Set
@@ -485,6 +491,10 @@ func (r *Reader) Close() error {
 						continue
 					}
 					_ = handle.SetPiecePriority(i, 0)
+					// Clear the deadline too, else the torn-down window stays
+					// time-critical and libtorrent keeps pulling it (see
+					// scheduleWindow's drop loop for the same invariant).
+					_ = handle.ResetPieceDeadline(i)
 				}
 			})
 		}
@@ -556,18 +566,49 @@ func (r *Reader) scheduleWindow() {
 	// connection's own full window). Falls back to this reader's own position before
 	// a playhead is established. Head/tail re-reads are served from their pins.
 	cur := r.currentPiece()
-	first := cur
-	if a, ok := r.cache.groupPlayheadForGroup(r.group); ok && a < first {
-		first = a
-	}
+	anchor, hasAnchor := r.cache.groupPlayheadForGroup(r.group)
 	_, aheadP := r.cache.readerWindowPieces()
-	// Deadline the FULL readahead window so all of it fills fast in parallel after a
-	// seek (the 200-peer streaming burst spreads across it), not just-in-time one
-	// piece at a time — critical for a high-bitrate file. libtorrent's deadline
-	// pipeline prefetches a few pieces PAST this edge; readerProtectRanges extends the
-	// PROTECTED zone by prefetchMarginPieces to cover them, so they aren't evicted and
-	// re-fetched (the leading-edge churn) — the prefetch lands inside protection
-	// instead of the priority window being shrunk to keep it there.
+	// Straggler teardown. A connection the player abandoned on a FORWARD seek lingers
+	// a few seconds before it closes; its reprioritizeLoop keeps calling this method
+	// at the OLD position. With first=min(cur,anchor) below, that would re-deadline
+	// the seeked-past region every second — which eviction (anchored on the NEW
+	// playhead) then drops and the loop re-pulls: the "old cache re-downloads then
+	// drops again" churn seen in the trace (a low piece evicted twice in one second
+	// while the window sat far ahead). Once this reader has gone idle (no Read for
+	// staleReaderSec) AND the device's playhead has moved more than a full window
+	// past it (a real forward seek, not a brief pause in place — a backward seek
+	// instead lowers the anchor and is handled by the min() below), it is a dead
+	// connection: zero its old window's priorities/deadlines so libtorrent abandons
+	// the region, forget the window, and stay passive until it Reads again (which
+	// re-establishes one at the real position) or Close tears it down.
+	if hasAnchor && anchor-cur > aheadP && time.Now().Unix()-r.lastRead.Load() > staleReaderSec {
+		if prevF := int(r.winFirst.Load()); prevF >= 0 {
+			prevL := int(r.winLast.Load())
+			others := r.cache.readerWindowsExcept(r)
+			for i := prevF; i <= prevL; i++ {
+				if !pieceInRanges(i, others) {
+					_ = r.handle.SetPiecePriority(i, 0)
+					_ = r.handle.ResetPieceDeadline(i)
+				}
+			}
+			r.winFirst.Store(-1)
+			r.winLast.Store(-1)
+		}
+		return
+	}
+	first := cur
+	if hasAnchor && anchor < first {
+		first = anchor
+	}
+	// Deadline the FULL readahead window so it fills fast in parallel after a seek
+	// (the streaming peer burst spreads across it), not just-in-time one piece at a
+	// time — critical for a high-bitrate file. The deadlined set is kept exactly
+	// equal to this window: the drop loop below resets the deadline on every piece
+	// that leaves it, so libtorrent doesn't stay time-critical on (and re-fetch) the
+	// region a seek abandoned. libtorrent's time-critical picker still reads a few
+	// pieces PAST this edge to keep its peers busy (prefetchMarginBytes); those land
+	// inside the protected margin readerProtectRanges adds, so they aren't evicted
+	// and re-fetched. window + margin + pins == CacheSize (readerWindowPieces).
 	last := first + aheadP
 	// Never prioritise past THIS file's last piece. A reader streams a single
 	// file, so its forward window must not spill into the next file's pieces.
@@ -600,6 +641,14 @@ func (r *Reader) scheduleWindow() {
 		for i := prevF; i <= prevL; i++ {
 			if (i < first || i > last) && !pieceInRanges(i, others) {
 				_ = r.handle.SetPiecePriority(i, 0)
+				// Take it off the time-critical list too. SetPiecePriority(0) alone
+				// leaves the deadline set, and a deadlined piece stays time-critical
+				// — re-requested with top urgency regardless of priority. After a seek
+				// the abandoned old window kept its deadlines, so libtorrent
+				// re-downloaded that region, eviction dropped it, libtorrent re-fetched
+				// it again: the "old cache re-downloads then drops again" churn.
+				// Resetting keeps the invariant deadlined-pieces == current window.
+				_ = r.handle.ResetPieceDeadline(i)
 			}
 		}
 	}
