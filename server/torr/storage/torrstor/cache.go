@@ -501,6 +501,7 @@ func (c *Cache) groupPlayheadForGroup(key string) (int, bool) {
 // permanent hole in the window) but never outrank the forward read-ahead.
 const (
 	streamPreloadPriority = 7
+	streamPinPriority     = 6 // EOF seek index (idx1/cues/moov), pinned the whole stream
 	streamBehindPriority  = 1
 )
 
@@ -595,6 +596,19 @@ func (c *Cache) applyStreamPriorities() {
 		}
 	}
 	c.preloadMu.Unlock()
+	// EOF seek index (AVI idx1 / MKV cues / MP4 moov): it sits at the file END, past
+	// the forward window, but the player must read it to parse the container and on
+	// every seek. Keep it priority>0 for the WHOLE stream (not just during preload) —
+	// otherwise it is filtered (priority 0) the moment the preload reserve is handed
+	// off and the head reader races into the cached head, and the still-unread index
+	// never (re)downloads, so playback never starts. Pinned for eviction too, in
+	// readerProtectRanges; the window budget is reduced by it in readerWindowPieces.
+	for _, r := range rs {
+		tr := r.tailReserve()
+		for i := tr[0]; i <= tr[1]; i++ {
+			raise(i, streamPinPriority)
+		}
+	}
 
 	c.priMu.Lock()
 	defer c.priMu.Unlock()
@@ -689,16 +703,24 @@ func (c *Cache) readerWindowPieces() (behind, ahead int) {
 		}
 	}
 	// Strict model: the cache holds exactly budget = CacheSize / pieceSize chunks,
-	// and the WHOLE budget is the sliding window — behind + current + ahead == budget
-	// — split by ReaderReadAHead. So with a 64 MB cache, 4 MB pieces and ReadAhead
-	// 95%, budget is 16, behind 1, ahead 14: the window is [playhead-1 .. playhead+14],
-	// a full 64 MB that slides as a snake. Nothing is reserved out of it — head/tail
-	// are held only during preload (preloadProtect), never carved out of the streaming
-	// window. behind is rounded from the slider; ahead takes the rest.
+	// split by ReaderReadAHead into a sliding window (behind + current + ahead) plus
+	// the EOF seek-index tail pin held outside it. So with a 64 MB cache, 4 MB pieces,
+	// a 1-piece tail and ReadAhead 95%, budget drops to 15, behind 1, ahead 13: the
+	// window is [playhead-1 .. playhead+13] (60 MB) sliding as a snake, and the 4 MB
+	// idx1/cues/moov stays pinned at the file end (tailReserve) — window + tail == the
+	// 64 MB cache. The HEAD is held only during preload (preloadProtect). behind is
+	// rounded from the slider; ahead takes the rest.
 	cacheB := globalCacheSize()
 	budget := int(cacheB / plen)
 	if budget < 1 {
 		budget = 1
+	}
+	// Carve out the EOF seek index pinned outside the window (tailReserve, held the
+	// whole stream): total resident = window + tail pin must stay within CacheSize.
+	// Skip the subtraction on a tiny cache so the window never drops below its floor
+	// (the tail then shares the budget instead of shrinking the window to nothing).
+	if tail := c.tailPinPieces(); budget-tail >= streamWindowFloorPieces {
+		budget -= tail
 	}
 	behind = int((int64(budget)*(100-prc) + 50) / 100) // rounded share of the budget
 	if behind > budget-1 {
@@ -910,6 +932,15 @@ func (c *Cache) evictIfOverCapacity() {
 		pieces = append(pieces, p)
 	}
 	c.mu.Unlock()
+	// A live playback window (a non-probe reader with an established playhead) is what
+	// licenses the proactive sliding-cache sweep below. With only the always-on tail
+	// pin or an in-flight preload (no window yet), the HEAD piece a just-registered
+	// reader is about to read is not yet covered by any window, and proactively reaping
+	// it would strand that reader forever (it blocks until the piece reappears, which
+	// libtorrent can't refetch with priority 0 / no handle). Compute the playheads once
+	// and reuse them for the dbg window.
+	playheads := c.groupPlayheads()
+	hasWindow := len(playheads) > 0
 	// Diagnostic context: the live held playhead window so an evict line can be read
 	// against the ACTUAL window (the first-window log is stale). Single device in the
 	// common case; with two, the last wins — enough to spot an in-window evict.
@@ -918,7 +949,7 @@ func (c *Cache) evictIfOverCapacity() {
 	if s := settings.BTsets(); s != nil && s.EnableDebug {
 		dbg = true
 		_, aheadP := c.readerWindowPieces()
-		for _, ph := range c.groupPlayheads() {
+		for _, ph := range playheads {
 			winLo, winHi = ph, ph+aheadP
 		}
 	}
@@ -983,7 +1014,9 @@ func (c *Cache) evictIfOverCapacity() {
 	// window stable and the prefetch margin keeps libtorrent's read-ahead INSIDE the
 	// window, so the live playhead and its buffer are never dropped (the churn the
 	// earlier unconditional proactive pass caused, before those two were in place).
-	if len(protect) > 0 {
+	// Gated on a live window (not merely a non-empty protect set): the always-on tail
+	// pin must not, on its own, license reaping the head before a reader's window is up.
+	if hasWindow {
 		for _, p := range pieces {
 			if !evictable(p) || pieceInRanges(p.Id, protect) {
 				continue
@@ -1042,12 +1075,27 @@ func (c *Cache) readerProtectRanges() [][2]int {
 		}
 		out = append(out, [2]int{lo, ph + aheadP + margin})
 	}
+	// Every streamed file's EOF seek index (AVI idx1 / MKV cues / MP4 moov) sits at
+	// the file END, never inside the forward window, but the player reads it to parse
+	// the container and on every seek. Pin the last tailPinPieces of each streamed
+	// file for the WHOLE stream — without this the head reader races through the
+	// cached head, the preload reserve is handed off, and the tail is evicted before
+	// the player has read it (the idx1 read then times out and playback never starts).
+	// This is the only region held outside the sliding window; readerWindowPieces
+	// shrinks the window budget by it so window + tail stays within CacheSize.
+	c.readersMu.Lock()
+	for r := range c.readers {
+		if r.internal {
+			continue
+		}
+		out = append(out, r.tailReserve())
+	}
+	c.readersMu.Unlock()
 	// An in-flight preload has no reader yet — keep its head+tail buffer resident
 	// until a reader's window takes over (cleared on the first scheduleWindow). This
-	// is the ONLY head/tail protection: per the strict model the streaming window is
-	// the whole cache (behind+current+ahead == CacheSize) and carves out nothing, so
-	// once playback starts the head/tail are held only while they fall inside the
-	// sliding window.
+	// protects the HEAD during the preload→stream hand-off (the tail is already held
+	// for the whole stream by the per-reader tail pin above); once playback advances
+	// past the head it falls out of the sliding window and is dropped.
 	c.preloadMu.Lock()
 	out = append(out, c.preloadProtect...)
 	c.preloadMu.Unlock()
@@ -1112,6 +1160,13 @@ func globalCacheSize() int64 {
 // kept a single viewer's cache permanently above the configured size.
 func (c *Cache) capacity() int64 {
 	base := globalCacheSize()
+	if base <= 0 {
+		// No configured budget (CacheSize is forced to 64 MB in production, so this is
+		// only the nil-settings test path): eviction is disabled. Do NOT let the
+		// streaming reserve — now always non-zero because of the standing tail pin —
+		// push capacity positive and start evicting against a zero budget.
+		return 0
+	}
 	if want := c.streamingReserve(); want > base {
 		return want
 	}

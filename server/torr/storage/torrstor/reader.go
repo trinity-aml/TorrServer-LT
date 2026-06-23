@@ -627,6 +627,26 @@ func (r *Reader) fileLastPiece() int {
 	return int((r.file.Offset + r.file.Length - 1) / plen)
 }
 
+// tailReserve is the piece range at this file's END that holds the EOF seek index
+// (AVI idx1 / MKV cues / MP4 moov). The player reads it to parse the container and
+// on every seek, but it never falls inside the forward sliding window, so it is
+// pinned separately for the WHOLE stream: readerProtectRanges keeps it resident and
+// applyStreamPriorities keeps it priority>0. Its size is byte-bounded by
+// PreloadBufferEnd via tailPinPieces and clamped to this file's first piece.
+func (r *Reader) tailReserve() [2]int {
+	last := r.fileLastPiece()
+	first := last - r.cache.tailPinPieces() + 1
+	if plen := r.cache.PieceLength; plen > 0 {
+		if ffirst := int(r.file.Offset / plen); first < ffirst {
+			first = ffirst
+		}
+	}
+	if first < 0 {
+		first = 0
+	}
+	return [2]int{first, last}
+}
+
 // streamHeaderPinPieces / streamTailPinPieces are the MAX pieces the preload holds
 // at the file START and END: the container header (AVI main header, MKV/MP4 header)
 // at the front and the seek index (AVI idx1, MKV cues, MP4 moov) at the back. They
