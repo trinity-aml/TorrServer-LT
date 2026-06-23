@@ -30,7 +30,10 @@ const anchorHoldSec = 2
 // would otherwise pin the window at the old position; dropping idle ones lets the
 // window snap to the new playhead. A streaming connection Reads several times a
 // second, so a genuinely-playing one is never dropped — only abandoned/closed ones.
-const staleReaderSec = 3
+// Kept short so a seek's leftover read-ahead connection stops dragging the anchor
+// quickly; a read parked on a slow piece is protected separately by Reader.reading
+// (it is in flight, not idle), so shortening this can't drop the true playhead.
+const staleReaderSec = 2
 
 // abandonEvictSec is how long (seconds) an INCOMPLETE piece outside the
 // streaming window may sit untouched before proactive eviction forgets it. A
@@ -253,10 +256,12 @@ func (c *Cache) groupReaderSnaps() map[string][]readerSnap {
 		cur := r.currentPiece()
 		s := readerSnap{group: r.group, cur: cur}
 		// Idle/abandoned connection (a seek left it behind): no Read for
-		// staleReaderSec. Dropped from the playhead when the device still has an
-		// active connection (see streamAnchors), so a lingering old reader can't pin
-		// the window at the seeked-past position.
-		if now-r.lastRead.Load() > staleReaderSec {
+		// staleReaderSec AND no Read currently in flight. Dropped from the playhead
+		// when the device still has an active connection (see streamAnchors), so a
+		// lingering old reader can't pin the window at the seeked-past position. The
+		// in-flight check keeps a read parked on a slow piece (which sets lastRead at
+		// entry and can block for seconds) from being mistaken for an idle connection.
+		if now-r.lastRead.Load() > staleReaderSec && !r.reading.Load() {
 			s.stale = true
 		}
 		// Offset-0 probe (ServeContent's Seek(0,End)/Seek(0,Start) before the real
@@ -351,9 +356,28 @@ func (c *Cache) streamAnchors() map[string]int {
 			// the leading position. Holding bridges the gap so the window tracks the
 			// true (trailing) playhead instead of overshooting and churning.
 			switch {
-			case g.playheadTime == 0 || playMin <= ph:
+			case g.playheadTime == 0:
 				g.playhead, g.playheadTime = int64(playMin), now
 				out[key] = playMin
+			// Normal follow-down to a NEAR trailing reader (within a window of the
+			// committed anchor): snap immediately, that is the real playback position.
+			case playMin <= ph && ph-playMin <= aheadP:
+				g.playhead, g.playheadTime = int64(playMin), now
+				out[key] = playMin
+			// A reader a FULL window+ BELOW the committed anchor is either a backward
+			// seek (its low reads persist) or an abandoned read-ahead connection a
+			// forward seek left behind (a brief twitch, then stale). Don't snap the
+			// committed window back down onto it — that is exactly the oscillation that
+			// re-downloaded the old region after a forward seek (the anchor flipping
+			// between the new cluster and a lingering low one). Hold; a real backward
+			// seek commits after anchorHoldSec, a straggler ages out (stale) first.
+			case ph-playMin > aheadP:
+				if now-g.playheadTime > anchorHoldSec {
+					g.playhead, g.playheadTime = int64(playMin), now
+					out[key] = playMin
+				} else {
+					out[key] = ph
+				}
 			// A small step up is the trailing connection between chunks (hold); a BIG
 			// step up — past the whole window — is a forward SEEK, so advance at once
 			// and let the old window drop immediately.

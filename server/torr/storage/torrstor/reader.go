@@ -211,6 +211,13 @@ type Reader struct {
 	// can't pin the window at the old position while a new one plays on.
 	lastRead atomic.Int64
 
+	// reading is true while a Read is executing — including the time it is parked in
+	// WaitForPiece for a slow piece (the Read holds r.mu and sets lastRead at ENTRY,
+	// so a multi-second parked read would otherwise look "idle" and be wrongly marked
+	// stale, dropping the true playhead from the anchor). A reader with a Read in
+	// flight is by definition active, so groupReaderSnaps never treats it as stale.
+	reading atomic.Bool
+
 	// stopTicker ends the periodic re-prioritize loop; closed once by Close.
 	stopTicker chan struct{}
 }
@@ -320,6 +327,8 @@ func (r *Reader) Read(p []byte) (int, error) {
 		return 0, io.EOF
 	}
 	r.lastRead.Store(time.Now().Unix()) // mark active for the playhead maths
+	r.reading.Store(true)               // in flight: never "stale" even if a piece is slow
+	defer r.reading.Store(false)
 	off := r.offset.Load()
 	if off >= r.file.Length || len(p) == 0 {
 		return 0, io.EOF
