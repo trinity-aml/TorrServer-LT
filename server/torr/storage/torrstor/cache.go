@@ -261,6 +261,7 @@ type readerSnap struct {
 	isTail    bool // sitting in the file's EOF index pin (a pinned re-read)
 	belowHead bool // inside the container-header pin (a header re-read)
 	stale     bool // no Read for staleReaderSec — an idle/seek-abandoned connection
+	nearEOF   bool // forward window reaches the file end (an EOF moov probe, or a seek-to-end)
 }
 
 // groupReaderSnaps buckets every active reader by its group (device), capturing
@@ -295,6 +296,14 @@ func (c *Cache) groupReaderSnaps() map[string][]readerSnap {
 		if plen > 0 {
 			if tailStart := r.fileLastPiece() - c.tailPinPieces() + 1; cur >= tailStart {
 				s.isTail = true
+			}
+			// Reading within a window's reach of the file end. The EOF moov probe lands
+			// here; so does a genuine seek to near the end. streamAnchors makes a big
+			// upward anchor jump to such a position WAIT (persist) before committing, so
+			// the transient probe can't drag the window to the tail — without delaying a
+			// normal mid-file forward seek, which is NOT nearEOF and commits at once.
+			if _, aheadP := c.readerWindowPieces(); cur+aheadP >= r.fileLastPiece() {
+				s.nearEOF = true
 			}
 		}
 		// Container-header re-read, kept resident by the head pin, NOT the playhead —
@@ -345,6 +354,7 @@ func (c *Cache) streamAnchors() map[string]int {
 		// back to anyMin only when nothing but header/probe readers exist (the very
 		// start, before the playhead leaves the head pin).
 		playMin, playOK := 0, false
+		playMinNearEOF := false
 		anyMin, anyOK := 0, false
 		for _, s := range rs {
 			if s.isProbe || s.isTail || (hasActive && s.stale) {
@@ -357,7 +367,7 @@ func (c *Cache) streamAnchors() map[string]int {
 				continue
 			}
 			if !playOK || s.cur < playMin {
-				playMin, playOK = s.cur, true
+				playMin, playOK, playMinNearEOF = s.cur, true, s.nearEOF
 			}
 		}
 
@@ -401,13 +411,15 @@ func (c *Cache) streamAnchors() map[string]int {
 				} else {
 					out[key] = ph
 				}
-			// A BIG step up — past the whole window — is EITHER a forward seek OR a
-			// transient (the EOF moov probe is briefly the only active reader while the
-			// head reader is idle). Require it to PERSIST for anchorHoldSec before
-			// committing: a real seek keeps reading there, a probe vanishes when the
-			// head reader reads again (which cancels pendingUp above). This stops the
-			// anchor lurching to the file end and evicting the preloaded head.
-			case playMin-ph > aheadP:
+			// A BIG step up — past the whole window — toward the FILE END is either a
+			// forward seek-to-end OR a transient (the EOF moov probe is briefly the only
+			// active reader while the head reader is idle). Require it to PERSIST for
+			// anchorHoldSec before committing: a real seek keeps reading there, a probe
+			// vanishes when the head reader reads again (which cancels pendingUp above),
+			// so the anchor never lurches to the tail and evicts the preloaded head. A
+			// big jump NOT near EOF is a normal mid-file forward seek — commit at once
+			// (no probe lives there) so seeks stay snappy and the new window fills.
+			case playMin-ph > aheadP && playMinNearEOF:
 				if g.pendingUp != int64(playMin) {
 					g.pendingUp, g.pendingUpTime = int64(playMin), now
 					out[key] = ph
@@ -417,6 +429,11 @@ func (c *Cache) streamAnchors() map[string]int {
 				} else {
 					out[key] = ph
 				}
+			// A big step up that is NOT near EOF is a normal mid-file forward seek (no
+			// EOF probe lives mid-file) — advance at once so the seek is snappy.
+			case playMin-ph > aheadP:
+				g.playhead, g.playheadTime, g.pendingUp = int64(playMin), now, -1
+				out[key] = playMin
 			// A small step up is the trailing connection between chunks: hold briefly,
 			// then follow it.
 			case now-g.playheadTime > anchorHoldSec:
@@ -499,11 +516,14 @@ func (c *Cache) groupPlayheadForGroup(key string) (int, bool) {
 	return c.streamAnchorForGroup(key)
 }
 
-// streamPreloadPriority is the priority applyStreamPriorities gives an in-flight
-// preload's head+tail buffer. Behind pieces are NOT prioritised — they are a
-// retention zone (already played, kept resident by readerProtectRanges for a short
-// rewind), so only the forward window drives downloads.
-const streamPreloadPriority = 7
+// Streaming piece priorities used by applyStreamPriorities. The in-flight preload
+// buffer gets the top priority; behind pieces get the lowest non-zero one so they
+// DO fill (after a seek the piece just behind the playhead would otherwise be a
+// permanent hole in the window) but never outrank the forward read-ahead.
+const (
+	streamPreloadPriority = 7
+	streamBehindPriority  = 1
+)
 
 // applyStreamPriorities rebuilds libtorrent's ENTIRE piece-priority vector from the
 // live streaming state and applies it in one prioritize_pieces call: every device's
@@ -538,7 +558,7 @@ func (c *Cache) applyStreamPriorities() {
 	}
 
 	anchors := c.groupPlayheads() // group -> playhead (excludes stale/probe/tail)
-	_, aheadP := c.readerWindowPieces()
+	behindP, aheadP := c.readerWindowPieces()
 
 	c.readersMu.Lock()
 	rs := make([]*Reader, 0, len(c.readers))
@@ -564,7 +584,7 @@ func (c *Cache) applyStreamPriorities() {
 		}
 		ffirst := int(r.file.Offset / plen)
 		flast := r.fileLastPiece()
-		lo, hi := ph, ph+aheadP // forward window only; behind is retention (not pulled)
+		lo, hi := ph-behindP, ph+aheadP // whole sliding window (behind + current + ahead)
 		if lo < ffirst {
 			lo = ffirst
 		}
@@ -575,6 +595,10 @@ func (c *Cache) applyStreamPriorities() {
 			hi = c.NumPieces - 1
 		}
 		for i := lo; i <= hi; i++ {
+			if i < ph { // behind: fill it (no hole) but lowest priority, no deadline
+				raise(i, streamBehindPriority)
+				continue
+			}
 			prio, dlMs := windowPriority(i - ph)
 			raise(i, prio)
 			if dlMs >= 0 {
