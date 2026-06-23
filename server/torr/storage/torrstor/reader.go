@@ -92,23 +92,28 @@ func streamConnLimit() int {
 	return streamConnections
 }
 
-// prefetchMarginBytes is how far PAST the deadlined window the eviction keeps
-// pieces protected. libtorrent's time-critical picker reads ahead a few pieces past
-// the LAST deadlined piece to keep its peers' request queues full, and it does so
-// REGARDLESS of priority — a live trace (EnableDebug) showed it pulling complete
-// pieces at exactly window_end+1 .. window_end+4 (4 MB pieces, ~200 peers), which
-// then got evicted as the only spare candidates and re-fetched as the window slid
-// in: the leading-edge churn ("впереди окна циклично загружаются и дропаются
-// несколько чанков"). readerProtectRanges extends the protected zone by this many
-// BYTES (→ whole pieces) so that read-ahead lands inside protection instead of
-// churning. readerWindowPieces reserves the same amount out of the window budget,
-// so window + margin + pins == CacheSize: the deadlined window fills its part and
-// the filler reliably fills the margin (it pulls exactly this far every slide), so
-// the cache still reaches the full configured size. Sized to the OBSERVED depth (4
-// pieces); it is NOT a stale-deadline artifact (scheduleWindow now resets the
-// deadline on every piece leaving the window) — it is libtorrent's genuine
-// time-critical read-ahead, which scales with the streaming peer burst.
-const prefetchMarginBytes = 16 << 20
+// prefetchMarginBytes is retired (0): protecting EXTRA pieces past the window for
+// libtorrent's read-ahead fought the cache budget — too small and the read-ahead
+// spilled past the window and churned, too large and it stole the window's room.
+// The read-ahead is now contained a different way (see fillerContainmentPieces):
+// the whole budget is one priority>0 window the picker fills, and the DEADLINE edge
+// is held back from the window edge by the read-ahead depth, so libtorrent's
+// time-critical read-ahead past the last deadline lands INSIDE the window instead
+// of past it. No pieces past the window are protected, prioritised or deadlined, so
+// nothing is pulled there.
+const prefetchMarginBytes = 0
+
+// fillerContainmentPieces is how far libtorrent's time-critical picker reads ahead
+// PAST the last deadlined piece to keep its peers' request queues full — it does so
+// REGARDLESS of priority (a live trace showed complete pieces pulled ~6 past the
+// deadline edge on a 4 MB-piece torrent). scheduleWindow holds the deadline edge
+// this many pieces BACK from the window edge, so that read-ahead lands on the
+// window's own (priority>0, picker-filled) pieces instead of spilling into the
+// priority-0 region past the window and churning (download→evict→re-download). The
+// near pieces are still deadlined for urgency; only the far slice of the window
+// trades its deadline for being the read-ahead landing zone (the picker fills it by
+// priority either way). Sized to the observed read-ahead depth.
+const fillerContainmentPieces = 6
 
 // windowLingerDelay is how long a closed reader's streaming window stays
 // prioritised before being returned to lazy. It bridges the gap between the
@@ -609,22 +614,18 @@ func (r *Reader) scheduleWindow() {
 	if hasAnchor && anchor < first {
 		first = anchor
 	}
-	// The window has TWO edges. `last` (deadline edge) is the readahead the time-
-	// critical picker fills urgently and in order. `priorityLast` extends it by the
-	// prefetch margin: those extra pieces get priority>0 (so the NORMAL picker fills
-	// them too — deterministically, not just via libtorrent's read-ahead) but NO
-	// deadline. Why the gap: libtorrent's time-critical picker reads ~prefetchMargin
-	// pieces PAST the last deadline to keep its peers busy, ignoring priority; if the
-	// deadline ran to the window edge, that read-ahead spilled into priority-0
-	// territory past the window and churned (download→evict→re-download). Holding the
-	// deadline back by the margin lands that read-ahead on the margin pieces (inside
-	// the protected window) instead. And because the margin is now prioritised, the
-	// picker fills it even when the swarm is too busy to read ahead — so the cache
-	// reaches the full CacheSize (window + margin + pins) instead of leaving the
-	// unprioritised margin empty (filled ~48 of 64). The drop loop below resets the
-	// deadline on every piece that leaves, keeping deadlined ⊆ window.
+	// The window has TWO edges. `last` is the WINDOW edge: the whole readahead
+	// budget, every piece priority>0 so the normal (sequential) picker fills it
+	// deterministically up to the full CacheSize. `deadlineLast` is the DEADLINE
+	// edge, held back from the window edge by fillerContainmentPieces. Why the gap:
+	// libtorrent's time-critical picker reads ~fillerContainmentPieces PAST the last
+	// deadline to keep its peers busy, IGNORING priority; if the deadline ran to the
+	// window edge that read-ahead spilled into the priority-0 region past the window
+	// and churned (download→evict→re-download). Holding the deadline back lands that
+	// read-ahead on the window's own far pieces (still priority>0, the picker fills
+	// them anyway) instead of past it. So the near window is deadline-urgent, the far
+	// slice is the read-ahead landing zone, and NOTHING is pulled past the window.
 	last := first + aheadP
-	priorityLast := last + r.cache.prefetchMarginPieces()
 	// Never prioritise past THIS file's last piece. A reader streams a single
 	// file, so its forward window must not spill into the next file's pieces.
 	// Without this clamp a reader sitting near a file's end — e.g. the SECOND
@@ -635,14 +636,15 @@ func (r *Reader) scheduleWindow() {
 	// deadline 0 while the real playhead's pieces 3-5 starved → stall at high
 	// download speed. The boundary piece that straddles two files stays included
 	// (it holds this file's last bytes), so seeking to EOF still works.
-	if fl := r.fileLastPiece(); priorityLast > fl {
-		priorityLast = fl
+	if fl := r.fileLastPiece(); last > fl {
+		last = fl
 	}
-	if priorityLast >= r.cache.NumPieces {
-		priorityLast = r.cache.NumPieces - 1
+	if last >= r.cache.NumPieces {
+		last = r.cache.NumPieces - 1
 	}
-	if last > priorityLast {
-		last = priorityLast
+	deadlineLast := last - fillerContainmentPieces
+	if deadlineLast < first {
+		deadlineLast = first
 	}
 
 	prevF, prevL := int(r.winFirst.Load()), int(r.winLast.Load())
@@ -657,7 +659,7 @@ func (r *Reader) scheduleWindow() {
 	if prevF >= 0 {
 		others := r.cache.readerWindowsExcept(r)
 		for i := prevF; i <= prevL; i++ {
-			if (i < first || i > priorityLast) && !pieceInRanges(i, others) {
+			if (i < first || i > last) && !pieceInRanges(i, others) {
 				_ = r.handle.SetPiecePriority(i, 0)
 				// Take it off the time-critical list too. SetPiecePriority(0) alone
 				// leaves the deadline set, and a deadlined piece stays time-critical
@@ -676,14 +678,14 @@ func (r *Reader) scheduleWindow() {
 	// tail gets priority only — see windowPriority). Pieces already inside the
 	// window keep their sticky priority, so only the graded head (whose tier
 	// shifts as the window slides) and newly-entered pieces need touching. The
-	// loop runs to priorityLast (window + margin); pieces past `last` get priority
-	// but no deadline (see the two-edge rationale above) — that is where
-	// libtorrent's time-critical read-ahead lands, kept inside the window.
-	for i := first; i <= priorityLast; i++ {
+	// loop runs to `last` (the whole window); pieces past `deadlineLast` get
+	// priority but no deadline (see the two-edge rationale above) — that far slice
+	// is where libtorrent's time-critical read-ahead lands, kept inside the window.
+	for i := first; i <= last; i++ {
 		pos := i - first
 		prio, deadlineMs := windowPriority(pos)
-		if i > last {
-			deadlineMs = -1 // margin: priority only, no deadline (read-ahead lands here)
+		if i > deadlineLast {
+			deadlineMs = -1 // read-ahead landing zone: priority only, no deadline
 		}
 		entered := prevF < 0 || i < prevF || i > prevL
 		// Resurrect a piece libtorrent thinks it has but our cache evicted (a seek
@@ -712,7 +714,7 @@ func (r *Reader) scheduleWindow() {
 		}
 	}
 	r.winFirst.Store(int64(first))
-	r.winLast.Store(int64(priorityLast))
+	r.winLast.Store(int64(last))
 	// First time this reader establishes a window, hand the play-gated preload's
 	// buffer reservation over to it — but ONLY if this reader is at the HEAD/BODY
 	// (a real playhead), never the EOF index reader. A player opens a SECOND

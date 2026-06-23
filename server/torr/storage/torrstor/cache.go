@@ -869,11 +869,12 @@ func (c *Cache) evictIfOverCapacity() {
 func (c *Cache) readerProtectRanges() [][2]int {
 	out := make([][2]int, 0, 8)
 	behindP, aheadP := c.readerWindowPieces()
-	// One window per device, anchored on its live playhead (no held anchor). Extend
-	// the protected AHEAD by the prefetch margin (whole pieces covering
-	// prefetchMarginBytes) so libtorrent's deadline-pipeline prefetch past the
-	// deadlined window is kept, not evicted and re-fetched — the priority window
-	// itself is the full readahead, so it all fills fast after a seek.
+	// One window per device, anchored on its live playhead (no held anchor): the
+	// FULL cache budget [playhead-behind .. playhead+ahead]. The whole window is
+	// priority>0 and the picker fills it; libtorrent's time-critical read-ahead is
+	// kept INSIDE this window (scheduleWindow holds the deadline edge back by
+	// fillerContainmentPieces), so nothing is pulled past it and there is no margin
+	// to protect (prefetchMarginPieces is 0).
 	margin := c.prefetchMarginPieces()
 	for _, ph := range c.groupPlayheads() {
 		lo := ph - behindP
