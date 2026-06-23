@@ -1130,6 +1130,25 @@ func (c *Cache) SetPreloadReserve(ranges [][2]int) {
 	c.preloadMu.Unlock()
 }
 
+// preloadWindowTakesOver reports whether a reader window [first,last] should take
+// the preload reservation over (and clear it). True when there is no reserve
+// (clearing is a no-op) OR the window overlaps the reserve's HEAD range (the
+// container head/body the player starts from). The player opens an END-OF-FILE
+// probe first (reading the container moov/index before seeking to the start); its
+// window sits near EOF, far from the head, and must NOT clear the reserve — doing
+// so dropped the just-preloaded head, which then re-downloaded from scratch ("after
+// preload the cache resets and downloads anew"). Only the real head/body playback
+// reader, whose window reaches the head, hands the protection off to itself.
+func (c *Cache) preloadWindowTakesOver(first, last int) bool {
+	c.preloadMu.Lock()
+	defer c.preloadMu.Unlock()
+	if len(c.preloadProtect) == 0 {
+		return true
+	}
+	head := c.preloadProtect[0] // SetPreloadReserve always lists the head range first
+	return last >= head[0] && first <= head[1]
+}
+
 // ClearPreloadReserve releases the preload reservation (the joining client's
 // own reader now protects the head) and trims any overage.
 func (c *Cache) ClearPreloadReserve() {
