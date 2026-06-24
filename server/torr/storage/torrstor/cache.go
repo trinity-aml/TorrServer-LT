@@ -590,8 +590,18 @@ func (c *Cache) applyStreamPriorities() {
 			hi = c.NumPieces - 1
 		}
 		for i := lo; i <= hi; i++ {
-			if i < ph { // behind: fill it (no hole) but lowest priority, no deadline
-				raise(i, streamBehindPriority)
+			if i < ph {
+				// Only the IMMEDIATE just-behind piece is filled (a small rewind / the
+				// demuxer's look-back), at the lowest priority and no deadline. The deeper
+				// behind margin is eviction-protected (readerProtectRanges keeps recently
+				// played pieces so a read-ahead connection racing the anchor forward can't
+				// get them dropped then refetched) but must NOT be prioritised for download:
+				// otherwise a seek fetches the whole behind floor BEHIND the seek point —
+				// bandwidth that should fill the forward window — and the player shows those
+				// never-played pieces as half-filled "behind" chunks. Keep them at priority 0.
+				if i == ph-1 {
+					raise(i, streamBehindPriority)
+				}
 				continue
 			}
 			prio, dlMs := windowPriority(i - ph)
