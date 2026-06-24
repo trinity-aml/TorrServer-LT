@@ -211,6 +211,15 @@ type Reader struct {
 	// flight is by definition active, so groupReaderSnaps never treats it as stale.
 	reading atomic.Bool
 
+	// waitPiece is the piece a Read is BLOCKED on right now (parked in WaitForPiece),
+	// or -1. After a seek the player blocks here on the seek-target piece; while it
+	// does, applyStreamPriorities makes that piece the ONLY time-critical one for the
+	// group (suppresses the rest of the window's deadlines), so the swarm's whole
+	// bandwidth goes to the piece the player needs NOW — it is served the instant it
+	// lands, instead of trickling in while the readahead competes for the link. Once
+	// served, waitPiece clears and the next apply re-deadlines the full window.
+	waitPiece atomic.Int64
+
 	// stopTicker ends the periodic re-prioritize loop; closed once by Close.
 	stopTicker chan struct{}
 }
@@ -237,6 +246,7 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo, group ...string)
 	r.readahead.Store(readaheadBytes()) // ReaderReadAHead % of cache (UI slider)
 	r.winFirst.Store(-1)
 	r.winLast.Store(-1)
+	r.waitPiece.Store(-1)
 	r.lastRead.Store(time.Now().Unix()) // fresh reader is active until proven idle
 	cache.registerReader(r)
 	// Capacity grows automatically to fit this reader's working set now that it
@@ -417,6 +427,16 @@ func (r *Reader) ensurePieceLocked(piece int) error {
 	}
 	ctx, cancel := context.WithTimeout(parent, ReaderTimeout)
 	defer cancel()
+	// Flag the piece we're about to block on so applyStreamPriorities concentrates the
+	// swarm on it (exclusive time-critical) while the player waits — the seek-target
+	// piece is then served the moment it arrives. Force the apply past its 250 ms
+	// debounce (a Read in the same call already applied for scheduleWindow) so the
+	// exclusivity takes effect now, not on the next 1 s tick; the reader then parks in
+	// WaitForPiece, so this is one apply per block, not a spin.
+	r.waitPiece.Store(int64(piece))
+	r.cache.lastApplyMs.Store(0)
+	r.cache.applyStreamPriorities()
+	defer r.waitPiece.Store(-1)
 	if !r.cache.WaitForPiece(ctx, piece) {
 		if parent.Err() != nil {
 			return errors.New("torrstor.Reader: client gone")

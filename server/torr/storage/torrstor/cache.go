@@ -571,6 +571,26 @@ func (c *Cache) applyStreamPriorities() {
 	}
 	c.readersMu.Unlock()
 
+	// Pieces readers are actively BLOCKED on right now (a Read parked on a seek target).
+	// While a group has one, ONLY its wait piece stays time-critical for that group — the
+	// rest of the window drops to priority-only so the whole swarm rushes the piece the
+	// player needs NOW (fast seek), then the window re-deadlines once the wait clears.
+	// Gated on an EMPTY readahead (the next pieces not yet resident): a fresh seek / full
+	// drain is exactly when the player is stuck and wants the current chunk at once; once
+	// the buffer is building (pieces just ahead cached) we must keep the window's deadlines
+	// so the readahead keeps filling, or sustained playback would never build a buffer.
+	waitSet := make(map[string]map[int]bool)
+	for _, r := range rs {
+		wp := int(r.waitPiece.Load())
+		if wp < 0 || c.Have(wp+1) || c.Have(wp+2) {
+			continue
+		}
+		if waitSet[r.group] == nil {
+			waitSet[r.group] = make(map[int]bool)
+		}
+		waitSet[r.group][wp] = true
+	}
+
 	plen := c.PieceLength
 	prios := make([]int, c.NumPieces)
 	desired := make(map[int]int) // piece -> deadlineMs
@@ -585,6 +605,7 @@ func (c *Cache) applyStreamPriorities() {
 		if !ok {
 			continue // no playhead yet for this group (only probe/tail/header readers)
 		}
+		gWait := waitSet[r.group] // non-nil => this group is blocked on a seek target
 		ffirst := int(r.file.Offset / plen)
 		flast := r.fileLastPiece()
 		lo, hi := ph-behindP, ph+aheadP // whole sliding window (behind + current + ahead)
@@ -604,6 +625,11 @@ func (c *Cache) applyStreamPriorities() {
 			}
 			prio, dlMs := windowPriority(i - ph)
 			raise(i, prio)
+			// Suppress deadlines on the rest of the window while the group is blocked on a
+			// seek target, so that piece gets the swarm to itself and is served at once.
+			if gWait != nil && !gWait[i] {
+				dlMs = -1
+			}
 			if dlMs >= 0 {
 				if cur, ok := desired[i]; !ok || dlMs < cur {
 					desired[i] = dlMs
@@ -639,6 +665,27 @@ func (c *Cache) applyStreamPriorities() {
 		tr := r.tailReserve()
 		for i := tr[0]; i <= tr[1]; i++ {
 			raise(i, streamPinPriority)
+			// Same hole re-fetch as the forward window: the pinned EOF index must stay
+			// resident for the whole stream, but if its data was wiped while libtorrent
+			// keeps the have-bit it would never come back on its own — so the cache sits
+			// a tail-piece short of the budget. Un-have it to pull it back.
+			if !c.Have(i) && h.HasPiece(i) {
+				refetch[i] = struct{}{}
+			}
+		}
+	}
+	// A piece a reader is BLOCKED on is needed NOW: force it to top priority + the most
+	// urgent deadline even if it falls outside every window/pin (a held anchor can leave a
+	// fresh seek target out of the window for a tick, and a re-read of an evicted region
+	// lands anywhere). Without this the whole-vector PrioritizePieces below would reset the
+	// target to priority 0 and it would never download — the read would hang to timeout.
+	for _, ws := range waitSet {
+		for wp := range ws {
+			raise(wp, ltTopPriority)
+			desired[wp] = 0
+			if !c.Have(wp) && h.HasPiece(wp) {
+				refetch[wp] = struct{}{}
+			}
 		}
 	}
 
