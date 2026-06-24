@@ -646,16 +646,13 @@ func (r *Reader) tailReserve() [2]int {
 	if plen <= 0 || r.file.Length <= 0 {
 		return [2]int{last, last}
 	}
-	tailBytes := int64(streamHeaderPinBytes)
-	if s := settings.BTsets(); s != nil && s.PreloadBufferEnd > 0 {
-		tailBytes = s.PreloadBufferEnd
-	}
+	tailBytes := tailBytesFor(plen)
 	if tailBytes > r.file.Length {
 		tailBytes = r.file.Length
 	}
 	first := int((r.file.Offset + r.file.Length - tailBytes) / plen)
 	if floor := last - r.cache.tailPinPieces() + 1; first < floor {
-		first = floor // bound the pin span (large PreloadBufferEnd)
+		first = floor // bound to the (capped) pin span so byte range and count agree
 	}
 	if ffirst := int(r.file.Offset / plen); first < ffirst {
 		first = ffirst
@@ -666,19 +663,35 @@ func (r *Reader) tailReserve() [2]int {
 	return [2]int{first, last}
 }
 
-// streamHeaderPinPieces / streamTailPinPieces are the MAX pieces the preload holds
-// at the file START and END: the container header (AVI main header, MKV/MP4 header)
-// at the front and the seek index (AVI idx1, MKV cues, MP4 moov) at the back. They
-// are kept resident ONLY during preload (preloadProtect) — the strict streaming
-// window carves out nothing for them. The size is BYTE-bounded (streamHeaderPinBytes
-// / PreloadBufferEnd) and only rounded UP to these caps, so a large piece size
-// covers the few-MB header/index in one piece. groupReaderSnaps / scheduleWindow use
-// headPinPieces / tailPinPieces to recognise the EOF-index reader (so it doesn't
-// drive a streaming window) — the actual pinning is the preload's job.
+// streamTailMinBytes is the EOF seek-index region (AVI idx1 / MKV cues / MP4 moov)
+// pinned at the file END for the whole stream. Per the field spec: pin exactly ONE
+// piece when pieces are large (> 5 MB), otherwise pin 5 MB — enough to cover the
+// index even when it straddles a piece boundary on small pieces (the AVI idx1 spans
+// two 4 MB pieces). Independent of PreloadBufferEnd, which is a buffering knob.
+const streamTailMinBytes = 5 << 20
+
+// tailBytesFor is the byte budget of the pinned EOF index for this piece size:
+// one whole piece if the piece already exceeds streamTailMinBytes, else the flat
+// streamTailMinBytes. tailPinPieces (piece count) and tailReserve (byte range)
+// both derive from this so the pin and the count never disagree.
+func tailBytesFor(plen int64) int64 {
+	if plen > streamTailMinBytes {
+		return plen
+	}
+	return streamTailMinBytes
+}
+
+// streamHeaderPinPieces is the MAX pieces the preload holds at the file START: the
+// container header (AVI main header, MKV/MP4 header). It is kept resident ONLY during
+// preload (preloadProtect) — the strict streaming window carves out nothing for it.
+// The size is BYTE-bounded (streamHeaderPinBytes) and only rounded UP to this cap, so
+// a large piece size covers the few-MB header in one piece. The EOF index at the file
+// END is sized separately by tailBytesFor (the field spec: 1 piece if >5 MB, else
+// 5 MB). groupReaderSnaps / scheduleWindow use headPinPieces / tailPinPieces to
+// recognise the header/EOF-index reader so it doesn't drive a streaming window.
 const (
 	streamHeaderPinPieces = 2
-	streamTailPinPieces   = 3
-	streamHeaderPinBytes  = 4 << 20 // container header / default EOF-index budget
+	streamHeaderPinBytes  = 4 << 20 // container header budget
 )
 
 // State snapshots this reader's position + prioritised window for the /cache

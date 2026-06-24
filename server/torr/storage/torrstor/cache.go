@@ -13,6 +13,11 @@ import (
 	"server/torr/storage/state"
 )
 
+// refetchDebounceSec is how long (seconds) a proactively un-have'd window hole is
+// suppressed from being un-have'd again, bridging the async gap before libtorrent's
+// have-bit clears so the same piece isn't re-issued every apply tick.
+const refetchDebounceSec = 3
+
 // anchorHoldSec is how long (seconds) the playhead holds when the lowest live
 // reader jumps forward, so a player's brief gap in its trailing connection
 // doesn't shove the window ahead onto its leading read-ahead connection.
@@ -111,6 +116,7 @@ type Cache struct {
 	// debounces bursts of triggers from a per-chunk player's many connections.
 	priMu       sync.Mutex
 	deadlined   map[int]bool
+	refetchedAt map[int]int64 // piece -> unix sec of the last proactive un-have (debounce)
 	lastApplyMs atomic.Int64
 }
 
@@ -137,6 +143,7 @@ func newCache(s *Storage, sid int64, hash [20]byte, numPieces int, pieceLength i
 		readers:     map[*Reader]struct{}{},
 		groups:      map[string]*group{},
 		deadlined:   map[int]bool{},
+		refetchedAt: map[int]int64{},
 	}
 }
 
@@ -567,6 +574,7 @@ func (c *Cache) applyStreamPriorities() {
 	plen := c.PieceLength
 	prios := make([]int, c.NumPieces)
 	desired := make(map[int]int) // piece -> deadlineMs
+	refetch := make(map[int]struct{})
 	raise := func(i, p int) {
 		if i >= 0 && i < c.NumPieces && prios[i] < p {
 			prios[i] = p
@@ -600,6 +608,15 @@ func (c *Cache) applyStreamPriorities() {
 				if cur, ok := desired[i]; !ok || dlMs < cur {
 					desired[i] = dlMs
 				}
+			}
+			// Re-fetch hole: this forward-window piece was downloaded and hash-verified
+			// (libtorrent owns it) but our memory cache evicted the DATA (UseDisk=false →
+			// wiped). libtorrent won't re-send a piece it believes it has, so the window
+			// shows it "allocated but not downloading" (выделяется но не качается) until a
+			// reader finally blocks on it. Flag it to un-have now so it re-downloads into
+			// the cache ahead of the playhead instead of stalling at it.
+			if !c.Have(i) && h.HasPiece(i) {
+				refetch[i] = struct{}{}
 			}
 		}
 	}
@@ -641,6 +658,30 @@ func (c *Cache) applyStreamPriorities() {
 	for piece, dl := range desired {
 		_ = h.SetPieceDeadline(piece, dl, false)
 		c.deadlined[piece] = true
+	}
+	// Un-have the forward-window holes so libtorrent re-downloads them into the cache.
+	// Debounced per piece: WeDontHave is applied async on the network thread, so HasPiece
+	// can still read true for a tick or two after the call; without the debounce the same
+	// hole would be re-issued every apply until the bit flips. The priority was set by
+	// PrioritizePieces above; WeDontHave re-applies it atomically with clearing the bit.
+	if len(refetch) > 0 {
+		nowU := time.Now().Unix()
+		for piece := range refetch {
+			if was, ok := c.refetchedAt[piece]; ok && nowU-was < refetchDebounceSec {
+				continue
+			}
+			c.refetchedAt[piece] = nowU
+			_ = h.WeDontHave(piece, prios[piece])
+		}
+		// Forget debounce entries for pieces no longer flagged (re-downloaded or scrolled
+		// out), so the map can't grow without bound on a long stream.
+		for piece := range c.refetchedAt {
+			if _, ok := refetch[piece]; !ok {
+				delete(c.refetchedAt, piece)
+			}
+		}
+	} else if len(c.refetchedAt) > 0 {
+		c.refetchedAt = map[int]int64{}
 	}
 }
 
@@ -799,27 +840,22 @@ func (c *Cache) headPinPieces() int {
 
 // tailPinPieces is the UPPER BOUND on the EOF-index pin in pieces — what the window
 // budget reserves against (readerWindowPieces) and how groupReaderSnaps recognises a
-// tail reader. The pin is the last `want` BYTES of the file (mirror of the preload's
-// tail window), which is a byte range that rarely aligns to a piece boundary and so
-// can touch one MORE piece than ceil(want/plen): the AVI idx1 lived in 144..145 while
-// ceil(4MB/4MB)=1 pinned only 145, leaving 144 to be evicted. So add the straddle
-// piece here. tailReserve computes the exact per-file range; this only needs to be a
-// correct upper bound. Capped so a large PreloadBufferEnd can't swallow the window.
+// tail reader. It is ceil(tailBytesFor / pieceLen): the field spec pins 5 MB (or one
+// whole piece when pieces are larger), which on the common 4 MB pieces is 2 — enough
+// to cover the AVI idx1 even when it straddles a boundary (it lived in 144..145).
+// Capped by maxTailPinPieces so a pathologically small piece size can't swallow the
+// window. tailReserve computes the exact per-file range; this is its upper bound.
 func (c *Cache) tailPinPieces() int {
 	plen := c.PieceLength
 	if plen <= 0 {
 		return 1
 	}
-	want := int64(streamHeaderPinBytes) // default EOF-index window
-	if s := settings.BTsets(); s != nil && s.PreloadBufferEnd > 0 {
-		want = s.PreloadBufferEnd
-	}
-	n := int((want+plen-1)/plen) + 1 // ceil + the straddle piece
-	if n > streamTailPinPieces+1 {
-		n = streamTailPinPieces + 1
-	}
-	return n
+	return piecesForBytes(tailBytesFor(plen), plen, maxTailPinPieces) // ceil, capped
 }
+
+// maxTailPinPieces caps the EOF-index pin so a tiny piece size can't pin most of the
+// cache: on real torrents (1–16 MB pieces) 5 MB is 1–5 pieces, well under this.
+const maxTailPinPieces = 6
 
 // close drops the in-memory state for every piece but leaves on-disk
 // files in place — they're the source of truth for the next resume.
