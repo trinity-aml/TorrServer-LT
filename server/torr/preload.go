@@ -26,11 +26,6 @@ func isMP4Container(path string) bool {
 	return false
 }
 
-// tailPreloadBytes is how much of the file's END to buffer alongside the head,
-// so containers whose index lives at the tail (MP4 moov, MKV cues) can start
-// playing and seeking. ~4 MB covers typical indexes without much overhead.
-const tailPreloadBytes = 4 << 20
-
 // probeHeadBytes is the SMALL leading slice of the head the &preload two-phase
 // fill buffers before ffprobe, enough to hold the container header (MP4 moov /
 // MKV EBML+Info+Tracks) so ffprobe can read format+streams; combined with the
@@ -127,21 +122,16 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64, probe bool
 		headPieces = append(headPieces, p)
 	}
 
-	// Tail window = last PreloadBufferEnd bytes of the file, where the container
-	// index lives (MP4 moov, MKV cues). Computed here — not only where it's
-	// prioritised below — because the START GATE now WAITS for it too (see the
-	// wait loop). Mirrors the original TorrServer (reads head AND the last
-	// startend bytes, then wg.Wait()s both) and Elementum (pre- AND post-buffer
-	// pieces both counted in BufferProgress; player released only at 100%).
-	tailBytes := int64(tailPreloadBytes)
-	if settings.BTsets() != nil && settings.BTsets().PreloadBufferEnd > 0 {
-		tailBytes = settings.BTsets().PreloadBufferEnd
-	}
-	if tailBytes > f.Length {
-		tailBytes = f.Length
-	}
-	tailFirst := clamp(int((f.Offset + f.Length - tailBytes) / plen))
+	// Tail window = the last TailPiecesFor pieces of the file, where the container
+	// index lives (AVI idx1, MP4 moov, MKV cues): exactly ONE piece when pieces are
+	// larger than 5 MB, else enough to cover 5 MB. The SAME count the streaming pin
+	// holds resident (torrstor.tailReserve), so the hand-off keeps precisely what the
+	// preload buffered — no extra tail piece left to be evicted. Computed here, not
+	// only where it's prioritised, because the START GATE waits for it too (see the
+	// wait loop). Mirrors the original TorrServer (head AND the last bytes, both
+	// wg.Wait()ed) and Elementum (pre- AND post-buffer counted in BufferProgress).
 	tailLast := clamp(int((f.Offset + f.Length - 1) / plen))
+	tailFirst := clamp(tailLast - torrstor.TailPiecesFor(plen) + 1)
 
 	// gatePieces = head + the tail pieces not already in the head. The start gate
 	// waits for ALL of them resident. Without the tail in the gate the bar hit
@@ -651,14 +641,8 @@ func PreloadOnPlay(reqCtx context.Context, torr *Torrent, index int) {
 			// "playing the body" and wrongly suppress the genuine first preload.
 			plen := cache.PieceLength
 			headFirst := int(f.Offset / plen)
-			tailBytes := int64(tailPreloadBytes)
-			if pe := settings.BTsets().PreloadBufferEnd; pe > 0 {
-				tailBytes = pe
-			}
-			if tailBytes > f.Length {
-				tailBytes = f.Length
-			}
-			tailFirst := int((f.Offset + f.Length - tailBytes) / plen)
+			tailLast := int((f.Offset + f.Length - 1) / plen)
+			tailFirst := tailLast - torrstor.TailPiecesFor(plen) + 1 // same tail as the pin
 			for _, rs := range cache.ReadersSnapshot() {
 				if rs != nil && rs.Reader >= headFirst && rs.Reader < tailFirst {
 					dbg("skip: file already playing, body reader at", rs.Reader)

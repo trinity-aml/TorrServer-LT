@@ -533,3 +533,29 @@ func TestDiskPiece_NameLayoutMatchesLegacy(t *testing.T) {
 		t.Fatalf("expected legacy layout %s: %v", expected, err)
 	}
 }
+
+// TestTailPiecesFor pins the field spec for the EOF-index tail pin: ONE piece when
+// pieces exceed 5 MB, else enough pieces to cover 5 MB. Capped by maxTailPinPieces so
+// a pathologically small piece can't pin most of the cache. The preload and the
+// streaming pin both derive from this, so they buffer/hold exactly the same tail.
+func TestTailPiecesFor(t *testing.T) {
+	const MB = int64(1) << 20
+	cases := []struct {
+		plen int64
+		want int
+	}{
+		{8 * MB, 1},  // > 5 MB -> one whole chunk
+		{6 * MB, 1},  // > 5 MB -> one whole chunk
+		{5 * MB, 1},  // == 5 MB -> the chunk already covers it
+		{4 * MB, 2},  // < 5 MB -> ceil(5/4) = 2
+		{2 * MB, 3},  // < 5 MB -> ceil(5/2) = 3
+		{1 * MB, 5},  // < 5 MB -> ceil(5/1) = 5
+		{16 * 1024, maxTailPinPieces}, // tiny piece -> capped
+		{0, 1},       // no metadata yet
+	}
+	for _, c := range cases {
+		if got := TailPiecesFor(c.plen); got != c.want {
+			t.Errorf("TailPiecesFor(%d MB) = %d, want %d", c.plen/MB, got, c.want)
+		}
+	}
+}

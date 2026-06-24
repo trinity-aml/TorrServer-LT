@@ -846,7 +846,15 @@ func (c *Cache) headPinPieces() int {
 // Capped by maxTailPinPieces so a pathologically small piece size can't swallow the
 // window. tailReserve computes the exact per-file range; this is its upper bound.
 func (c *Cache) tailPinPieces() int {
-	plen := c.PieceLength
+	return TailPiecesFor(c.PieceLength)
+}
+
+// TailPiecesFor is the number of pieces pinned at the file END for the EOF seek index,
+// per the field spec: exactly ONE piece when pieces exceed 5 MB, else enough to cover
+// 5 MB (which can straddle a boundary on small pieces). Capped by maxTailPinPieces.
+// Exported so the preload (torr/preload.go) buffers the SAME tail it will later pin —
+// otherwise the preload's extra tail pieces are evicted right after the hand-off.
+func TailPiecesFor(plen int64) int {
 	if plen <= 0 {
 		return 1
 	}
