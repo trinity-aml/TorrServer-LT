@@ -653,13 +653,13 @@ func (r *Reader) fileLastPiece() int {
 // pinned separately for the WHOLE stream: readerProtectRanges keeps it resident and
 // applyStreamPriorities keeps it priority>0.
 //
-// It is the last PreloadBufferEnd (default streamHeaderPinBytes) BYTES of the file,
-// computed EXACTLY like the preload's tail window (torr/preload.go) so the pin covers
+// It is the last tailBytesFor BYTES of the file (1 piece when pieces exceed 5 MB, else
+// 5 MB), computed like the preload's tail window (torr/preload.go) so the pin covers
 // precisely the pieces the preload buffered — including the straddle piece when that
 // byte range crosses a boundary (the AVI idx1 spans 144..145; a piece-count pin of 1
 // covered only 145 and 144 was evicted, REFETCHed and the stream stalled). Capped by
-// tailPinPieces so a large PreloadBufferEnd can't eat the window, and clamped to this
-// file's first piece.
+// tailPinPieces so a tiny piece size can't eat the window, and clamped to this file's
+// first piece.
 func (r *Reader) tailReserve() [2]int {
 	plen := r.cache.PieceLength
 	last := r.fileLastPiece()
@@ -697,7 +697,7 @@ func (r *Reader) tailReserve() [2]int {
 // pinned at the file END for the whole stream. Per the field spec: pin exactly ONE
 // piece when pieces are large (> 5 MB), otherwise pin 5 MB — enough to cover the
 // index even when it straddles a piece boundary on small pieces (the AVI idx1 spans
-// two 4 MB pieces). Independent of PreloadBufferEnd, which is a buffering knob.
+// two 4 MB pieces).
 const streamTailMinBytes = 5 << 20
 
 // tailBytesFor is the byte budget of the pinned EOF index for this piece size:

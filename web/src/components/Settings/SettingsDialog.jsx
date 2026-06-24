@@ -41,8 +41,6 @@ export default function SettingsDialog({ handleClose }) {
       setSettings({
         ...data,
         CacheSize: data.CacheSize / (1024 * 1024),
-        // PreloadBufferEnd is stored in bytes on the server; edit it in MB.
-        PreloadBufferEnd: Math.round((data.PreloadBufferEnd || 4 * 1024 * 1024) / (1024 * 1024)),
       })
     })
   }, [])
@@ -55,8 +53,6 @@ export default function SettingsDialog({ handleClose }) {
     sets.CacheSize = cacheSize * 1024 * 1024
     sets.ReaderReadAHead = cachePercentage
     sets.PreloadCache = preloadCachePercentage
-    // PreloadBufferEnd is edited in MB; persist it in bytes.
-    sets.PreloadBufferEnd = Math.round((Number(settings.PreloadBufferEnd) || 4) * 1024 * 1024)
     axios.post(settingsHost(), { action: 'set', sets })
     // Clear TMDB cache so fresh settings are fetched on next poster search
     clearTMDBCache()

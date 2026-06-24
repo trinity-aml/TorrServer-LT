@@ -27,10 +27,9 @@ type TMDBConfig struct {
 
 type BTSets struct {
 	// Cache
-	CacheSize        int64 // in byte, def 64 MB
-	ReaderReadAHead  int   // in percent, 5%-100%, [...S__X__E...] [S-E] not clean
-	PreloadCache     int   // in percent
-	PreloadBufferEnd int64 // tail buffer in bytes (MP4 moov / MKV cues), def 4 MB
+	CacheSize       int64 // in byte, def 64 MB
+	ReaderReadAHead int   // in percent, 5%-100%, [...S__X__E...] [S-E] not clean
+	PreloadCache    int   // in percent
 	// PadTailPartial: when the file's LAST piece is a SHORT partial (smaller than a
 	// full piece AND under 5 MB), pin one EXTRA piece at the tail. A short last piece
 	// otherwise leaves the cache a near-full-piece short of CacheSize (e.g. 8 MB pieces
@@ -167,10 +166,6 @@ func SetBTSets(sets *BTSets) {
 		sets.PreloadCache = 100
 	}
 
-	if sets.PreloadBufferEnd <= 0 {
-		sets.PreloadBufferEnd = 4 * 1024 * 1024
-	}
-
 	if sets.TorrentsSavePath == "" {
 		sets.UseDisk = false
 	} else if sets.UseDisk {
@@ -205,7 +200,6 @@ func SetDefaultConfig() {
 	sets := new(BTSets)
 	sets.CacheSize = 64 * 1024 * 1024 // 64 MB
 	sets.PreloadCache = 50
-	sets.PreloadBufferEnd = 4 * 1024 * 1024 // 4 MB tail buffer
 	// Per-torrent peer cap (see torr.buildSessionConfig). 50 matches
 	// Transmission's default; 25 (the anacrolix-era default) measurably
 	// caps single-torrent speed on fast links.

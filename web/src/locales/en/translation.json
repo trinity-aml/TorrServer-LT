@@ -164,8 +164,6 @@
     "PeersListenPort": "Peers Listen Port",
     "PeersListenPortHint": "1024 - 65535, 0 - random",
     "PreloadCache": "Preload Cache Before Play",
-    "PreloadBufferEnd": "Preload End Buffer (tail)",
-    "PreloadBufferEndHint": "Buffer the end of the file (MP4 moov / MKV cues) so the player can read its index for instant seek. In MB.",
     "PadTailPartial": "Pad short tail piece",
     "PadTailPartialHint": "When the file's last piece is a short partial (smaller than a full piece and under 5 MB) it leaves the cache short of its size; pin one extra piece to fill it. The cache may run up to one piece over the configured size.",
     "ProMode": "PRO mode",

@@ -16,7 +16,7 @@ import (
 
 // isMP4Container reports whether the file is an MP4-family container, the only
 // one whose index (moov atom) the preload tries to locate precisely. Everything
-// else (MKV, AVI, TS, …) uses the fixed PreloadBufferEnd tail window, so moov
+// else (MKV, AVI, TS, …) uses the fixed tail window (torrstor.TailPiecesFor), so moov
 // detection — which reads pieces and can stall ~30s — must be skipped for them.
 func isMP4Container(path string) bool {
 	switch strings.ToLower(filepath.Ext(path)) {
@@ -310,7 +310,7 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64, probe bool
 		}
 	}
 
-	// Prioritise the PreloadBufferEnd byte window NOW so it downloads alongside the
+	// Prioritise the tail (EOF index) window NOW so it downloads alongside the
 	// head and the progress/gate loop below can start immediately.
 	prioritiseTail(tailFirst, tailLast)
 

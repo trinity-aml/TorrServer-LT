@@ -2,7 +2,6 @@ export default {
   CacheSize: 64,
   ReaderReadAHead: 95,
   PreloadCache: 50,
-  PreloadBufferEnd: 4,
   PadTailPartial: false,
   DisableEndGame: false,
   UseDisk: false,
