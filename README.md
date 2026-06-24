@@ -70,7 +70,7 @@ curl -s https://raw.githubusercontent.com/trinity-aml/TorrServer-LT/master/insta
 - Install a specific version:
 
   ```bash
-  sudo bash ./installTorrServerLinux.sh --install MatriX.141.LT-1.0.0 --silent
+  sudo bash ./installTorrServerLinux.sh --install MatriX.141.LT-1.0.1 --silent
   ```
 
 - Update to latest version:
@@ -182,13 +182,13 @@ TorrServer-darwin-arm64 [--port PORT] [--ip IP] [--path PATH] [--logpath LOGPATH
 Run in console
 
 ```bash
-docker run --rm -d --name torrserver -p 8090:8090 ghcr.io/yourok/torrserver:latest
+docker run --rm -d --name torrserver -p 8090:8090 ghcr.io/trinity-aml/torrserver-lt:latest
 ```
 
 For running in persistence mode, just mount volume to container by adding `-v ~/ts:/opt/ts`, where `~/ts` folder path is just example, but you could use it anyway... Result example command:
 
 ```bash
-docker run --rm -d --name torrserver -v ~/ts:/opt/ts -p 8090:8090 ghcr.io/yourok/torrserver:latest
+docker run --rm -d --name torrserver -v ~/ts:/opt/ts -p 8090:8090 ghcr.io/trinity-aml/torrserver-lt:latest
 ```
 
 #### Environments
@@ -206,7 +206,7 @@ docker run --rm -d --name torrserver -v ~/ts:/opt/ts -p 8090:8090 ghcr.io/yourok
 Example with full overrided command (on default values):
 
 ```bash
-docker run --rm -d -e TS_PORT=5665 -e TS_DONTKILL=1 -e TS_HTTPAUTH=1 -e TS_RDB=1 -e TS_CONF_PATH=/opt/ts/config -e TS_LOG_PATH=/opt/ts/log -e TS_TORR_DIR=/opt/ts/torrents -e TS_PROXYURL=socks5h://user:password@example.com:2080 -e TS_PROXYMODE=tracker --name torrserver -v ~/ts:/opt/ts -p 5665:5665 ghcr.io/yourok/torrserver:latest
+docker run --rm -d -e TS_PORT=5665 -e TS_DONTKILL=1 -e TS_HTTPAUTH=1 -e TS_RDB=1 -e TS_CONF_PATH=/opt/ts/config -e TS_LOG_PATH=/opt/ts/log -e TS_TORR_DIR=/opt/ts/torrents -e TS_PROXYURL=socks5h://user:password@example.com:2080 -e TS_PROXYMODE=tracker --name torrserver -v ~/ts:/opt/ts -p 5665:5665 ghcr.io/trinity-aml/torrserver-lt:latest
 ```
 
 #### Docker Compose
@@ -217,7 +217,7 @@ docker run --rm -d -e TS_PORT=5665 -e TS_DONTKILL=1 -e TS_HTTPAUTH=1 -e TS_RDB=1
 version: '3.3'
 services:
     torrserver:
-        image: ghcr.io/yourok/torrserver
+        image: ghcr.io/trinity-aml/torrserver-lt
         container_name: torrserver
         network_mode: host    # to allow DLNA feature
         environment:
@@ -256,21 +256,26 @@ this libtorrent fork:
 | **Cache size** (`CacheSize`) | 64 MB | Memory (or disk) budget for the piece cache. The streaming cache keeps the reader's forward window + recently-played pieces and evicts the rest; an evicted piece is un-`have`d in libtorrent so a later seek back into it re-downloads instead of stalling. |
 | **Readahead cache** (`ReaderReadAHead`) | 95% | Forward streaming window as a percentage of the cache — how far ahead of the play head pieces are prioritised (graded so the play head is fetched first). |
 | **Preload before play** (`PreloadCache`) | 50% | Buffer this fraction of the cache at the file head before playback starts (e.g. 64 MB × 50% = 32 MB). |
-| **Preload end buffer** (`PreloadBufferEnd`) | 4 MB | **New.** Also buffer the *tail* of the file (MP4 `moov` / MKV cues) so the player can read its index for instant seek. |
+| **Pad short tail piece** (`PadTailPartial`) | off | **New.** When the file's last piece is a short partial (smaller than a full piece *and* under 5 MB) the cache stops short of its size; pin one extra tail piece to fill it (may then run up to one piece over the configured size). |
 | **End-game mode** (`DisableEndGame`) | on | **New.** Request the final buffer pieces from all peers at once for a faster finish/seek; turn off to cut duplicate traffic. |
 | **Disk cache** (`UseDisk` + `TorrentsSavePath`) | off | Store pieces on disk under `TorrentsSavePath/<hash>/<pieceID>` instead of RAM. |
 | **Remove cache on drop** (`RemoveCacheOnDrop`) | off | Delete the on-disk cache when a torrent is removed. |
 | **Upload** (`DisableUpload`) | on | Turn off to run leech-only (never unchoke peers — no seeding). |
 
-`PreloadBufferEnd` and the end-game toggle live on the **Main** and
-**Additional** settings tabs respectively (Additional requires PRO mode). The
-Additional tab also covers connection/rate limits (including **Max DHT
-connections**, `DHTConnectionsLimit` → libtorrent `dht_max_peers`, default 500),
-DHT/PEX/LSD/UPnP, encryption, DLNA, HTTPS, proxy and Torznab search.
+The EOF seek index (MP4 `moov` / MKV cues / AVI `idx1`) at the file tail is
+buffered **automatically** — one whole piece when pieces exceed 5 MB, otherwise
+5 MB — so the player can read its index for instant seek; no setting is needed
+(`PadTailPartial` only tops up the cache when that tail piece is a short partial).
+`PadTailPartial` lives on the **Main** tab and the end-game toggle on the
+**Additional** tab (Additional requires PRO mode). The Additional tab also covers
+connection/rate limits (including **Max DHT connections**, `DHTConnectionsLimit` →
+libtorrent `dht_max_peers`, default 500), DHT, **PEX** (peer exchange — disabling
+it now actually drops the `ut_pex` plugin), LSD/UPnP, encryption, DLNA, HTTPS,
+proxy and Torznab search.
 
 ## Development
 
-This fork links **libtorrent 2.0.10 (arvidn)** into the Go server through a CGo
+This fork links **libtorrent 2.0.13 (arvidn)** into the Go server through a CGo
 shim (`server/lt`). Unlike upstream's pure-Go engine, every build is therefore
 **CGo + C++** and needs a libtorrent/Boost toolchain. One shim feature — the
 per-piece `we_dont_have` the streaming cache uses to re-download evicted regions
@@ -339,7 +344,7 @@ Targets and the cross-toolchain each needs:
 libtorrent is built with `crypto=built-in`, so there is no OpenSSL cross
 dependency; the only dynamic deps in the final binary are libc/libstdc++/libgcc
 (Windows links those static too). Versions are pinned in `build/_common.sh`
-(Boost 1.85.0, libtorrent v2.0.10) and overridable, e.g.
+(Boost 1.85.0, libtorrent v2.0.13) and overridable, e.g.
 `LIBTORRENT_TAG=v2.0.11 build/linux-arm64.sh`. Full detail and the per-target
 prerequisites table: [`build/README.md`](build/README.md).
 
