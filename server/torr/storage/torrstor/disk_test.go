@@ -190,9 +190,10 @@ func TestCache_EvictionSparesReaderWindow(t *testing.T) {
 	// PLUS the EOF seek-index tail pin held outside it. With CacheSize 10 pieces and
 	// ReadAhead 80% the tail pin is 4 pieces (the byte-range default clamps to this
 	// tiny file and is bounded to the last 4), so the window budget is 10-4 = 6:
-	// behind = round(6*20%) = 1, ahead = 6-1-1 = 4, so at cur=20 the window is exactly
-	// [19..24], the tail index [36..39] stays pinned, and everything else (including
-	// the former head pin [0..1]) is dropped.
+	// the slider's raw behind is round(6*20%) = 1, but the 1/3 behind FLOOR
+	// (ceil(6/3) = 2) lifts it to 2, leaving ahead = 6-1-2 = 3 — so at cur=20 the
+	// window is exactly [18..23], the tail index [36..39] stays pinned, and everything
+	// else (including the former head pin [0..1]) is dropped.
 	prev := settings.BTsets()
 	settings.StoreBTsets(&settings.BTSets{UseDisk: false, CacheSize: 10 * pieceLen, ReaderReadAHead: 80})
 	t.Cleanup(func() { settings.StoreBTsets(prev) })
@@ -235,16 +236,16 @@ func TestCache_EvictionSparesReaderWindow(t *testing.T) {
 		defer c.mu.RUnlock()
 		return c.pieces[id] != nil
 	}
-	// The whole [19..24] window survives — behind margin + current + forward readahead
-	// — plus the pinned EOF seek index [36..39].
-	for _, keep := range []int{19, 20, 24, 36, 39} {
+	// The whole [18..23] window survives — behind margin (floored to 2) + current +
+	// forward readahead — plus the pinned EOF seek index [36..39].
+	for _, keep := range []int{18, 20, 23, 36, 39} {
 		if !present(keep) {
 			t.Fatalf("protected piece %d was evicted", keep)
 		}
 	}
 	// Everything outside the window is dropped, even old ones — INCLUDING the former
 	// head pin [0..1]. The tail index [36..39] now survives (pinned the whole stream).
-	for _, gone := range []int{0, 1, 2, 10, 17, 18, 25, 27, 35} {
+	for _, gone := range []int{0, 1, 2, 10, 16, 17, 24, 25, 35} {
 		if present(gone) {
 			t.Fatalf("unprotected piece %d should have been evicted", gone)
 		}
@@ -259,8 +260,8 @@ func TestCache_EvictionSparesReaderWindow(t *testing.T) {
 // Each group must get its OWN protected sliding window — neither device's
 // just-about-to-play pieces may be evicted to make room for the other's. With
 // CacheSize 10 pieces / ReadAhead 80% the tail pin is 4 pieces, so the window budget
-// is 10-4 = 6 (behind 1 + current + ahead 4): device A at piece 20 protects [19..24]
-// and device B at piece 60 protects [59..64], plus the shared EOF seek index
+// is 10-4 = 6 (behind floored to 2 + current + ahead 3): device A at piece 20 protects
+// [18..23] and device B at piece 60 protects [58..63], plus the shared EOF seek index
 // [76..79]; capacity grows (streamingReserve) to fit both, and everything outside is
 // dropped.
 func TestCache_EvictionSparesBothDeviceWindows(t *testing.T) {
@@ -310,16 +311,16 @@ func TestCache_EvictionSparesBothDeviceWindows(t *testing.T) {
 		defer c.mu.RUnlock()
 		return c.pieces[id] != nil
 	}
-	// BOTH device windows survive: [19..24] (A) and [59..64] (B), plus the pinned EOF
+	// BOTH device windows survive: [18..23] (A) and [58..63] (B), plus the pinned EOF
 	// seek index [76..79].
-	for _, keep := range []int{19, 20, 24, 59, 60, 64, 76, 79} {
+	for _, keep := range []int{18, 20, 23, 58, 60, 63, 76, 79} {
 		if !present(keep) {
 			t.Fatalf("protected piece %d was evicted (device isolation broken)", keep)
 		}
 	}
 	// Pieces well outside both windows are dropped — including the former head pin
 	// [0..1]. The tail index [76..79] now survives (pinned the whole stream).
-	for _, gone := range []int{0, 1, 10, 18, 25, 40, 45, 50, 55, 57, 58, 65, 68, 75} {
+	for _, gone := range []int{0, 1, 10, 17, 24, 40, 45, 50, 55, 57, 64, 65, 68, 75} {
 		if present(gone) {
 			t.Fatalf("unprotected piece %d should have been evicted", gone)
 		}
@@ -409,6 +410,165 @@ func TestCache_TailPinSurvivesPreloadHandoff(t *testing.T) {
 	// And it converged to the budget by dropping head leftovers past the window.
 	if c.Filled() > c.capacity() {
 		t.Fatalf("eviction did not converge: filled=%d cap=%d", c.Filled(), c.capacity())
+	}
+}
+
+// TestCache_BehindFloorSparesLaggingDecoder reproduces the post-seek refetch churn
+// from the field log (Cherniy.dvor ...AVI, the user's exact config: 64 MB cache,
+// 4 MB pieces, ReadAhead 95). A connection-per-chunk player leads its DECODER by its
+// read-ahead buffer: after a seek to ~55 its HTTP read raced to piece 61 and drove the
+// anchor there, while the decoder was still about to play 56..59. With the slider's raw
+// 5% behind (1 piece) the window was [60..73], so 56..59 fell outside it, were evicted
+// the instant the anchor followed up, and the decoder REFETCHed them — the
+// "начальные чанки дропаются и перекачиваются заново" churn. The 1/3 behind FLOOR
+// lifts behind from 1 to 5, so at anchor 61 the window is [56..69] and the lagging
+// decoder's about-to-play pieces survive. Piece 55 (one past the floor) is the snake's
+// trailing tail and is correctly dropped.
+func TestCache_BehindFloorSparesLaggingDecoder(t *testing.T) {
+	const MB = int64(1) << 20
+	plen := 4 * MB
+	prev := settings.BTsets()
+	settings.StoreBTsets(&settings.BTSets{UseDisk: false, CacheSize: 64 * MB, ReaderReadAHead: 95})
+	t.Cleanup(func() { settings.StoreBTsets(prev) })
+
+	s := NewStorage()
+	h := mkHash(0xD7)
+	const numPieces = 150
+	s.callbackOpen(1, h, numPieces, plen)
+	c := s.CacheByHash(h)
+	fileLen := int64(numPieces) * plen
+
+	// budget 16 - tail pin 2 = 14; behind = max(round(14*5%)=1, ceil(14/3)=5) = 5,
+	// ahead = 14-1-5 = 8 → at anchor 61 the window is [56..69]. Confirm the floor lifted
+	// behind above the slider's raw share (else this test wouldn't exercise the fix).
+	behind, ahead := c.readerWindowPieces()
+	if behind != 5 || ahead != 8 {
+		t.Fatalf("behind/ahead = %d/%d, want 5/8 (behind floor not applied)", behind, ahead)
+	}
+
+	// Resident: the abandoned old head 0..23 (oldest — the LRU sacrificial buffer) plus
+	// the post-seek region 50..72 (recently read/downloaded). Massively over the 16-piece
+	// cache, so the capacity trim runs and keeps only the protected window + tail.
+	now := time.Now().Unix()
+	c.mu.Lock()
+	for i := 0; i <= 23; i++ {
+		p := newPiece(c, i)
+		_, _ = p.WriteAt([]byte{0x9}, plen-1)
+		p.setComplete(true)
+		p.accessed.Store(now - 100 + int64(i)) // old
+		c.pieces[i] = p
+	}
+	for i := 50; i <= 72; i++ {
+		p := newPiece(c, i)
+		_, _ = p.WriteAt([]byte{0x9}, plen-1)
+		p.setComplete(true)
+		p.accessed.Store(now + int64(i)) // recent
+		c.pieces[i] = p
+	}
+	c.mu.Unlock()
+
+	// The leading read-ahead connection drives the anchor to 61; the decoder's own
+	// connection has closed (connection-per-chunk), so it is NOT a registered reader.
+	r := &Reader{cache: c, group: "dev", file: FileInfo{Offset: 0, Length: fileLen}}
+	r.readahead.Store(60 * MB)
+	r.offset.Store(61 * plen)
+	r.winFirst.Store(56)
+	r.winLast.Store(69)
+	r.lastRead.Store(now)
+	c.registerReader(r)
+
+	if got := c.groupPlayheads()["dev"]; got != 61 {
+		t.Fatalf("anchor = %d, want 61", got)
+	}
+
+	c.evictIfOverCapacity()
+
+	present := func(id int) bool {
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		return c.pieces[id] != nil
+	}
+	// THE FIX: the behind-floor window [56..69] keeps the lagging decoder's about-to-play
+	// pieces resident, so they are never dropped-then-refetched.
+	for _, keep := range []int{56, 57, 58, 59, 60, 61, 69} {
+		if !present(keep) {
+			t.Fatalf("in-window piece %d evicted (decoder would REFETCH it — the churn)", keep)
+		}
+	}
+	// Below the floor (55) and the abandoned old head are the LRU tail — correctly dropped.
+	for _, gone := range []int{0, 1, 10, 23, 50, 54, 55} {
+		if present(gone) {
+			t.Fatalf("piece %d should have been evicted (outside the window)", gone)
+		}
+	}
+	if c.Filled() > c.capacity() {
+		t.Fatalf("eviction did not converge: filled=%d cap=%d", c.Filled(), c.capacity())
+	}
+}
+
+// TestCache_NoProactiveSweepKeepsLruBuffer pins the other half of the post-seek fix:
+// eviction is capacity-driven LRU (the original TorrServer model), NOT a proactive
+// sweep that reaps every piece outside the window the moment the anchor passes it.
+// The abandoned region a forward seek leaves behind must LINGER as the oldest pieces
+// (the sacrificial buffer) while the cache is UNDER capacity — so that when readahead
+// later needs room, those stale pieces are sacrificed first and the snake's recently
+// played pieces survive. The old proactive sweep dropped the buffer at once, leaving
+// only the just-read pieces to evict under the next bit of pressure → refetch.
+func TestCache_NoProactiveSweepKeepsLruBuffer(t *testing.T) {
+	const MB = int64(1) << 20
+	plen := 4 * MB
+	prev := settings.BTsets()
+	settings.StoreBTsets(&settings.BTSets{UseDisk: false, CacheSize: 64 * MB, ReaderReadAHead: 95})
+	t.Cleanup(func() { settings.StoreBTsets(prev) })
+
+	s := NewStorage()
+	h := mkHash(0xE3)
+	const numPieces = 150
+	s.callbackOpen(1, h, numPieces, plen)
+	c := s.CacheByHash(h)
+	fileLen := int64(numPieces) * plen
+
+	// Resident: a small abandoned old region 0..4 (5 pieces) + the live window region
+	// 56..63 (8 pieces) = 13 pieces = 52 MB, UNDER the 64 MB cache. Nothing must be
+	// evicted: there is room, and the old region is the LRU buffer for later.
+	now := time.Now().Unix()
+	c.mu.Lock()
+	for _, i := range []int{0, 1, 2, 3, 4} {
+		p := newPiece(c, i)
+		_, _ = p.WriteAt([]byte{0x9}, plen-1)
+		p.setComplete(true)
+		p.accessed.Store(now - 100) // old, but UNDER capacity so it must stay
+		c.pieces[i] = p
+	}
+	for i := 56; i <= 63; i++ {
+		p := newPiece(c, i)
+		_, _ = p.WriteAt([]byte{0x9}, plen-1)
+		p.setComplete(true)
+		p.accessed.Store(now)
+		c.pieces[i] = p
+	}
+	c.mu.Unlock()
+
+	r := &Reader{cache: c, group: "dev", file: FileInfo{Offset: 0, Length: fileLen}}
+	r.readahead.Store(60 * MB)
+	r.offset.Store(60 * plen)
+	r.winFirst.Store(56)
+	r.winLast.Store(68)
+	r.lastRead.Store(now)
+	c.registerReader(r)
+
+	c.evictIfOverCapacity()
+
+	present := func(id int) bool {
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		return c.pieces[id] != nil
+	}
+	// The abandoned old region survives: under capacity, the LRU buffer is NOT reaped.
+	for _, keep := range []int{0, 1, 2, 3, 4} {
+		if !present(keep) {
+			t.Fatalf("old piece %d proactively reaped under capacity (sacrificial buffer lost)", keep)
+		}
 	}
 }
 

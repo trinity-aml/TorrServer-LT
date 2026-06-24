@@ -13,12 +13,6 @@ import (
 	"server/torr/storage/state"
 )
 
-// graceEvictSec is how long (seconds) a complete piece that fell out of the
-// streaming window stays resident before proactive eviction drops it — a grace
-// that bridges a player's read jitter / per-chunk reconnects so a brief
-// wobble back doesn't re-download a just-played piece.
-const graceEvictSec = 1
-
 // anchorHoldSec is how long (seconds) the playhead holds when the lowest live
 // reader jumps forward, so a player's brief gap in its trailing connection
 // doesn't shove the window ahead onto its leading read-ahead connection.
@@ -744,6 +738,16 @@ func (c *Cache) readerWindowPieces() (behind, ahead int) {
 		budget -= tail
 	}
 	behind = int((int64(budget)*(100-prc) + 50) / 100) // rounded share of the budget
+	// Behind FLOOR: keep at least a 1/N share of the window behind the playhead, even
+	// when the slider asks for nearly all of it ahead. A per-chunk player's HTTP read
+	// (the anchor) leads its decoder by its buffer, so the just-about-to-be-played piece
+	// sits below the anchor; without this floor it falls outside the window the moment
+	// the anchor follows a leading connection up and gets evicted then refetched (the
+	// post-seek churn). Rounded UP so a 14-piece window floors at 5 behind, straddling
+	// the observed read-ahead-vs-decoder gap. See behindFloorDivisor.
+	if floor := (budget + behindFloorDivisor - 1) / behindFloorDivisor; behind < floor {
+		behind = floor
+	}
 	if behind > budget-1 {
 		behind = budget - 1
 	}
@@ -969,15 +973,6 @@ func (c *Cache) evictIfOverCapacity() {
 		pieces = append(pieces, p)
 	}
 	c.mu.Unlock()
-	// A live playback window (a non-probe reader with an established playhead) is what
-	// licenses the proactive sliding-cache sweep below. With only the always-on tail
-	// pin or an in-flight preload (no window yet), the HEAD piece a just-registered
-	// reader is about to read is not yet covered by any window, and proactively reaping
-	// it would strand that reader forever (it blocks until the piece reappears, which
-	// libtorrent can't refetch with priority 0 / no handle). Compute the playheads once
-	// and reuse them for the dbg window.
-	playheads := c.groupPlayheads()
-	hasWindow := len(playheads) > 0
 	// Diagnostic context: the live held playhead window so an evict line can be read
 	// against the ACTUAL window (the first-window log is stale). Single device in the
 	// common case; with two, the last wins — enough to spot an in-window evict.
@@ -986,7 +981,7 @@ func (c *Cache) evictIfOverCapacity() {
 	if s := settings.BTsets(); s != nil && s.EnableDebug {
 		dbg = true
 		_, aheadP := c.readerWindowPieces()
-		for _, ph := range playheads {
+		for _, ph := range c.groupPlayheads() {
 			winLo, winHi = ph, ph+aheadP
 		}
 	}
@@ -1041,33 +1036,19 @@ func (c *Cache) evictIfOverCapacity() {
 		}
 	}
 
-	// Proactive sliding cache: drop EVERY complete piece outside the protected set —
-	// the playhead window (behind-margin .. ahead) + the head/tail pins — once it's
-	// been untouched for graceEvictSec, even when the cache is NOT over capacity. So
-	// the resident set stays TIGHT: only [head pin] + [playhead window] + [tail pin],
-	// and the gaps a seek leaves between them (old region, head-to-window,
-	// window-to-tail) are reaped at once instead of lingering while there is room.
-	// The grace bridges a per-chunk player's re-read jitter; the held anchor keeps the
-	// window stable and the prefetch margin keeps libtorrent's read-ahead INSIDE the
-	// window, so the live playhead and its buffer are never dropped (the churn the
-	// earlier unconditional proactive pass caused, before those two were in place).
-	// Gated on a live window (not merely a non-empty protect set): the always-on tail
-	// pin must not, on its own, license reaping the head before a reader's window is up.
-	if hasWindow {
-		for _, p := range pieces {
-			if !evictable(p) || pieceInRanges(p.Id, protect) {
-				continue
-			}
-			if nowU-p.Accessed() > graceEvictSec {
-				evict(p)
-			}
-		}
-	}
-
-	// Capacity fallback: if the protected set itself still exceeds the cache (e.g. the
-	// window + pins are larger than CacheSize), trim the least-recently-accessed
-	// pieces outside the window. A piece inside the window is never dropped.
-	filled = c.Filled() // recompute: the proactive pass above may have freed space
+	// LRU eviction (the original TorrServer "snake" model): drop complete pieces ONLY
+	// when over capacity, least-recently-ACCESSED first, and never inside a reader's
+	// window/pins. We deliberately do NOT proactively reap every piece outside the
+	// window the moment the anchor passes it — that was the post-seek refetch churn:
+	// a forward seek reaped the abandoned old region at once, throwing away the LRU
+	// sacrificial buffer; then when the read-ahead connection raced forward and the
+	// readahead needed room, the only spare pieces left were the JUST-read behind ones,
+	// so they were evicted and the player's lagging decoder refetched them. Keeping the
+	// cache a pure LRU ring (recently-read pieces stay until genuinely old) lets the
+	// stale old region absorb the eviction pressure instead, so the snake's trailing
+	// pieces survive the player's re-read/decode lag — exactly as upstream behaves
+	// (cleanPieces only runs when filled > capacity; Accessed is bumped on every read).
+	filled = c.Filled() // recompute: the stranded-leftover reap above may have freed space
 	if filled <= cap {
 		return
 	}

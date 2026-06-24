@@ -65,6 +65,18 @@ const reprioritizeInterval = time.Second
 // keeps no matter the settings — so the buffer never collapses to nothing.
 const streamWindowFloorPieces = 4
 
+// behindFloorDivisor sets the minimum BEHIND margin as a share (1/N) of the window
+// budget, enforced even when ReaderReadAHead asks for almost all of it ahead. A
+// connection-per-chunk player (VLC/AVI) leads its DECODER by its read-ahead buffer:
+// its HTTP read position — which drives the cache anchor — can sit several pieces
+// past the piece the decoder is about to play. With the slider's raw ~5% behind (one
+// piece) that about-to-be-played piece falls outside the protected window the instant
+// the anchor follows a leading connection up, so the capacity trim drops it and the
+// decoder REFETCHes it (the post-seek drop-then-redownload churn). A 1/3 floor makes
+// the window straddle that gap so the snake's trailing pieces survive until the
+// decoder has consumed them, while the forward read-ahead still keeps the majority.
+const behindFloorDivisor = 3
+
 // streamConnections is the per-torrent peer cap held while a reader STREAMS, so
 // the swarm has enough parallel peers to fill the read-ahead window FASTER than
 // playback consumes it (build a buffer ahead). Without it the limit dropped to the
