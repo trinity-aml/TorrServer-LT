@@ -590,18 +590,8 @@ func (c *Cache) applyStreamPriorities() {
 			hi = c.NumPieces - 1
 		}
 		for i := lo; i <= hi; i++ {
-			if i < ph {
-				// Only the IMMEDIATE just-behind piece is filled (a small rewind / the
-				// demuxer's look-back), at the lowest priority and no deadline. The deeper
-				// behind margin is eviction-protected (readerProtectRanges keeps recently
-				// played pieces so a read-ahead connection racing the anchor forward can't
-				// get them dropped then refetched) but must NOT be prioritised for download:
-				// otherwise a seek fetches the whole behind floor BEHIND the seek point —
-				// bandwidth that should fill the forward window — and the player shows those
-				// never-played pieces as half-filled "behind" chunks. Keep them at priority 0.
-				if i == ph-1 {
-					raise(i, streamBehindPriority)
-				}
+			if i < ph { // behind: fill it (no hole) but lowest priority, no deadline
+				raise(i, streamBehindPriority)
 				continue
 			}
 			prio, dlMs := windowPriority(i - ph)
@@ -748,16 +738,6 @@ func (c *Cache) readerWindowPieces() (behind, ahead int) {
 		budget -= tail
 	}
 	behind = int((int64(budget)*(100-prc) + 50) / 100) // rounded share of the budget
-	// Behind FLOOR: keep at least a 1/N share of the window behind the playhead, even
-	// when the slider asks for nearly all of it ahead. A per-chunk player's HTTP read
-	// (the anchor) leads its decoder by its buffer, so the just-about-to-be-played piece
-	// sits below the anchor; without this floor it falls outside the window the moment
-	// the anchor follows a leading connection up and gets evicted then refetched (the
-	// post-seek churn). Rounded UP so a 14-piece window floors at 5 behind, straddling
-	// the observed read-ahead-vs-decoder gap. See behindFloorDivisor.
-	if floor := (budget + behindFloorDivisor - 1) / behindFloorDivisor; behind < floor {
-		behind = floor
-	}
 	if behind > budget-1 {
 		behind = budget - 1
 	}
@@ -796,7 +776,7 @@ func (c *Cache) prefetchMarginPieces() int {
 // size: at least 1, never more than maxPieces. A small piece size keeps the full
 // cap (a header/index/behind-cushion can span several pieces); a large piece
 // already covers the budget in one, so it shrinks instead of reserving
-// maxPieces*pieceLen. Shared by the head/tail pins and the behind floor.
+// maxPieces*pieceLen. Shared by the head/tail pins.
 func piecesForBytes(wantBytes, plen int64, maxPieces int) int {
 	if plen <= 0 {
 		return 1
