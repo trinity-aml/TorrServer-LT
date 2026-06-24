@@ -315,11 +315,11 @@ func RouteWebPages(route gin.IRouter) {
 		c.Data(200, "text/plain; charset=utf-8", Staticjs2c1f7efe5chunkjsLICENSEtxt)
 	})
 
-	route.GET("/static/js/main.ab95bb5e.chunk.js", func(c *gin.Context) {
-		etag := fmt.Sprintf("%x", md5.Sum(Staticjsmainab95bb5echunkjs))
+	route.GET("/static/js/main.50afb6cb.chunk.js", func(c *gin.Context) {
+		etag := fmt.Sprintf("%x", md5.Sum(Staticjsmain50afb6cbchunkjs))
 		c.Header("Cache-Control", "public, max-age=31536000")
 		c.Header("ETag", etag)
-		c.Data(200, "text/javascript; charset=utf-8", Staticjsmainab95bb5echunkjs)
+		c.Data(200, "text/javascript; charset=utf-8", Staticjsmain50afb6cbchunkjs)
 	})
 
 	route.GET("/static/js/runtime-main.5ed86a79.js", func(c *gin.Context) {

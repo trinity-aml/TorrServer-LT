@@ -133,8 +133,8 @@ var Staticjs2c1f7efe5chunkjs []byte
 //go:embed pages/static/js/2.c1f7efe5.chunk.js.LICENSE.txt
 var Staticjs2c1f7efe5chunkjsLICENSEtxt []byte
 
-//go:embed pages/static/js/main.ab95bb5e.chunk.js
-var Staticjsmainab95bb5echunkjs []byte
+//go:embed pages/static/js/main.50afb6cb.chunk.js
+var Staticjsmain50afb6cbchunkjs []byte
 
 //go:embed pages/static/js/runtime-main.5ed86a79.js
 var Staticjsruntimemain5ed86a79js []byte

@@ -61,13 +61,11 @@ export default function SecondarySettingsComponent({ settings, inputForm }) {
     DisableUpload,
     DisableEndGame,
     EnableLPD,
-    LPDIPv6,
     DownloadRateLimit,
     UploadRateLimit,
     ConnectionsLimit,
     DHTConnectionsLimit,
     PeersListenPort,
-    ResponsiveMode,
     SslPort,
     SslCert,
     SslKey,
@@ -216,16 +214,6 @@ export default function SecondarySettingsComponent({ settings, inputForm }) {
         />
         <FormHelperText margin='none'>{t('SettingsDialog.EnableLPDHint')}</FormHelperText>
       </FormGroup>
-      <FormGroup>
-        <FormControlLabel
-          control={
-            <Switch checked={LPDIPv6} onChange={inputForm} id='LPDIPv6' color='secondary' disabled={!EnableLPD} />
-          }
-          label='LPD IPv6'
-          labelPlacement='start'
-        />
-        <FormHelperText margin='none'>{t('SettingsDialog.EnableLPDIPv6Hint')}</FormHelperText>
-      </FormGroup>
       <TextField
         onChange={inputForm}
         margin='normal'
@@ -343,14 +331,6 @@ export default function SecondarySettingsComponent({ settings, inputForm }) {
           labelPlacement='start'
         />
         <FormHelperText margin='none'>{t('SettingsDialog.EnableDebugHint')}</FormHelperText>
-      </FormGroup>
-      <FormGroup>
-        <FormControlLabel
-          control={<Switch checked={ResponsiveMode} onChange={inputForm} id='ResponsiveMode' color='secondary' />}
-          label={t('SettingsDialog.ResponsiveMode')}
-          labelPlacement='start'
-        />
-        <FormHelperText margin='none'>{t('SettingsDialog.ResponsiveModeHint')}</FormHelperText>
       </FormGroup>
       <br />
       <FormGroup style={{ marginBottom: '20px' }}>

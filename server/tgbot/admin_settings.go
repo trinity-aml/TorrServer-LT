@@ -52,7 +52,7 @@ func sendSettingsMenuText(c tele.Context, uid int64, page string) string {
 	case "1c":
 		msg += " — " + tr(uid, "settings_section_other")
 		msg += "\n\n"
-		msg += fmt.Sprintf("CacheDrop %s · Responsive %s · Proxy %s · UseDisk %s · FSActive %s", boolIcon(s.RemoveCacheOnDrop), boolIcon(s.ResponsiveMode), boolIcon(s.EnableProxy), boolIcon(s.UseDisk), boolIcon(s.ShowFSActiveTorr))
+		msg += fmt.Sprintf("CacheDrop %s · Proxy %s · UseDisk %s · FSActive %s", boolIcon(s.RemoveCacheOnDrop), boolIcon(s.EnableProxy), boolIcon(s.UseDisk), boolIcon(s.ShowFSActiveTorr))
 	case "2":
 		msg += " — " + tr(uid, "settings_page2")
 		msg += "\n\n"
@@ -197,7 +197,6 @@ func sendSettingsMenuKbd(uid int64, page string) *tele.ReplyMarkup {
 			},
 			{
 				{Text: toggleBtn("CacheDrop", s.RemoveCacheOnDrop), Unique: "fset", Data: "cachedrop|1c"},
-				{Text: toggleBtn("Responsive", s.ResponsiveMode), Unique: "fset", Data: "responsive|1c"},
 				{Text: toggleBtn("Proxy", s.EnableProxy), Unique: "fset", Data: "proxy|1c"},
 			},
 			{
@@ -539,8 +538,6 @@ func settingsCallback(c tele.Context, action string) error {
 		sets.EnableDebug = !sets.EnableDebug
 	case "cachedrop":
 		sets.RemoveCacheOnDrop = !sets.RemoveCacheOnDrop
-	case "responsive":
-		sets.ResponsiveMode = !sets.ResponsiveMode
 	case "proxy":
 		sets.EnableProxy = !sets.EnableProxy
 	case "usedisk":

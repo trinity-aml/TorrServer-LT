@@ -83,7 +83,6 @@ type BTSets struct {
 
 	// LPD
 	EnableLPD bool
-	LPDIPv6   bool
 
 	// HTTPS
 	SslPort int
@@ -99,9 +98,6 @@ type BTSets struct {
 	// covers the usual home setup; set explicit entries to harden against a
 	// spoofed header from an untrusted client.
 	TrustedProxies []string
-
-	// Reader
-	ResponsiveMode bool // enable Responsive reader (don't wait pieceComplete)
 
 	// FS
 	ShowFSActiveTorr bool
@@ -208,11 +204,9 @@ func SetDefaultConfig() {
 	sets.RetrackersMode = 1
 	sets.TorrentDisconnectTimeout = 30
 	sets.ReaderReadAHead = 95 // 95%
-	sets.ResponsiveMode = true
 	sets.ShowFSActiveTorr = true
 	sets.StoreSettingsInJson = true
 	sets.EnableLPD = true
-	sets.LPDIPv6 = false
 	// Set default TMDB settings
 	sets.TMDBSettings = TMDBConfig{
 		APIKey:     "",

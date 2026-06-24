@@ -153,7 +153,6 @@ func applyNamedPreset(s *settings.BTSets, name string, uid int64) (bool, string)
 		s.DownloadRateLimit = 0
 		s.UploadRateLimit = 0
 		s.RetrackersMode = 1
-		s.ResponsiveMode = true
 		return true, tr(uid, "preset_applied") + " performance"
 	case "storage", "store", "хранение":
 		s.CacheSize = 64 * 1024 * 1024
@@ -166,7 +165,6 @@ func applyNamedPreset(s *settings.BTSets, name string, uid int64) (bool, string)
 		s.PreloadCache = 75
 		s.ReaderReadAHead = 95
 		s.ConnectionsLimit = 50
-		s.ResponsiveMode = true
 		return true, tr(uid, "preset_applied") + " streaming"
 	case "low", "minimal", "минимум":
 		s.CacheSize = 64 * 1024 * 1024
@@ -257,9 +255,6 @@ func applyPresetKV(s *settings.BTSets, args []string, uid int64) (bool, string) 
 				s.RetrackersMode = v
 				ok = true
 			}
-		case "responsive":
-			s.ResponsiveMode = val == "1" || val == "on" || val == "true" || val == "да" || val == "yes"
-			ok = true
 		case "cachedrop":
 			s.RemoveCacheOnDrop = val == "1" || val == "on" || val == "true" || val == "да" || val == "yes"
 			ok = true
