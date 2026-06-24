@@ -820,9 +820,10 @@ func (c *Cache) readerWindowPieces() (behind, ahead int) {
 	}
 	// Carve out the EOF seek index pinned outside the window (tailReserve, held the
 	// whole stream): total resident = window + tail pin must stay within CacheSize.
-	// Skip the subtraction on a tiny cache so the window never drops below its floor
-	// (the tail then shares the budget instead of shrinking the window to nothing).
-	if tail := c.tailPinPieces(); budget-tail >= streamWindowFloorPieces {
+	// Use the BUDGET footprint (excludes the optional PadTailPartial piece, which is meant
+	// to run over budget). Skip the subtraction on a tiny cache so the window never drops
+	// below its floor (the tail then shares the budget instead of shrinking it to nothing).
+	if tail := c.tailBudgetPieces(); budget-tail >= streamWindowFloorPieces {
 		budget -= tail
 	}
 	behind = int((int64(budget)*(100-prc) + 50) / 100) // rounded share of the budget
@@ -885,15 +886,29 @@ func (c *Cache) headPinPieces() int {
 	return piecesForBytes(streamHeaderPinBytes, c.PieceLength, streamHeaderPinPieces)
 }
 
-// tailPinPieces is the UPPER BOUND on the EOF-index pin in pieces — what the window
-// budget reserves against (readerWindowPieces) and how groupReaderSnaps recognises a
-// tail reader. It is ceil(tailBytesFor / pieceLen): the field spec pins 5 MB (or one
-// whole piece when pieces are larger), which on the common 4 MB pieces is 2 — enough
-// to cover the AVI idx1 even when it straddles a boundary (it lived in 144..145).
-// Capped by maxTailPinPieces so a pathologically small piece size can't swallow the
-// window. tailReserve computes the exact per-file range; this is its upper bound.
-func (c *Cache) tailPinPieces() int {
+// tailBudgetPieces is the tail's footprint that the WINDOW budget reserves against
+// (readerWindowPieces). It is the NORMAL pin size and deliberately excludes the optional
+// PadTailPartial piece, so that padding runs OVER the cache budget (filling the slack a
+// short last piece leaves) instead of shrinking the readahead window.
+func (c *Cache) tailBudgetPieces() int {
 	return TailPiecesFor(c.PieceLength)
+}
+
+// tailPinPieces is the UPPER BOUND on the EOF-index pin in pieces — what tailReserve
+// clamps to and how groupReaderSnaps recognises a tail reader. It is ceil(tailBytesFor /
+// pieceLen): the field spec pins 5 MB (or one whole piece when pieces are larger), which
+// on the common 4 MB pieces is 2 — enough to cover the AVI idx1 even when it straddles a
+// boundary (it lived in 144..145). When PadTailPartial is enabled it allows ONE more
+// piece (tailReserve only uses it for a short partial last piece). Capped by
+// maxTailPinPieces so a pathologically small piece size can't swallow the window.
+func (c *Cache) tailPinPieces() int {
+	n := TailPiecesFor(c.PieceLength)
+	if c.PieceLength > 0 {
+		if s := settings.BTsets(); s != nil && s.PadTailPartial {
+			n++
+		}
+	}
+	return n
 }
 
 // TailPiecesFor is the number of pieces pinned at the file END for the EOF seek index,

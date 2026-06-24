@@ -671,6 +671,16 @@ func (r *Reader) tailReserve() [2]int {
 		tailBytes = r.file.Length
 	}
 	first := int((r.file.Offset + r.file.Length - tailBytes) / plen)
+	// Optional PadTailPartial: when this file's LAST piece is a SHORT partial — smaller
+	// than a full piece AND under 5 MB — it leaves the cache up to a near-full-piece short
+	// of CacheSize (8 MB pieces with a 1 MB final piece cap it at 57 MB). Pin one EXTRA
+	// piece to fill that slack. It runs over budget (tailBudgetPieces excludes it), so the
+	// readahead window is unchanged; tailPinPieces allows the +1 so the clamp below keeps it.
+	if s := settings.BTsets(); s != nil && s.PadTailPartial {
+		if lastBytes := (r.file.Offset + r.file.Length) - int64(last)*plen; lastBytes < plen && lastBytes < streamTailMinBytes {
+			first--
+		}
+	}
 	if floor := last - r.cache.tailPinPieces() + 1; first < floor {
 		first = floor // bound to the (capped) pin span so byte range and count agree
 	}

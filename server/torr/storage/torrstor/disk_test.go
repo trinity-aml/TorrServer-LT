@@ -559,3 +559,41 @@ func TestTailPiecesFor(t *testing.T) {
 		}
 	}
 }
+
+// TestTailReserve_PadTailPartial verifies the optional PadTailPartial setting: when the
+// file's last piece is a SHORT partial (smaller than a full piece AND under 5 MB), the
+// tail pin gains one EXTRA piece so the cache fills the budget a short final piece would
+// otherwise leave short. Off by default (one piece for >5 MB pieces); on, it is two.
+func TestTailReserve_PadTailPartial(t *testing.T) {
+	const MB = int64(1) << 20
+	plen := 8 * MB
+	prev := settings.BTsets()
+	t.Cleanup(func() { settings.StoreBTsets(prev) })
+
+	s := NewStorage()
+	h := mkHash(0xF1)
+	// File ends 1 MB into the last piece (582): pieces 0..582, last piece = 1 MB partial.
+	const numPieces = 583
+	fileLen := int64(582)*plen + 1*MB
+	s.callbackOpen(1, h, numPieces, plen)
+	c := s.CacheByHash(h)
+	r := &Reader{cache: c, file: FileInfo{Offset: 0, Length: fileLen}}
+
+	// Off (default): tail is the single 1 MB last piece [582..582].
+	settings.StoreBTsets(&settings.BTSets{UseDisk: false, CacheSize: 64 * MB, ReaderReadAHead: 95, PadTailPartial: false})
+	if tr := r.tailReserve(); tr != [2]int{582, 582} {
+		t.Fatalf("PadTailPartial off: tailReserve = %v, want [582 582]", tr)
+	}
+
+	// On: a short partial last piece pulls in one more piece [581..582].
+	settings.StoreBTsets(&settings.BTSets{UseDisk: false, CacheSize: 64 * MB, ReaderReadAHead: 95, PadTailPartial: true})
+	if tr := r.tailReserve(); tr != [2]int{581, 582} {
+		t.Fatalf("PadTailPartial on: tailReserve = %v, want [581 582]", tr)
+	}
+
+	// On but a FULL last piece (file ends exactly on the boundary): no padding.
+	rFull := &Reader{cache: c, file: FileInfo{Offset: 0, Length: int64(numPieces) * plen}}
+	if tr := rFull.tailReserve(); tr != [2]int{582, 582} {
+		t.Fatalf("PadTailPartial on, full last piece: tailReserve = %v, want [582 582]", tr)
+	}
+}

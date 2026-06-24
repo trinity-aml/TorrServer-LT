@@ -41,7 +41,7 @@ export default function PrimarySettingsComponent({
   updateSettings,
 }) {
   const { t } = useTranslation()
-  const { UseDisk, TorrentsSavePath, RemoveCacheOnDrop, PreloadBufferEnd } = settings || {}
+  const { UseDisk, TorrentsSavePath, RemoveCacheOnDrop, PreloadBufferEnd, PadTailPartial } = settings || {}
   const preloadCacheSize = Math.round((cacheSize / 100) * preloadCachePercentage)
 
   return (
@@ -118,6 +118,12 @@ export default function PrimarySettingsComponent({
           variant='outlined'
           fullWidth
         />
+
+        <FormControlLabel
+          control={<Switch checked={!!PadTailPartial} onChange={inputForm} id='PadTailPartial' color='secondary' />}
+          label={t('SettingsDialog.PadTailPartial')}
+        />
+        <small style={{ display: 'block', opacity: 0.7 }}>{t('SettingsDialog.PadTailPartialHint')}</small>
       </div>
 
       {UseDisk ? (

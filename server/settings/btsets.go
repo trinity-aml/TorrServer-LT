@@ -31,6 +31,13 @@ type BTSets struct {
 	ReaderReadAHead  int   // in percent, 5%-100%, [...S__X__E...] [S-E] not clean
 	PreloadCache     int   // in percent
 	PreloadBufferEnd int64 // tail buffer in bytes (MP4 moov / MKV cues), def 4 MB
+	// PadTailPartial: when the file's LAST piece is a SHORT partial (smaller than a
+	// full piece AND under 5 MB), pin one EXTRA piece at the tail. A short last piece
+	// otherwise leaves the cache a near-full-piece short of CacheSize (e.g. 8 MB pieces
+	// with a 1 MB final piece cap the cache at 57 MB instead of 64); the extra pinned
+	// piece fills that slack. Off by default — it lets the resident set run up to one
+	// piece over CacheSize.
+	PadTailPartial bool
 
 	// Disk
 	UseDisk           bool
