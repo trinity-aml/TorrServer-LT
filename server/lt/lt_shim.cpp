@@ -14,6 +14,8 @@
 #include <libtorrent/alert.hpp>
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/error_code.hpp>
+#include <libtorrent/extensions/smart_ban.hpp>
+#include <libtorrent/extensions/ut_metadata.hpp>
 #include <libtorrent/ip_filter.hpp>
 #include <libtorrent/magnet_uri.hpp>
 #include <libtorrent/session.hpp>
@@ -509,9 +511,18 @@ lt_session lt_session_new(const char* settings_json) {
         lt::session_params params;
         params.settings.set_int(lt::settings_pack::alert_mask, LT_ALERT_DEFAULT);
 
+        // PEX (peer exchange) is libtorrent's ut_pex PLUGIN, not a settings_pack
+        // toggle, so it can't ride in the settings JSON. We carry the user's choice
+        // in a shim-private key "tsl_disable_pex" and strip it before the settings
+        // pass (otherwise it would be reported as an unknown setting).
+        bool disable_pex = false;
         if (settings_json && *settings_json) {
             try {
                 auto j = json::parse(settings_json);
+                if (auto it = j.find("tsl_disable_pex"); it != j.end()) {
+                    if (it->is_boolean()) disable_pex = it->get<bool>();
+                    j.erase(it);
+                }
                 std::string warn;
                 json_into_settings(j, params.settings, &warn);
                 if (!warn.empty()) g_last_error = "settings warnings: " + warn;
@@ -525,8 +536,20 @@ lt_session lt_session_new(const char* settings_json) {
         // disk_io constructor before the session boots.
         tsl_install_disk_io_on(params);
 
+        // session_params::extensions defaults to {ut_pex, ut_metadata, smart_ban}.
+        // To honour DisablePEX, drop the default plugin set and re-add only metadata
+        // (needed for magnet links) and smart_ban — leaving ut_pex out so the session
+        // never exchanges peers. The add_default_plugins ctor flag has no effect on the
+        // session_params overload, so the plugin set is governed solely by .extensions.
         auto slot = std::make_shared<session_slot>();
-        slot->s = std::make_unique<lt::session>(std::move(params));
+        if (disable_pex) {
+            params.extensions.clear();
+            slot->s = std::make_unique<lt::session>(std::move(params));
+            slot->s->add_extension(&lt::create_ut_metadata_plugin);
+            slot->s->add_extension(&lt::create_smart_ban_plugin);
+        } else {
+            slot->s = std::make_unique<lt::session>(std::move(params));
+        }
 
         int64_t id = g_next_sess++;
         {

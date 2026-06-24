@@ -379,7 +379,9 @@ func buildSessionConfig() (lt.SessionConfig, error) {
 	if s.DHTConnectionsLimit > 0 {
 		cfg["dht_max_peers"] = s.DHTConnectionsLimit
 	}
-	cfg["enable_pex"] = !s.DisablePEX
+	// PEX is the ut_pex PLUGIN, not a settings_pack key (enable_pex doesn't exist) —
+	// the shim reads this private flag at session creation to drop the ut_pex plugin.
+	cfg["tsl_disable_pex"] = s.DisablePEX
 	cfg["enable_lsd"] = s.EnableLPD
 	cfg["enable_upnp"] = !s.DisableUPNP
 	cfg["enable_natpmp"] = !s.DisableUPNP
