@@ -27,7 +27,7 @@
   "ApiDocs": "Documentație API",
   "B": "B",
   "bps": "bps",
-  "Buffer": "Buffer de preîncărcare / Cache",
+  "Buffer": "Cache / Descărcare",
   "BufferNote": "Setați Preîncărcare cache înainte de redare > 32 MB în setări pentru a modifica mărimea preîncărcării.",
   "Cache": "Cache",
   "Cancel": "Anulare",

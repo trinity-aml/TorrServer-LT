@@ -27,7 +27,7 @@
   "ApiDocs": "API Docs",
   "B": "B",
   "bps": "bps",
-  "Buffer": "Preload Buffer / Cache",
+  "Buffer": "Cache / Download",
   "BufferNote": "Set Preload Cache Before Play > 32 MB in settings to change preload size",
   "Cache": "Cache",
   "Cancel": "Cancel",

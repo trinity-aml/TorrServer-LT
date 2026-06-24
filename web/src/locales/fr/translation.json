@@ -27,7 +27,7 @@
   "ApiDocs": "Documentation API",
   "B": "o",
   "bps": "bit/s",
-  "Buffer": "Tampon de préchargement / Cache",
+  "Buffer": "Cache / Téléchargement",
   "BufferNote": "Définissez le cache de préchargement avant la lecture > 32 Mo dans les paramètres pour modifier la taille de préchargement",
   "Cache": "Cache",
   "Cancel": "Annuler",
