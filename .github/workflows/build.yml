@@ -5,8 +5,9 @@ name: build
 # macOS is built natively on macos runners in build-macos.yml.
 
 on:
-  push:
-    branches: [master]
+  # No `push` trigger: the full cross-compile does NOT run on every push to
+  # master. Build manually (workflow_dispatch) or via a release tag, which
+  # reuses this workflow through ts_release.yml's workflow_call.
   pull_request:
     branches: [master]
   workflow_dispatch:
