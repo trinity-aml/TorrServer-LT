@@ -15,8 +15,6 @@ import { echoHost } from 'utils/Hosts'
 import Div100vh from 'react-div-100vh'
 import axios from 'axios'
 import TorrentList from 'components/TorrentList'
-import DonateSnackbar from 'components/Donate'
-import DonateDialog from 'components/Donate/DonateDialog'
 import useChangeLanguage from 'utils/useChangeLanguage'
 import { ThemeProvider as MuiThemeProvider } from '@material-ui/core/styles'
 import { ThemeProvider as StyledComponentsThemeProvider } from 'styled-components'
@@ -33,13 +31,10 @@ import Sidebar from './Sidebar'
 import PWAFooter from './PWAFooter'
 import { PWAInstallationGuide } from './PWAInstallationGuide'
 
-const snackbarIsClosed = JSON.parse(localStorage.getItem('snackbarIsClosed'))
-
 export const DarkModeContext = createContext()
 
 export default function App() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false)
-  const [isDonationDialogOpen, setIsDonationDialogOpen] = useState(false)
   const [isSearchDialogOpen, setIsSearchDialogOpen] = useState(false)
   const [torrServerVersion, setTorrServerVersion] = useState('')
 
@@ -146,7 +141,6 @@ export default function App() {
                   isOffline={isOffline}
                   isLoading={isLoading}
                   isDrawerOpen={isDrawerOpen}
-                  setIsDonationDialogOpen={setIsDonationDialogOpen}
                   setGlobalFilterCategory={setGlobalFilterCategory}
                 />
 
@@ -158,19 +152,11 @@ export default function App() {
                   sortCategory={globalCategoryFilter}
                 />
 
-                <PWAFooter
-                  isOffline={isOffline}
-                  isLoading={isLoading}
-                  setIsDonationDialogOpen={setIsDonationDialogOpen}
-                />
-
-                {/* <MuiThemeProvider theme={lightTheme}> */}
-                {isDonationDialogOpen && <DonateDialog onClose={() => setIsDonationDialogOpen(false)} />}
-                {/* </MuiThemeProvider> */}
+                <PWAFooter isOffline={isOffline} isLoading={isLoading} />
 
                 {isSearchDialogOpen && <SearchDialog handleClose={() => setIsSearchDialogOpen(false)} />}
 
-                {snackbarIsClosed ? checkIsIOS() && !isStandaloneApp && <PWAInstallationGuide /> : <DonateSnackbar />}
+                {checkIsIOS() && !isStandaloneApp && <PWAInstallationGuide />}
               </AppWrapper>
             </Div100vh>
           </StyledComponentsThemeProvider>
