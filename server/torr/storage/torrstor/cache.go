@@ -847,6 +847,15 @@ func (c *Cache) readerWindowPieces() (behind, ahead int) {
 	return behind, ahead
 }
 
+// ReadaheadPieces is the forward streaming window in pieces — what a reader's
+// window will reach ahead of the playhead. Exported so the preload can size its
+// poll-gap prefetch (torr/preload.go) the same way the joining reader's window
+// will, keeping the two consistent.
+func (c *Cache) ReadaheadPieces() int {
+	_, ahead := c.readerWindowPieces()
+	return ahead
+}
+
 // prefetchMarginPieces is the libtorrent deadline-pipeline lookahead the eviction
 // keeps protected past the window, in whole pieces covering prefetchMarginBytes,
 // capped so it can't dominate the cache on a small piece size.

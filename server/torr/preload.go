@@ -42,6 +42,34 @@ const (
 	defaultConnectionsLimit = 50
 )
 
+// headDeadlineLeadPieces is how many pieces at the FRONT of the head get a
+// time-critical deadline (the racing lead). The rest of the head is left at
+// priority 7 with NO deadline and filled in piece order by the sequential
+// picker (SetSequentialDownload, enabled at preload start). Deadlining the WHOLE
+// head — 30+ pieces all inside ~300 ms — floods libtorrent's time-critical queue
+// with unmeetable deadlines, which on a small/slow swarm makes the picker churn
+// (duplicate block requests) and the fill stall, the same collapse the streaming
+// reader avoids with its gentle deadline ramp (see windowPriority). Concentrating
+// the deadlines on the lead races the playback start in while the remainder fills
+// in order behind it — so the gate's last piece is the natural sequential tail,
+// not a random rare middle straggler that holds the bar at 99%.
+const headDeadlineLeadPieces = 8
+
+// preloadWarmGrace is how long the &preload path keeps the swarm hot and prefetches
+// a readahead window PAST the head after the gate releases, bridging the gap until
+// the player connects. The &preload client (TorrServe/Lampa) polls Stat→Working,
+// then launches a SEPARATE external-player /play request ~1-3s later; without this
+// the server goes cold the instant the gate releases (priorities 0, peer cap
+// restored, swarm idle) and that whole gap is dead air, so when the player finally
+// connects it must re-ramp the swarm from scratch while it drains the thin head —
+// the "player opened but playback is slow to start" stall. The linger ends early
+// the moment a streaming reader takes over, and is bounded to this one file and
+// this short window so it can't recreate the multi-file "every episode downloading
+// at once" leak. Not used on the &play path (probe=false): there the reader
+// connects in the SAME request right after the gate, so there is no gap to bridge
+// and lingering would only delay the stream.
+const preloadWarmGrace = 8 * time.Second
+
 // Preload (Torrent method) eagerly downloads the first `size` bytes of file
 // `index` so playback starts with a buffer. Because the torrent sits at piece
 // priority 0 (lazy streaming, see signalGotInfo), this is what actually pulls
@@ -207,6 +235,22 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64, probe bool
 		}
 	}
 
+	// prioritiseNoDeadline raises priority 7 (with the same have-reconcile as
+	// prioritise) but sets NO deadline: the piece is left to the sequential picker
+	// to fill in order behind the deadlined lead, instead of joining the
+	// time-critical set. Any stale deadline from a prior preload is cleared so it
+	// can't keep the piece time-critical. Used for the head past the racing lead.
+	prioritiseNoDeadline := func(pieces []int) {
+		for _, p := range pieces {
+			if !cache.Have(p) && lh.HasPiece(p) {
+				_ = lh.WeDontHave(p, 7) // un-have + top priority, atomically
+			} else {
+				_ = lh.SetPiecePriority(p, 7)
+			}
+			_ = lh.ResetPieceDeadline(p)
+		}
+	}
+
 	// Reserve + protect head + tail window (both computed above) now.
 	// On SUCCESS we deliberately do NOT clear the reservation here. The buffer
 	// (head+tail) can be larger than the configured CacheSize — e.g. PreloadCache
@@ -228,18 +272,69 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64, probe bool
 		}
 	}()
 
-	// Prioritise + start downloading the HEAD FIRST, before moov detection. moov
-	// detection (below) reads container header pieces and can block up to 30s
-	// fetching them — running it ahead of the head serialised that fetch in front
-	// of the playback buffer, so on a cold torrent the head didn't even start
-	// downloading for ~30s (verified: head sat at piece 0 only). With the head
-	// prioritised and the swarm kicked first, detection overlaps the head fill.
-	// Two-phase (&preload): only the small probe head goes first; the rest of the
-	// head is prioritised after ffprobe, in the gate loop below.
+	// Sequential download ON for the fill: with only the head/tail prioritised
+	// (the rest of the torrent is priority 0), this makes the head's non-deadlined
+	// remainder fill strictly in piece order behind the deadlined lead, instead of
+	// the picker scattering blocks across the whole head at once. Matches what the
+	// streaming reader sets (NewReader) so the mode carries straight through the
+	// preload→stream hand-off. Selective priorities keep it scoped to this file's
+	// window; deadlines still override it for the lead and the EOF tail.
+	_ = lh.SetSequentialDownload(true)
+
+	// prioritiseTail raises priority + deadlines on the EOF index window [tf,tl]
+	// (the pieces not already in the head) and reserves it. The order is TAIL →
+	// HEAD → rest of preload: the player must read the container index (MKV cues /
+	// MP4 moov / AVI idx1, at the file END) to parse the container and on every
+	// seek, so making it the FIRST thing resident means opening and seeking never
+	// block on a late index. Its deadline ramp starts at 0 (most urgent); the head's
+	// ramp starts after the tail (tailExtra), so the head is raced right behind the
+	// index, and the head's non-deadlined remainder fills in piece order via the
+	// sequential picker. Also called later by moov detection to refine the range.
+	prioritiseTail := func(tf, tl int) {
+		var tailPieces []int
+		for p := tf; p <= tl; p++ {
+			if p < headFirst || p > headLast {
+				tailPieces = append(tailPieces, p)
+			}
+		}
+		if len(tailPieces) > 0 {
+			// Always keep the end-of-file tail (what the start gate waits for)
+			// reserved alongside head and the passed range, so a moov refinement
+			// to a different region never un-protects the gated index piece.
+			cache.SetPreloadReserve([][2]int{{headFirst, headLast}, {tailFirst, tailLast}, {tf, tl}})
+			prioritise(tailPieces, 0)
+		}
+	}
+
+	// Tail (EOF index) FIRST. tailExtra is how many tail pieces carry the leading
+	// deadlines, so the head's ramp starts right after them.
+	tailExtra := 0
+	for p := tailFirst; p <= tailLast; p++ {
+		if p < headFirst || p > headLast {
+			tailExtra++
+		}
+	}
+	prioritiseTail(tailFirst, tailLast)
+
+	// Then the HEAD, sequential behind the tail (still before moov detection, which
+	// runs CONCURRENTLY below and must not serialise in front of the playback
+	// buffer). Only the leading headDeadlineLeadPieces carry deadlines (the racing
+	// lead), starting after the tail; the rest of the head is priority 7 without a
+	// deadline and fills in piece order via the sequential picker — so the
+	// time-critical set stays small (tail + head lead) and the fill order is
+	// tail → head → rest of preload. Two-phase (&preload): only the small probe head
+	// goes first; the rest of the head is prioritised after ffprobe, in the gate loop.
 	if twoPhase {
-		prioritise(headPieces[:probeHeadCount], 0)
+		prioritise(headPieces[:probeHeadCount], tailExtra)
 	} else {
-		prioritise(headPieces, 0)
+		lead := headDeadlineLeadPieces
+		if lead > len(headPieces) {
+			lead = len(headPieces)
+		}
+		prioritise(headPieces[:lead], tailExtra)
+		if lead < len(headPieces) {
+			prioritiseNoDeadline(headPieces[lead:])
+		}
 	}
 
 	// libtorrent hack (cf. elementum): pause+resume kicks the piece picker so it
@@ -284,35 +379,6 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64, probe bool
 			}
 		}()
 	}
-
-	// Tail buffer: the player must read the container index (MP4 moov atom, MKV
-	// cues) — usually at the END of the file — before it can start or seek.
-	// prioritiseTail reserves + raises priority on the tail window [tf,tl] (the
-	// pieces not already in the head), ordered STRICTLY AFTER the head: the
-	// deadline ramp continues from headCount, so every head piece stays more
-	// urgent and the fast peers fill the head first; the tail takes the leftover
-	// queue slots (a deadline-0 tail used to compete head-on with piece 0 — worse
-	// on multi-file, where the tail's last piece is the boundary piece shared with
-	// the next file and can't complete quickly anyway).
-	prioritiseTail := func(tf, tl int) {
-		var tailPieces []int
-		for p := tf; p <= tl; p++ {
-			if p < headFirst || p > headLast {
-				tailPieces = append(tailPieces, p)
-			}
-		}
-		if len(tailPieces) > 0 {
-			// Always keep the end-of-file tail (what the start gate waits for)
-			// reserved alongside head and the passed range, so a moov refinement
-			// to a different region never un-protects the gated index piece.
-			cache.SetPreloadReserve([][2]int{{headFirst, headLast}, {tailFirst, tailLast}, {tf, tl}})
-			prioritise(tailPieces, headCount)
-		}
-	}
-
-	// Prioritise the tail (EOF index) window NOW so it downloads alongside the
-	// head and the progress/gate loop below can start immediately.
-	prioritiseTail(tailFirst, tailLast)
 
 	// For MP4 the exact moov range can be auto-detected and buffered precisely (its
 	// size depends on the video, not the piece size). Run it CONCURRENTLY: LocateMoov
@@ -420,7 +486,10 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64, probe bool
 					go t.probeMediaInfo(index)
 				}
 				if probeHeadLast < headLast {
-					prioritise(headPieces[probeHeadCount:], probeHeadCount)
+					// The probe head (deadlined above) is the racing lead; the rest of the
+					// head fills in piece order via the sequential picker — no deadline, so
+					// it doesn't pile onto the time-critical set.
+					prioritiseNoDeadline(headPieces[probeHeadCount:])
 				}
 			}
 		}
@@ -473,6 +542,56 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64, probe bool
 	}
 	t.mu.Unlock()
 
+	// Poll-gap prefetch (&preload path only). Keep the burst alive and build a
+	// readahead window PAST the head while the polling client launches its player,
+	// so the swarm doesn't go cold in the 1-3s gap before the reader connects (see
+	// preloadWarmGrace). Skipped on the &play path (probe=false), where the reader
+	// connects in the same request, and skipped once a stream is already live.
+	var warmPieces []int
+	if probe && preloadOK && cache.StreamingReaders() == 0 {
+		// Only prefetch what fits in the cache ALONGSIDE the protected head+tail —
+		// at a fat PreloadCache the head already fills the budget, leaving no room,
+		// so we'd just churn pieces in and straight back out. budget/used in pieces.
+		budget := int(0)
+		if s := settings.BTsets(); s != nil && s.CacheSize > 0 {
+			budget = int(s.CacheSize / plen)
+		}
+		used := (headLast - headFirst + 1) + (tailLast - tailFirst + 1)
+		room := budget - used
+		warmCount := min(cache.ReadaheadPieces(), room)
+		fileLast := clamp(int((f.Offset + f.Length - 1) / plen))
+		for p := headLast + 1; p <= headLast+warmCount && p <= fileLast; p++ {
+			if p < tailFirst { // the tail is already pinned/deadlined — don't double-touch
+				warmPieces = append(warmPieces, p)
+			}
+		}
+	}
+	if len(warmPieces) > 0 {
+		warmCtx, warmCancel := context.WithTimeout(context.Background(), preloadWarmGrace)
+		warmTick := time.NewTicker(time.Second)
+		lead := min(headDeadlineLeadPieces, len(warmPieces))
+		for {
+			// Re-assert each tick: deadlines are relative to now and expire. The lead of
+			// the prefetch races (deadlines); the rest fills in order via sequential.
+			prioritise(warmPieces[:lead], 0)
+			if lead < len(warmPieces) {
+				prioritiseNoDeadline(warmPieces[lead:])
+			}
+			if cache.StreamingReaders() > 0 { // the player connected — it owns scheduling now
+				break
+			}
+			select {
+			case <-warmCtx.Done(): // grace elapsed or torrent closing
+			case <-t.closeCh:
+			case <-warmTick.C:
+				continue
+			}
+			break
+		}
+		warmTick.Stop()
+		warmCancel()
+	}
+
 	// Hand the buffer back to reader-driven scheduling: drop the preload's forced
 	// priority + deadline on every gate piece (SetPiecePriority 0 also clears the
 	// piece's deadline in libtorrent). Without this the head+tail pieces stay at
@@ -483,7 +602,12 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64, probe bool
 	// cached (the preload reserve, then the joining reader, protect them); the
 	// active file's reader re-raises priority on its live window via
 	// scheduleWindow, so the played file is unaffected while idle files go quiet.
+	// The poll-gap prefetch window is released the same way (it never joined the
+	// reserve, so it is plain prefetch the joining reader's window re-covers).
 	for _, p := range gatePieces {
+		_ = lh.SetPiecePriority(p, 0)
+	}
+	for _, p := range warmPieces {
 		_ = lh.SetPiecePriority(p, 0)
 	}
 

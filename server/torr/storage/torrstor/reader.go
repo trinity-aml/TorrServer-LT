@@ -353,11 +353,20 @@ func (r *Reader) Read(p []byte) (int, error) {
 		piece := int(abs / plen)
 		pieceOff := abs - int64(piece)*plen
 
-		if err := r.ensurePieceLocked(piece); err != nil {
+		// Serve loaded chunks immediately. If this Read has already produced bytes and
+		// the NEXT piece isn't resident yet, hand back what we have instead of blocking
+		// on it — io.Copy simply calls Read again, which then parks on this exact piece.
+		// So on a seek into a partly-cached region the player gets the resident chunks
+		// at once and we only ever wait for the single piece it needs next, never for
+		// the rest of the readahead window to fill. With nothing read yet (written == 0)
+		// we must block: this is the very piece the client asked for.
+		if !r.cache.Have(piece) {
 			if written > 0 {
 				break
 			}
-			return 0, err
+			if err := r.ensurePieceLocked(piece); err != nil {
+				return 0, err
+			}
 		}
 
 		n, err := r.cache.readPiece(piece, pieceOff, p[written:int(want)])
