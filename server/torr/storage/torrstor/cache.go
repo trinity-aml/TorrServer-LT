@@ -23,6 +23,16 @@ const refetchDebounceSec = 3
 // doesn't shove the window ahead onto its leading read-ahead connection.
 const anchorHoldSec = 2
 
+// blockedLeadPieces is how many pieces of forward read-ahead to force for a reader
+// parked on a seek target that lies OUTSIDE every active window — a forward seek the
+// held group anchor has not committed to yet (the pre-seek connection still pins it
+// low) or a backward seek. Without a short lead only the single target piece downloads
+// fast and the player limps one piece at a time until the anchor catches up; this lets
+// playback actually START at the new position. Kept small (≈8 MB) so the brief overlap
+// with the dying old window can't blow the cache; the full window takes over once the
+// anchor commits (≤ anchorHoldSec).
+const blockedLeadPieces = 8
+
 // staleReaderSec is how long (seconds) a connection may go without a Read before
 // the playhead maths ignores it (when the device still has an active connection).
 // A forward seek abandons the old connections, which linger before closing and
@@ -580,9 +590,22 @@ func (c *Cache) applyStreamPriorities() {
 	// the buffer is building (pieces just ahead cached) we must keep the window's deadlines
 	// so the readahead keeps filling, or sustained playback would never build a buffer.
 	waitSet := make(map[string]map[int]bool)
+	blocked := make(map[int]int) // piece a reader's Read is parked on RIGHT NOW -> that reader's file last piece
 	for _, r := range rs {
 		wp := int(r.waitPiece.Load())
-		if wp < 0 || c.Have(wp+1) || c.Have(wp+2) {
+		if wp < 0 || c.Have(wp) {
+			continue
+		}
+		// Always remember it as blocked so the force loop below guarantees it downloads,
+		// even if the anchor leaves it outside every window (e.g. a near-EOF seek pinned
+		// to a stale lower reader). Stash the reader's file last piece so the forward lead
+		// can't run past the end of this file into the next one.
+		blocked[wp] = r.fileLastPiece()
+		// waitSet (deadline-suppress the REST of the window so the swarm rushes this one
+		// piece) only kicks in on a fresh seek / full drain — when the readahead just
+		// ahead is still empty. Once the buffer is building (wp+1/wp+2 resident) keep the
+		// window's deadlines so the readahead keeps filling for sustained playback.
+		if c.Have(wp+1) || c.Have(wp+2) {
 			continue
 		}
 		if waitSet[r.group] == nil {
@@ -675,16 +698,33 @@ func (c *Cache) applyStreamPriorities() {
 		}
 	}
 	// A piece a reader is BLOCKED on is needed NOW: force it to top priority + the most
-	// urgent deadline even if it falls outside every window/pin (a held anchor can leave a
-	// fresh seek target out of the window for a tick, and a re-read of an evicted region
-	// lands anywhere). Without this the whole-vector PrioritizePieces below would reset the
-	// target to priority 0 and it would never download — the read would hang to timeout.
-	for _, ws := range waitSet {
-		for wp := range ws {
-			raise(wp, ltTopPriority)
-			desired[wp] = 0
-			if !c.Have(wp) && h.HasPiece(wp) {
-				refetch[wp] = struct{}{}
+	// urgent deadline even if it falls outside every window/pin. A held group anchor can
+	// leave a fresh seek target out of the window — especially a near-EOF seek, where the
+	// anchor stays pinned to a stale lower reader and the new (nearEOF) reader is excluded
+	// from the anchor, dropping its target to priority 0 — and a re-read of an evicted
+	// region lands anywhere. Forced UNCONDITIONALLY for every blocked reader, NOT just the
+	// readahead-gated waitSet (which is suppressed the moment wp+1/wp+2 go resident):
+	// without this the whole-vector PrioritizePieces below resets the target to priority 0
+	// and it never downloads — the read hangs to timeout and the stream freezes for good
+	// (a near-end seek did exactly this).
+	for wp, flast := range blocked {
+		// If the blocked piece is already inside an active window/pin (prio > 0) the
+		// window handles the read-ahead — just keep it most-urgent. If it is an ORPHAN
+		// (prio still 0: a forward/backward seek target the anchor hasn't reached), give
+		// it a short forward lead so the player can start playing here, not crawl one
+		// piece at a time. windowPriority(0) == (top, deadline 0) for the target itself.
+		lead := 0
+		if prios[wp] == 0 {
+			lead = blockedLeadPieces
+		}
+		for i := wp; i <= wp+lead && i <= flast && i < c.NumPieces; i++ {
+			prio, dlMs := windowPriority(i - wp)
+			raise(i, prio)
+			if cur, ok := desired[i]; !ok || dlMs < cur {
+				desired[i] = dlMs
+			}
+			if !c.Have(i) && h.HasPiece(i) {
+				refetch[i] = struct{}{}
 			}
 		}
 	}
