@@ -268,11 +268,16 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo, group ...string)
 		// the abandoned region), now cured by scheduleWindow resetting the deadline as
 		// each piece leaves the window.
 		_ = handle.SetSequentialDownload(true)
-		// Hold a high peer cap while streaming so the read-ahead window fills ahead of
-		// playback (a buffer after a seek), not one just-in-time piece at a time. Set
-		// AFTER registerReader (above), and the preload's restore is skipped while a
-		// streaming reader exists, so the boost wins any ordering. unregisterReader
-		// drops it back to the configured limit when the last reader goes.
+	}
+	// Hold a high peer cap while streaming so the read-ahead window fills ahead of
+	// playback (a buffer after a seek), not one just-in-time piece at a time. Applied on
+	// EVERY reader (not just the first via the announce CAS): a series switch streams the
+	// new episode directly with no preload to raise the boost, and unregisterReader drops
+	// the cap to the configured limit whenever the reader set briefly empties — so without
+	// re-applying here the new episode (or a post-gap reconnect) would crawl at the
+	// configured ~50 peers. Idempotent; the preload's restore is skipped while a streaming
+	// reader exists, so the boost wins any ordering.
+	if handle != nil {
 		_ = handle.SetMaxConnections(streamConnLimit())
 	}
 	// Deliberately DON'T scheduleWindow() here. A reader is born at offset 0 and
