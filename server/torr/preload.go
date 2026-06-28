@@ -34,13 +34,14 @@ func isMP4Container(path string) bool {
 // and stay visible while the bulk of the buffer loads.
 const probeHeadBytes = 16 << 20
 
-// preloadConnections is the per-torrent peer cap raised during a preload burst;
-// defaultConnectionsLimit is what it's restored to when ConnectionsLimit isn't
-// configured (mirrors NewBTS's default).
-const (
-	preloadConnections      = 200
-	defaultConnectionsLimit = 50
-)
+// preloadConnections is the per-torrent peer cap held ONLY for the duration of a
+// preload burst. The burst lets many connection attempts run in parallel so the
+// fast peers and seeds attach quickly (filling head/tail fast); the cap is then
+// restored to the user's configured ConnectionsLimit, which makes libtorrent
+// disconnect down to it — keeping the peers it's actively downloading from (the
+// fast contributors) and dropping the dead weight. So the burst both speeds the
+// initial buffer and seeds the limited streaming slots with the fastest peers.
+const preloadConnections = 200
 
 // headDeadlineLeadPieces is how many pieces at the FRONT of the head get a
 // time-critical deadline (the racing lead). The rest of the head is left at
@@ -363,28 +364,24 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64, probe bool
 		_ = lh.ForceDhtAnnounce()
 	}
 
-	// Burst peer connections for the preload. A fresh magnet shows only a
-	// handful of active peers while hundreds are known: torrent_connect_boost
-	// fired at add time when the peer list was still empty, so the swarm now
-	// ramps at the polite steady rate. A high cap during the preload lets many
-	// connection attempts run in parallel, so live peers connect faster despite
-	// the many dead/firewalled ones — which speeds both the fill and the
-	// end-game race for the last piece. Restored to the configured per-torrent
-	// limit once the buffer is in.
-	configuredConns := defaultConnectionsLimit
+	// Widen the peer cap for the duration of the preload ONLY (see preloadConnections):
+	// burst wide to fill the buffer and let libtorrent measure peer rates, then restore
+	// the configured cap on return — UNCONDITIONALLY, right before playback's reader takes
+	// over. This is the ONLY place the server exceeds ConnectionsLimit; during streaming
+	// the configured cap is authoritative (strict). Only burst when no reader is active
+	// (an initial play / explicit &preload), never mid-stream — a running stream keeps its
+	// strict cap and pausing/churning peers would hiccup it.
+	configuredConns := 50
 	if settings.BTsets() != nil && settings.BTsets().ConnectionsLimit > 0 {
 		configuredConns = settings.BTsets().ConnectionsLimit
 	}
-	if cache.ActiveReaders() == 0 && preloadConnections > configuredConns {
-		_ = lh.SetMaxConnections(preloadConnections)
-		// Restore the configured cap ONLY if no streaming reader took over — a joining
-		// reader raises its own streaming boost (NewReader) and must keep it, so the
-		// swarm stays wide enough to fill the read-ahead window ahead of playback.
-		defer func() {
-			if cache.StreamingReaders() == 0 {
-				_ = lh.SetMaxConnections(configuredConns)
-			}
-		}()
+	if cache.ActiveReaders() == 0 {
+		burst := configuredConns
+		if preloadConnections > burst {
+			burst = preloadConnections
+		}
+		_ = lh.SetMaxConnections(burst)
+		defer func() { _ = lh.SetMaxConnections(configuredConns) }()
 	}
 
 	// For MP4 the exact moov range can be auto-detected and buffered precisely (its
