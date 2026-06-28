@@ -251,10 +251,15 @@ public:
     {
         // cb_.write copies the block into the cache synchronously, so `buf`
         // need not outlive this call; only the completion handler is deferred.
-        int put = cb_.write(storage_id_of(s), static_cast<int>(r.piece),
-                            r.start, reinterpret_cast<uint8_t const*>(buf), r.length);
+        (void)cb_.write(storage_id_of(s), static_cast<int>(r.piece),
+                        r.start, reinterpret_cast<uint8_t const*>(buf), r.length);
+        // Never fault on a short write. This is an in-RAM cache: a short copy only
+        // happens if the piece was evicted out from under us (the same eviction race
+        // async_read guards). Returning a storage_error makes libtorrent treat it as
+        // fatal disk corruption and pause the torrent; instead report success. A block
+        // that didn't stick leaves the piece incomplete, so libtorrent re-requests it
+        // (or the hash mismatch below forces a re-download) — never a dead stream.
         lt::storage_error err;
-        if (put != r.length) err = make_io_error("write");
         lt::post(io_, [h = std::move(handler), err]() mutable { h(err); });
         return false;
     }
@@ -393,16 +398,16 @@ private:
             }
             piece_actual = static_cast<int>(it->second.files->piece_size(job.piece));
         }
-        std::vector<char> data(static_cast<size_t>(piece_actual));
+        std::vector<char> data(static_cast<size_t>(piece_actual)); // zero-initialised
         int got = cb_.read(storage_id_of(job.s), static_cast<int>(job.piece),
                            0, reinterpret_cast<uint8_t*>(data.data()), piece_actual);
-        if (got != piece_actual) {
-            auto err = make_io_error("hash:short-read");
-            lt::post(io_, [h = std::move(job.handler), piece = job.piece, err]() mutable {
-                h(piece, lt::sha1_hash{}, err);
-            });
-            return;
-        }
+        // A short read means the piece was evicted from the RAM cache between its
+        // last write and this hash (the bounded hash pool can lag the reap). Do NOT
+        // fault: a storage_error here is read as fatal disk corruption and pauses the
+        // torrent. Instead hash whatever we read, zero-padded — the digest then won't
+        // match the expected hash, so libtorrent simply re-downloads the piece. An
+        // in-RAM cache must never be able to pause the torrent over an eviction.
+        (void)got;
         lt::hasher h;
         h.update(lt::span<char const>(data.data(), piece_actual));
         auto digest = h.final();
