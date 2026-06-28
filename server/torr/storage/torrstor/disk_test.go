@@ -497,7 +497,7 @@ func TestCache_LargePieceCapacityBounded(t *testing.T) {
 	c := s.CacheByHash(h)
 
 	// The window itself must never exceed the configured cache budget (4 pieces).
-	behind, ahead := c.streamWindowPieces()
+	behind, ahead := c.readerWindowPieces()
 	if window := behind + ahead + 1; int64(window)*plen > 64*MB {
 		t.Fatalf("window %d pieces (%d MB) exceeds the 64 MB cache budget", window, int64(window)*plen/MB)
 	}
