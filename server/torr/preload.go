@@ -55,6 +55,13 @@ const (
 // not a random rare middle straggler that holds the bar at 99%.
 const headDeadlineLeadPieces = 8
 
+// stragglerEscalatePieces is how few gate pieces may remain before the wait loop deadlines
+// the still-incomplete ones (deadline 0) to force libtorrent's end-game re-request of their
+// last blocks. Kept small so only the final stragglers are made time-critical — never the
+// bulk head (that floods the queue, see headDeadlineLeadPieces) — which is exactly the
+// situation a deadline is safe and needed: a flaky peer stalling a near-complete piece.
+const stragglerEscalatePieces = 8
+
 // preloadWarmGrace is how long the &preload path keeps the swarm hot and prefetches
 // a readahead window PAST the head after the gate releases, bridging the gap until
 // the player connects. The &preload client (TorrServe/Lampa) polls Stat→Working,
@@ -454,6 +461,22 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64, probe bool
 			got += sz
 		}
 
+		// End-game the final stragglers: once only a few gate pieces remain, deadline each
+		// still-incomplete one (deadline 0 = most urgent) so libtorrent re-requests its
+		// outstanding blocks from every peer. The head past the racing lead carries NO
+		// deadline (deadlining the whole head floods the time-critical queue — see
+		// headDeadlineLeadPieces), so a flaky peer can leave a piece at e.g. 124/128 blocks
+		// for a minute, holding the gate — observed as "switched series and the stream
+		// didn't start". Only a handful of pieces are deadlined here (rem <= a few), so it
+		// can't flood; refreshed each tick until they land. Cheap no-op once done.
+		if rem := gateCount - done; rem > 0 && rem <= stragglerEscalatePieces {
+			for _, p := range gatePieces {
+				if st, ok := snap[p]; !ok || !st.Completed {
+					_ = lh.SetPieceDeadline(p, 0, false)
+				}
+			}
+		}
+
 		// Phase 1 done: the small head + tail are resident. Probe BitRate/Duration
 		// NOW — synchronously, from the just-filled cache, so ffprobe reads the
 		// header (small head) and the duration (EOF tail, even for an unknown-size
@@ -744,6 +767,30 @@ func PreloadOnPlay(reqCtx context.Context, torr *Torrent, index int) {
 			log.TLogln(append([]interface{}{"torr.PreloadOnPlay: index", index}, args...)...)
 		}
 	}
+
+	// Preload fires only at torrent START — the first file played — never again this
+	// session. A multi-file torrent is treated as one unit: once it has started, a play
+	// for ANY file (a series switch, or a return to the start file) streams directly (the
+	// reader's window buffers from the new position), like upstream TorrServer, which
+	// never preloads on a play. This removes the per-switch preload-gate latency (and its
+	// straggler-gate class of stalls) while keeping the initial buffer the user expects
+	// when a torrent first opens. The one exception is a reconnect onto the still-in-flight
+	// INITIAL fill (same file): it must WAIT for that fill, not stream a half-buffer (the
+	// impatient-player reconnect path) — so that case falls through to the gate below.
+	torr.preloadGateMu.Lock()
+	if torr.playStarted {
+		inflightFirstFill := torr.preloadGateDone != nil && torr.preloadGateIndex == index
+		if !inflightFirstFill {
+			torr.preloadGateMu.Unlock()
+			dbg("skip: torrent already started (single-file semantics) — stream directly")
+			return
+		}
+	} else {
+		torr.playStarted = true
+		torr.playStartIndex = index
+	}
+	torr.preloadGateMu.Unlock()
+
 	if cache := torrstor.Global().CacheByHash([20]byte(torr.Hash())); cache != nil && cache.PieceLength > 0 {
 		if f := torr.fileByID(index); f != nil {
 			if hl := preloadHeadLastPiece(f, cache.PieceLength, cache.NumPieces); cache.Have(hl) {

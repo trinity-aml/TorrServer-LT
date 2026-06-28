@@ -63,6 +63,15 @@ type Torrent struct {
 	preloadGateDone  chan struct{}
 	preloadGateLast  time.Time
 
+	// playStarted records that this torrent has begun playback once (on playStartIndex),
+	// so the start-preload fires only at torrent START, not on every series switch: a
+	// multi-file torrent is treated as a single unit. A play for a DIFFERENT file once
+	// started streams directly (the reader's window buffers it), matching upstream
+	// TorrServer, which preloads only on the explicit &preload — never on a play. Guarded
+	// by preloadGateMu; reset implicitly when the torrent is dropped (fresh struct).
+	playStarted    bool
+	playStartIndex int
+
 	DurationSeconds float64
 	BitRate         string
 
