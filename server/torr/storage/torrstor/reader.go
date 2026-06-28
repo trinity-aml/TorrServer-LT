@@ -65,31 +65,14 @@ const reprioritizeInterval = time.Second
 // keeps no matter the settings — so the buffer never collapses to nothing.
 const streamWindowFloorPieces = 4
 
-// streamConnections is the per-torrent peer cap held while a reader STREAMS, so
-// the swarm has enough parallel peers to fill the read-ahead window FASTER than
-// playback consumes it (build a buffer ahead). Without it the limit dropped to the
-// configured ConnectionsLimit (~50) after the preload burst, and on a swarm whose
-// rate ~ the video bitrate the window filled just-in-time, one piece at a time —
-// no buffer after a seek. Mirrors the preload burst (preloadConnections). Restored
-// to the configured limit when the last reader leaves (unregisterReader).
-const streamConnections = 200
-
-// configuredConnLimit is the user's per-torrent peer cap (ConnectionsLimit), the
-// value the boost is restored to once nobody is streaming.
+// configuredConnLimit is the user's authoritative per-torrent peer cap
+// (ConnectionsLimit, default 50). It is never silently exceeded for streaming —
+// the value the user sets is the cap that's actually held.
 func configuredConnLimit() int {
 	if s := settings.BTsets(); s != nil && s.ConnectionsLimit > 0 {
 		return s.ConnectionsLimit
 	}
 	return 50
-}
-
-// streamConnLimit is the peer cap to hold while streaming: the larger of the
-// streaming burst and the user's configured limit (never lower it).
-func streamConnLimit() int {
-	if c := configuredConnLimit(); c > streamConnections {
-		return c
-	}
-	return streamConnections
 }
 
 // prefetchMarginBytes is retired (0): protecting EXTRA pieces past the window for
@@ -269,16 +252,14 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo, group ...string)
 		// each piece leaves the window.
 		_ = handle.SetSequentialDownload(true)
 	}
-	// Hold a high peer cap while streaming so the read-ahead window fills ahead of
-	// playback (a buffer after a seek), not one just-in-time piece at a time. Applied on
-	// EVERY reader (not just the first via the announce CAS): a series switch streams the
-	// new episode directly with no preload to raise the boost, and unregisterReader drops
-	// the cap to the configured limit whenever the reader set briefly empties — so without
-	// re-applying here the new episode (or a post-gap reconnect) would crawl at the
-	// configured ~50 peers. Idempotent; the preload's restore is skipped while a streaming
-	// reader exists, so the boost wins any ordering.
+	// Re-assert the user's configured per-torrent peer cap on every reader. We do NOT
+	// silently raise it for streaming: ConnectionsLimit is an authoritative cap — a user
+	// who lowers it (weak router, metered link) must actually get fewer peers, and one who
+	// wants a fat buffer raises it. Still set here (not only on add) because a series switch
+	// or a post-gap reconnect can briefly empty the reader set, and unregisterReader drops
+	// the cap then; re-applying keeps the new episode from inheriting a stale lower value.
 	if handle != nil {
-		_ = handle.SetMaxConnections(streamConnLimit())
+		_ = handle.SetMaxConnections(configuredConnLimit())
 	}
 	// Deliberately DON'T scheduleWindow() here. A reader is born at offset 0 and
 	// only seeked to the real Range position afterwards by http.ServeContent
