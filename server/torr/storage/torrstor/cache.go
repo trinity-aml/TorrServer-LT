@@ -86,8 +86,12 @@ type Cache struct {
 	// needs the piece again (seek back) clears the mark via clearAbandoned.
 	abandoned map[int]int64
 
-	// per-piece wait channels, closed by SignalPieceComplete when
-	// libtorrent's piece_finished_alert arrives.
+	// per-piece progress channels: closed (= broadcast) by SignalPieceComplete
+	// when libtorrent's piece_finished_alert arrives AND by writePiece on every
+	// block landed on a waited piece, then recreated by the next subscriber.
+	// Waiters (WaitForPiece / WaitForBytes) re-check their predicate and
+	// re-subscribe in a loop, so block-level progress wakes a parked Read the
+	// moment the bytes under its offset arrive — not a whole piece + hash later.
 	waitMu  sync.Mutex
 	waiters map[int]chan struct{}
 
@@ -146,6 +150,20 @@ type Cache struct {
 	// tick. Deadlines are still reconciled (they are relative-to-now and must refresh).
 	lastPrios []int
 
+	// waitFocus is each group's (device's) most recent blocked/seek-target piece,
+	// updated on every reader park and kept for waitFocusLingerMs PAST the reader's
+	// death. A per-chunk player (VLC: one connection per ~100 KB) closes its reader
+	// after every chunk, so a force keyed to LIVE readers alone flaps at the chunk
+	// cadence: in each gap the still-incomplete seek target dropped out of blocked,
+	// the rebuilt vector pushed it back to priority 0, and libtorrent CANCELLED its
+	// in-flight requests — the deadline-0 target finished AFTER its un-deadlined
+	// neighbours and every far seek took ~10s+ (or froze the player for good).
+	// Merging the recent focus into blocked keeps the target + its lead continuously
+	// forced across the gaps; an entry dies by age, by completion (blocked skips a
+	// piece the cache Has), or is overwritten by the group's next park.
+	waitFocusMu sync.Mutex
+	waitFocus   map[string]waitFocusEntry
+
 	// evicting single-flights evictIfOverCapacity: at most one pass runs at a time.
 	// writePiece spawns a pass on EVERY 16 KB block, so without this a fast download
 	// fires hundreds of overlapping passes per second, each doing a full anchor walk
@@ -167,6 +185,22 @@ type group struct {
 	playheadTime int64
 }
 
+// waitFocusEntry is one group's sticky blocked/seek-target piece (see
+// Cache.waitFocus): the piece, its file's piece bounds (for the forward lead and
+// the anchor's virtual-reader classification), and when it was last parked on.
+type waitFocusEntry struct {
+	piece  int
+	ffirst int
+	flast  int
+	atMs   int64
+}
+
+// waitFocusLingerMs is how long a group's wait focus outlives the reader that
+// parked on it — long enough to bridge a per-chunk player's connection gaps
+// (a few seconds while it parses what it got and dials the next chunk), short
+// enough that an abandoned seek stops pulling its target quickly.
+const waitFocusLingerMs = 5000
+
 func newCache(s *Storage, sid int64, hash [20]byte, numPieces int, pieceLength int64) *Cache {
 	return &Cache{
 		storage:     s,
@@ -181,7 +215,37 @@ func newCache(s *Storage, sid int64, hash [20]byte, numPieces int, pieceLength i
 		groups:      map[string]*group{},
 		deadlined:   map[int]bool{},
 		refetchedAt: map[int]int64{},
+		waitFocus:   map[string]waitFocusEntry{},
 	}
+}
+
+// setWaitFocus records the group's current blocked/seek-target piece (called on
+// every reader park; cheap). See Cache.waitFocus for why it must survive the
+// reader itself.
+func (c *Cache) setWaitFocus(group string, piece, ffirst, flast int) {
+	c.waitFocusMu.Lock()
+	c.waitFocus[group] = waitFocusEntry{piece: piece, ffirst: ffirst, flast: flast, atMs: time.Now().UnixMilli()}
+	c.waitFocusMu.Unlock()
+}
+
+// recentWaitFocus returns the group's live focus entry: parked on within
+// waitFocusLingerMs and still incomplete. Expired/completed entries are pruned.
+func (c *Cache) recentWaitFocus(group string) (waitFocusEntry, bool) {
+	c.waitFocusMu.Lock()
+	f, ok := c.waitFocus[group]
+	c.waitFocusMu.Unlock()
+	if !ok {
+		return waitFocusEntry{}, false
+	}
+	if time.Now().UnixMilli()-f.atMs > waitFocusLingerMs || c.Have(f.piece) {
+		c.waitFocusMu.Lock()
+		if cur, ok := c.waitFocus[group]; ok && cur == f {
+			delete(c.waitFocus, group)
+		}
+		c.waitFocusMu.Unlock()
+		return waitFocusEntry{}, false
+	}
+	return f, true
 }
 
 // SignalPieceComplete is invoked from BTServer's alert pump when
@@ -195,6 +259,14 @@ func (c *Cache) SignalPieceComplete(piece int) {
 	if p != nil {
 		p.setComplete(true)
 	}
+	c.signalPieceProgress(piece)
+}
+
+// signalPieceProgress broadcasts to whoever is parked on this piece (close the
+// channel, drop it so the next subscriber makes a fresh one). Fired on piece
+// completion and on every block write to a waited piece; waiters re-check
+// their own predicate, so a spurious wake just re-parks.
+func (c *Cache) signalPieceProgress(piece int) {
 	c.waitMu.Lock()
 	if ch, ok := c.waiters[piece]; ok {
 		close(ch)
@@ -203,12 +275,9 @@ func (c *Cache) SignalPieceComplete(piece int) {
 	c.waitMu.Unlock()
 }
 
-// WaitForPiece blocks until SignalPieceComplete(piece) is called or
-// ctx fires. Returns true on completion, false on timeout/cancel.
-func (c *Cache) WaitForPiece(ctx context.Context, piece int) bool {
-	if c.Have(piece) {
-		return true
-	}
+// subscribePiece returns the piece's current progress channel, creating it if
+// no one is waiting yet.
+func (c *Cache) subscribePiece(piece int) chan struct{} {
 	c.waitMu.Lock()
 	ch, ok := c.waiters[piece]
 	if !ok {
@@ -216,17 +285,65 @@ func (c *Cache) WaitForPiece(ctx context.Context, piece int) bool {
 		c.waiters[piece] = ch
 	}
 	c.waitMu.Unlock()
-	// Recheck after subscribing — Have may have flipped while we were
-	// taking the lock.
-	if c.Have(piece) {
-		return true
+	return ch
+}
+
+// WaitForPiece blocks until the piece is COMPLETE (downloaded + hash-verified)
+// or ctx fires. Returns true on completion, false on timeout/cancel. Loops on
+// the progress channel: it also fires per arriving block, which this waiter
+// doesn't care about, so re-check and re-park.
+func (c *Cache) WaitForPiece(ctx context.Context, piece int) bool {
+	for {
+		if c.Have(piece) {
+			return true
+		}
+		ch := c.subscribePiece(piece)
+		// Recheck after subscribing — Have may have flipped while we were
+		// taking the lock.
+		if c.Have(piece) {
+			return true
+		}
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return false
+		}
 	}
-	select {
-	case <-ch:
-		return true
-	case <-ctx.Done():
-		return false
+}
+
+// WaitForBytes blocks until at least one byte is readable at (piece, off) —
+// the block under the offset has been written, or the piece completed — or ctx
+// fires. This is the responsive-read wait: a seek target is served the moment
+// its first blocks arrive over the wire instead of after the whole piece
+// downloads and hashes.
+func (c *Cache) WaitForBytes(ctx context.Context, piece int, off int64) bool {
+	for {
+		if c.readableAt(piece, off) > 0 {
+			return true
+		}
+		ch := c.subscribePiece(piece)
+		if c.readableAt(piece, off) > 0 { // recheck after subscribing (same race as above)
+			return true
+		}
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return false
+		}
 	}
+}
+
+// readableAt is how many bytes are contiguously readable at (piece, off) right
+// now — the responsive Read gate. 0 when the piece isn't resident or the block
+// under off hasn't arrived yet.
+func (c *Cache) readableAt(piece int, off int64) int64 {
+	c.mu.RLock()
+	p := c.pieces[piece]
+	c.mu.RUnlock()
+	if p == nil {
+		return 0
+	}
+	return p.availableFrom(off)
 }
 
 // registerReader / unregisterReader track active streaming clients so
@@ -355,6 +472,46 @@ func (c *Cache) groupReaderSnaps() map[string][]readerSnap {
 			s.belowHead = true
 		}
 		out[s.group] = append(out[s.group], s)
+	}
+	// Merge each group's recent wait focus as a VIRTUAL active reader at the piece
+	// the device is stalled on. A per-chunk player (VLC) closes its connection after
+	// every ~100 KB, so at any instant the group may have NO live reader at the seek
+	// position: the anchor then never committed to the new position ("no playback
+	// reader — hold the last playhead"), the window kept feeding the OLD position at
+	// full swarm speed, and the seek target crawled on just the blocked-force lead —
+	// far forward seeks took tens of seconds or froze. The virtual snap carries the
+	// same pin classification as a real reader (via the focus file's bounds), so a
+	// park inside the tail pin or the header still doesn't drag the anchor there.
+	c.waitFocusMu.Lock()
+	focuses := make(map[string]waitFocusEntry, len(c.waitFocus))
+	nowMs := time.Now().UnixMilli()
+	for g, f := range c.waitFocus {
+		if nowMs-f.atMs <= waitFocusLingerMs {
+			focuses[g] = f
+		}
+	}
+	c.waitFocusMu.Unlock()
+	for g, f := range focuses {
+		if c.Have(f.piece) {
+			continue
+		}
+		s := readerSnap{group: g, cur: f.piece, ffirst: f.ffirst, flast: f.flast}
+		// isTail/belowHead keep their pin semantics (a park inside a pin is served by
+		// the blocked-force alone; pivoting the window onto a pin churns it), but
+		// deliberately NOT nearEOF: that exclusion guards against the EOF index PROBE
+		// dragging the anchor, and the probe reads the RESIDENT pinned tail — it never
+		// parks. A park near the end is therefore a genuine near-end seek; leaving it
+		// nearEOF kept the anchor away (whenever any non-EOF reader lived), the window
+		// fed the old position, and the near-end seek crawled on the tiny lead alone.
+		if plen > 0 {
+			if tailStart := f.flast - c.tailPinPieces() + 1; f.piece >= tailStart {
+				s.isTail = true
+			}
+		}
+		if f.piece < f.ffirst+c.headPinPieces() {
+			s.belowHead = true
+		}
+		out[g] = append(out[g], s)
 	}
 	return out
 }
@@ -638,38 +795,53 @@ func (c *Cache) applyStreamPriorities() {
 	}
 	c.readersMu.Unlock()
 
-	// Pieces readers are actively BLOCKED on right now (a Read parked on a seek target).
-	// While a group has one, ONLY its wait piece stays time-critical for that group — the
-	// rest of the window drops to priority-only so the whole swarm rushes the piece the
-	// player needs NOW (fast seek), then the window re-deadlines once the wait clears.
-	// Gated on an EMPTY readahead (the next pieces not yet resident): a fresh seek / full
-	// drain is exactly when the player is stuck and wants the current chunk at once; once
-	// the buffer is building (pieces just ahead cached) we must keep the window's deadlines
-	// so the readahead keeps filling, or sustained playback would never build a buffer.
-	waitSet := make(map[string]map[int]bool)
-	blocked := make(map[int]int) // piece a reader's Read is parked on RIGHT NOW -> that reader's file last piece
+	// Pieces readers are blocked on / trickling from (r.waitPiece — STICKY across the
+	// micro-parks of responsive block-level serving, cleared by completion, the next
+	// park, or an explicit Seek; see the field doc: sampling the gap between parks and
+	// dropping the force pushed the still-downloading seek target to priority 0 and the
+	// 7→0→7 flap cancelled its requests — the post-seek freeze).
+	//
+	// NB: there is deliberately NO deadline suppression of the rest of the window here
+	// any more (the old waitSet). It was meant as a brief seek-rush state — "empty
+	// readahead → give the target the whole swarm" — but with responsive serving the
+	// reader LIVES at the wire edge, the readahead test (wp+1/wp+2 resident) is false
+	// essentially always, and the suppression became the PERMANENT state: every push
+	// carried exactly one deadline, the window's ascending ramp never engaged, and
+	// libtorrent's time-critical picker (which is what recruits the fast peers, in
+	// order, across the window) idled — the whole stream crawled at a couple MB/s on a
+	// fast swarm and every seek refilled the buffer at that crawl. The ramp itself is
+	// the flood protection (strictly ascending deadlines, see windowPriority); the
+	// blocked piece still gets deadline 0 + top priority via the force loop below, so
+	// the target is always first without starving the pipeline behind it.
+	blocked := make(map[int]int) // sticky blocked/trickle piece -> that reader's file last piece
 	for _, r := range rs {
 		wp := int(r.waitPiece.Load())
 		if wp < 0 || c.Have(wp) {
 			continue
 		}
-		// Always remember it as blocked so the force loop below guarantees it downloads,
+		// Remember it as blocked so the force loop below guarantees it downloads,
 		// even if the anchor leaves it outside every window (e.g. a near-EOF seek pinned
 		// to a stale lower reader). Stash the reader's file last piece so the forward lead
 		// can't run past the end of this file into the next one.
 		blocked[wp] = r.fileLastPiece()
-		// waitSet (deadline-suppress the REST of the window so the swarm rushes this one
-		// piece) only kicks in on a fresh seek / full drain — when the readahead just
-		// ahead is still empty. Once the buffer is building (wp+1/wp+2 resident) keep the
-		// window's deadlines so the readahead keeps filling for sustained playback.
-		if c.Have(wp+1) || c.Have(wp+2) {
+	}
+	// Merge each group's recent wait focus (see Cache.waitFocus): the blocked force
+	// must survive a per-chunk player's reader churn — its connection (and reader)
+	// dies after every ~100 KB chunk, and without this the still-incomplete seek
+	// target fell out of blocked in every gap, was pushed back to priority 0, and
+	// its in-flight requests were cancelled (the 7→0→7 flap that stalled far seeks).
+	c.waitFocusMu.Lock()
+	nowFocus := time.Now().UnixMilli()
+	for g, f := range c.waitFocus {
+		if nowFocus-f.atMs > waitFocusLingerMs || c.Have(f.piece) {
+			delete(c.waitFocus, g)
 			continue
 		}
-		if waitSet[r.group] == nil {
-			waitSet[r.group] = make(map[int]bool)
+		if _, ok := blocked[f.piece]; !ok {
+			blocked[f.piece] = f.flast
 		}
-		waitSet[r.group][wp] = true
 	}
+	c.waitFocusMu.Unlock()
 
 	plen := c.PieceLength
 	prios := make([]int, c.NumPieces)
@@ -685,7 +857,6 @@ func (c *Cache) applyStreamPriorities() {
 		if !ok {
 			continue // no playhead yet for this group (only probe/tail/header readers)
 		}
-		gWait := waitSet[r.group] // non-nil => this group is blocked on a seek target
 		ffirst := int(r.file.Offset / plen)
 		flast := r.fileLastPiece()
 		lo, hi := ph-behindP, ph+aheadP // whole sliding window (behind + current + ahead)
@@ -705,15 +876,12 @@ func (c *Cache) applyStreamPriorities() {
 			}
 			prio, dlMs := windowPriority(i - ph)
 			raise(i, prio)
-			// Suppress deadlines on the rest of the window while the group is blocked on a
-			// seek target, so that piece gets the swarm to itself and is served at once.
-			if gWait != nil && !gWait[i] {
-				dlMs = -1
-			}
-			if dlMs >= 0 {
-				if cur, ok := desired[i]; !ok || dlMs < cur {
-					desired[i] = dlMs
-				}
+			// The FULL ascending deadline ramp, always (see the blocked-set comment above
+			// for why the old per-seek suppression is gone): the ramp is what keeps the
+			// time-critical picker recruiting fast peers across the whole window, in
+			// playback order, and it is itself the flood protection.
+			if cur, ok := desired[i]; !ok || dlMs < cur {
+				desired[i] = dlMs
 			}
 			// Re-fetch hole: this forward-window piece was downloaded and hash-verified
 			// (libtorrent owns it) but our memory cache evicted the DATA (UseDisk=false →
@@ -796,6 +964,20 @@ func (c *Cache) applyStreamPriorities() {
 	// (Deadlines below are still reconciled every tick — they are relative-to-now and must
 	// refresh; the refetch loop still un-haves holes and re-applies prios[piece] atomically.)
 	if !intSliceEqual(c.lastPrios, prios) {
+		if s := settings.BTsets(); s != nil && s.EnableDebug {
+			nz, lo, hi := 0, -1, -1
+			for i, p := range prios {
+				if p > 0 {
+					nz++
+					if lo < 0 {
+						lo = i
+					}
+					hi = i
+				}
+			}
+			log.TLogln("torrstor.Cache: PUSH prios nz", nz, "span", lo, "..", hi,
+				"anchors", anchors, "blocked", blocked, "deadlines", len(desired))
+		}
 		if err := h.PrioritizePieces(prios); err != nil {
 			return
 		}
@@ -1114,6 +1296,11 @@ func (c *Cache) writePiece(piece int, offset int64, src []byte) (int, error) {
 	c.mu.Unlock()
 	n, err := p.WriteAt(src, offset)
 	if n > 0 {
+		// Wake any Read parked on this piece: with block-level (responsive) serving
+		// it may already be satisfiable by this very block. No-op (one uncontended
+		// mutex) when nobody waits; the waiter re-checks its predicate, so waking on
+		// a block that doesn't cover its offset just re-parks it.
+		c.signalPieceProgress(piece)
 		go c.evictIfOverCapacity()
 	}
 	return n, err

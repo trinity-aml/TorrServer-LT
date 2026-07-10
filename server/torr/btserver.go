@@ -386,7 +386,12 @@ func buildSessionConfig() (lt.SessionConfig, error) {
 	cfg["enable_upnp"] = !s.DisableUPNP
 	cfg["enable_natpmp"] = !s.DisableUPNP
 
-	// TCP / uTP
+	// TCP / uTP — both follow the user's settings (anacrolix upstream supports uTP
+	// too, via go-libutp, so DisableUTP has the same meaning as in the original).
+	// NB (field observation, 2026-07-10): on one test network, uTP-held connection
+	// slots throttled this libtorrent session's streaming throughput ~3x versus
+	// TCP-only (LEDBAT yielding under bufferbloat), while on other networks uTP is
+	// reported faster. Network-dependent — that's exactly why it stays a setting.
 	cfg["enable_outgoing_tcp"] = !s.DisableTCP
 	cfg["enable_incoming_tcp"] = !s.DisableTCP
 	cfg["enable_outgoing_utp"] = !s.DisableUTP

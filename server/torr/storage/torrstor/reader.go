@@ -194,14 +194,27 @@ type Reader struct {
 	// flight is by definition active, so groupReaderSnaps never treats it as stale.
 	reading atomic.Bool
 
-	// waitPiece is the piece a Read is BLOCKED on right now (parked in WaitForPiece),
-	// or -1. After a seek the player blocks here on the seek-target piece; while it
-	// does, applyStreamPriorities makes that piece the ONLY time-critical one for the
-	// group (suppresses the rest of the window's deadlines), so the swarm's whole
-	// bandwidth goes to the piece the player needs NOW — it is served the instant it
-	// lands, instead of trickling in while the readahead competes for the link. Once
-	// served, waitPiece clears and the next apply re-deadlines the full window.
+	// waitPiece is the piece this reader's Reads are blocked on / trickling from, or
+	// -1. After a seek the player blocks on the seek-target piece; while waitPiece
+	// names it, applyStreamPriorities force-raises it to top priority + deadline 0
+	// (+ a short lead) even when the held group anchor leaves it outside every
+	// window, so the picker fetches it first. It is STICKY on
+	// purpose: responsive block-level serving parks and wakes once per arriving 16 KB
+	// block, so a Read is between parks most of the time — if the flag were cleared
+	// after each park, the 1s priority tick sampling such a gap would rebuild the
+	// vector WITHOUT the force and push the still-incomplete target back to priority
+	// 0, cancelling its in-flight requests; the next park re-raised it, and the
+	// 7→0→7 flap kept cancelling the piece's blocks — the post-seek freeze (VLC time
+	// frozen for 60s until the read timed out). So it is only overwritten by the
+	// next park (a different piece), neutralised by completion (the apply skips a
+	// piece the cache Has), or cleared by an explicit Seek.
 	waitPiece atomic.Int64
+
+	// ensuredPiece/ensuredAtMs dedupe ensurePieceLocked's control-plane work across
+	// the many short parks responsive serving produces on one piece (see
+	// ensureRefreshMs). Guarded by mu (only Read's body touches them).
+	ensuredPiece int
+	ensuredAtMs  int64
 
 	// stopTicker ends the periodic re-prioritize loop; closed once by Close.
 	stopTicker chan struct{}
@@ -217,10 +230,11 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo, group ...string)
 		return nil
 	}
 	r := &Reader{
-		cache:      cache,
-		handle:     handle,
-		file:       file,
-		stopTicker: make(chan struct{}),
+		cache:        cache,
+		handle:       handle,
+		file:         file,
+		stopTicker:   make(chan struct{}),
+		ensuredPiece: -1,
 	}
 	if len(group) > 0 {
 		r.group = group[0]
@@ -339,23 +353,36 @@ func (r *Reader) Read(p []byte) (int, error) {
 		piece := int(abs / plen)
 		pieceOff := abs - int64(piece)*plen
 
-		// Serve loaded chunks immediately. If this Read has already produced bytes and
-		// the NEXT piece isn't resident yet, hand back what we have instead of blocking
-		// on it — io.Copy simply calls Read again, which then parks on this exact piece.
-		// So on a seek into a partly-cached region the player gets the resident chunks
-		// at once and we only ever wait for the single piece it needs next, never for
-		// the rest of the readahead window to fill. With nothing read yet (written == 0)
-		// we must block: this is the very piece the client asked for.
-		if !r.cache.Have(piece) {
+		// Responsive serving (upstream anacrolix SetResponsive parity): gate on the
+		// BLOCKS under this exact offset, not on the whole piece being downloaded and
+		// hash-verified. The bytes go out the moment they land over the wire — this is
+		// what makes a seek (and the wire edge right after a preload) start in one
+		// block's time instead of a full-piece + hash wait. If this Read has already
+		// produced bytes and the next ones aren't in yet, hand back what we have —
+		// io.Copy simply calls Read again, which then parks on this exact spot. With
+		// nothing read yet (written == 0) we must block: this is the very byte the
+		// client asked for.
+		avail := r.cache.readableAt(piece, pieceOff)
+		if avail <= 0 {
 			if written > 0 {
 				break
 			}
-			if err := r.ensurePieceLocked(piece); err != nil {
+			if err := r.ensurePieceLocked(piece, pieceOff); err != nil {
 				return 0, err
+			}
+			avail = r.cache.readableAt(piece, pieceOff)
+			if avail <= 0 {
+				continue // lost a race (evicted between wake and read) — re-ensure
 			}
 		}
 
-		n, err := r.cache.readPiece(piece, pieceOff, p[written:int(want)])
+		// Clamp to the contiguously available run so we never copy past a hole in an
+		// incomplete piece (the buffer there is still zeros).
+		end := int64(written) + avail
+		if end > want {
+			end = want
+		}
+		n, err := r.cache.readPiece(piece, pieceOff, p[written:int(end)])
 		if n > 0 {
 			written += n
 		}
@@ -380,41 +407,57 @@ func (r *Reader) Read(p []byte) (int, error) {
 	return written, nil
 }
 
-// ensurePieceLocked is called with r.mu held. It blocks until the
-// requested piece is locally complete or ReaderTimeout elapses.
-func (r *Reader) ensurePieceLocked(piece int) error {
-	if r.cache.Have(piece) {
+// ensureRefreshMs bounds how often a park on the SAME piece repeats the ensure
+// control-plane work (have-reconcile, deadline, forced priority apply). With
+// responsive block-level serving a reader caught up to the wire parks once per
+// arriving 16 KB block — hundreds of times per piece — and re-running a full
+// applyStreamPriorities each park would burn cgo/CPU for nothing: the piece is
+// already top-deadlined from the first park. A new target piece (seek, or the
+// playhead crossing a boundary) always runs the full path at once.
+const ensureRefreshMs = 2000
+
+// ensurePieceLocked is called with r.mu held. It blocks until at least one byte
+// is readable at (piece, pieceOff) — the blocks under the offset arrived, or
+// the piece completed — or ReaderTimeout elapses.
+func (r *Reader) ensurePieceLocked(piece int, pieceOff int64) error {
+	if r.cache.readableAt(piece, pieceOff) > 0 {
 		return nil
 	}
-	// This reader genuinely needs the piece now (e.g. a seek back into a region we
-	// abandoned): lift any straggler-drop suppression so its blocks are stored.
-	r.cache.clearAbandoned(piece)
-	if r.handle != nil {
-		// On-demand have/cache reconciliation: if libtorrent thinks it already has
-		// this piece but our cache doesn't (we evicted it, or a seek landed in an
-		// evicted region), libtorrent would never re-request it and we'd block
-		// until timeout. Un-have just this one piece so the picker re-downloads it.
-		// This replaces un-having on every eviction, which churned the picker and
-		// stalled the whole download once the cache started evicting mid-stream.
-		if r.handle.HasPiece(piece) {
-			// Un-have it and leave it at top priority (applied atomically inside
-			// WeDontHave) so the picker re-requests it immediately.
-			if s := settings.BTsets(); s != nil && s.EnableDebug {
-				// libtorrent HAD this piece but the cache dropped it and a read needs it
-				// back — i.e. a re-download of an evicted piece. Pair with the matching
-				// "evict piece N" line to see the churn: how far ahead/behind the
-				// playhead the dropped-then-refetched piece is.
-				log.TLogln("torrstor.Reader: REFETCH evicted piece", piece,
-					"file", r.file.Index, "playhead", r.currentPiece(),
-					"window", int(r.winFirst.Load()), "..", int(r.winLast.Load()))
+	nowMs := time.Now().UnixMilli()
+	fresh := r.ensuredPiece == piece && nowMs-r.ensuredAtMs < ensureRefreshMs
+	if !fresh {
+		r.ensuredPiece = piece
+		r.ensuredAtMs = nowMs
+		// This reader genuinely needs the piece now (e.g. a seek back into a region we
+		// abandoned): lift any straggler-drop suppression so its blocks are stored.
+		r.cache.clearAbandoned(piece)
+		if r.handle != nil {
+			// On-demand have/cache reconciliation: if libtorrent thinks it already has
+			// this piece but our cache doesn't (we evicted it, or a seek landed in an
+			// evicted region), libtorrent would never re-request it and we'd block
+			// until timeout. Un-have just this one piece so the picker re-downloads it.
+			// This replaces un-having on every eviction, which churned the picker and
+			// stalled the whole download once the cache started evicting mid-stream.
+			if r.handle.HasPiece(piece) {
+				// Un-have it and leave it at top priority (applied atomically inside
+				// WeDontHave) so the picker re-requests it immediately.
+				if s := settings.BTsets(); s != nil && s.EnableDebug {
+					// libtorrent HAD this piece but the cache dropped it and a read needs it
+					// back — i.e. a re-download of an evicted piece. Pair with the matching
+					// "evict piece N" line to see the churn: how far ahead/behind the
+					// playhead the dropped-then-refetched piece is.
+					log.TLogln("torrstor.Reader: REFETCH evicted piece", piece,
+						"file", r.file.Index, "playhead", r.currentPiece(),
+						"window", int(r.winFirst.Load()), "..", int(r.winLast.Load()))
+				}
+				_ = r.handle.WeDontHave(piece, ltTopPriority)
 			}
-			_ = r.handle.WeDontHave(piece, ltTopPriority)
+			// deadline 0 = most urgent. alert_when_available is intentionally false:
+			// completion is signalled by piece_finished_alert via SignalPieceComplete,
+			// and asking for the data back here would make libtorrent re-read the whole
+			// piece off our disk_io into a read_piece_alert we never consume.
+			_ = r.handle.SetPieceDeadline(piece, 0, false)
 		}
-		// deadline 0 = most urgent. alert_when_available is intentionally false:
-		// completion is signalled by piece_finished_alert via SignalPieceComplete,
-		// and asking for the data back here would make libtorrent re-read the whole
-		// piece off our disk_io into a read_piece_alert we never consume.
-		_ = r.handle.SetPieceDeadline(piece, 0, false)
 	}
 	parent := r.ctx
 	if parent == nil {
@@ -422,19 +465,39 @@ func (r *Reader) ensurePieceLocked(piece int) error {
 	}
 	ctx, cancel := context.WithTimeout(parent, ReaderTimeout)
 	defer cancel()
-	// Flag the piece we're about to block on so applyStreamPriorities concentrates the
-	// swarm on it (exclusive time-critical) while the player waits — the seek-target
-	// piece is then served the moment it arrives. Force the apply past its 250 ms
-	// debounce (a Read in the same call already applied for scheduleWindow) so the
-	// exclusivity takes effect now, not on the next 1 s tick; the reader then parks in
-	// WaitForPiece, so this is one apply per block, not a spin.
+	// Flag the piece we're blocked on so applyStreamPriorities concentrates the
+	// swarm on it (force-raise to top priority + deadline 0) while the player waits —
+	// the seek-target piece is then served the moment its bytes arrive. Force the
+	// apply past its 250 ms debounce so the force takes effect now, not on the next
+	// 1 s tick — but only when the target CHANGED (see ensureRefreshMs): repeat
+	// parks on the same piece ride the existing deadline and the periodic tick.
+	// NOT cleared on return — sticky, see the waitPiece field doc: clearing between
+	// the micro-parks of block-level serving let the tick push the still-incomplete
+	// target back to priority 0 and the 7→0→7 flap froze every seek outside the
+	// held anchor's window.
 	r.waitPiece.Store(int64(piece))
-	r.cache.lastApplyMs.Store(0)
-	r.cache.applyStreamPriorities()
-	defer r.waitPiece.Store(-1)
-	if !r.cache.WaitForPiece(ctx, piece) {
+	// Group-level sticky focus too: this reader may be one of a per-chunk player's
+	// short-lived connections, and the force (+ the anchor's virtual reader) must
+	// outlive it (see Cache.waitFocus).
+	ffirst := 0
+	if plen := r.cache.PieceLength; plen > 0 {
+		ffirst = int(r.file.Offset / plen)
+	}
+	r.cache.setWaitFocus(r.group, piece, ffirst, r.fileLastPiece())
+	if !fresh {
+		if s := settings.BTsets(); s != nil && s.EnableDebug {
+			log.TLogln("torrstor.Reader: PARK piece", piece, "off", pieceOff,
+				"group", r.group, "playhead", r.currentPiece())
+		}
+		r.cache.lastApplyMs.Store(0)
+		r.cache.applyStreamPriorities()
+	}
+	if !r.cache.WaitForBytes(ctx, piece, pieceOff) {
 		if parent.Err() != nil {
 			return errors.New("torrstor.Reader: client gone")
+		}
+		if s := settings.BTsets(); s != nil && s.EnableDebug {
+			log.TLogln("torrstor.Reader: WAIT TIMEOUT piece", piece, "off", pieceOff, "group", r.group)
 		}
 		return errors.New("torrstor.Reader: piece wait timeout")
 	}
@@ -463,6 +526,11 @@ func (r *Reader) Seek(offset int64, whence int) (int64, error) {
 		off = 0
 	}
 	r.offset.Store(off)
+	// A real repositioning of a LIVE reader (DLNA/FUSE seek mid-stream): drop the
+	// sticky wait flag so the old blocked piece isn't force-downloaded from the new
+	// position. HTTP readers never hit this mid-stream (ServeContent's probe seeks
+	// run before the first Read, when the flag is still -1).
+	r.waitPiece.Store(-1)
 	// Don't scheduleWindow() on seek: http.ServeContent probes Seek(0,End) then
 	// Seek(0,Start) before seeking to the real Range start, so scheduling here
 	// would prioritise + re-download the file head and tail on every one of a

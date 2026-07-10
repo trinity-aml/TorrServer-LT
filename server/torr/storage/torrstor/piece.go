@@ -8,6 +8,11 @@ import (
 	"server/settings"
 )
 
+// pieceBlockSize is libtorrent's wire block (default_block_size, 16 KiB): every
+// disk write lands as one or more whole blocks at block-aligned offsets. The
+// availability bitmap below tracks the piece at this granularity.
+const pieceBlockSize = 16 << 10
+
 // Piece is a single torrent piece. Persistence picks between MemPiece
 // (RAM) and DiskPiece (file-per-piece on disk) according to BTsets.
 type Piece struct {
@@ -18,6 +23,15 @@ type Piece struct {
 	mem  *MemPiece
 	disk *DiskPiece
 	size int64
+	// avail is the written-block bitmap (one bit per pieceBlockSize block, lazily
+	// allocated on first write). It is what lets a Reader serve bytes from an
+	// INCOMPLETE piece the moment the blocks under the read offset land — the
+	// upstream anacrolix SetResponsive() behaviour — instead of parking until the
+	// whole piece downloads AND hash-verifies (a full-piece + hash wait on every
+	// seek and at the wire edge after a preload: the "pause" both felt like).
+	// p.size can't do this job: it is only the highest written offset and says
+	// nothing about holes below it.
+	avail []uint64
 	// accessed is the last read/write unix time; atomic so ReadAt can stamp it
 	// under the shared (read) lock without racing concurrent readers of the same
 	// piece, and so Accessed() can be read lock-free for LRU eviction sorting.
@@ -75,9 +89,74 @@ func (p *Piece) WriteAt(b []byte, off int64) (int, error) {
 		// still has holes — a reader would then read garbage/zeros. Completion is
 		// driven solely by libtorrent's piece_finished_alert (all blocks present
 		// AND hash-verified) via Cache.SignalPieceComplete -> setComplete.
+		p.markAvailLocked(off, int64(n))
 		p.accessed.Store(time.Now().Unix())
 	}
 	return n, err
+}
+
+// markAvailLocked flags the 16 KiB blocks FULLY covered by the write [off,
+// off+n) as available. Called with p.mu held (from WriteAt). Only whole blocks
+// count: a short write into the torrent's very last piece (whose real length is
+// below PieceLength, which we don't know here) leaves its tail block unmarked,
+// so reads there simply fall back to waiting for the hash-verified complete
+// flag — one piece per torrent, always preloaded/pinned anyway (EOF index).
+func (p *Piece) markAvailLocked(off, n int64) {
+	plen := p.cache.PieceLength
+	if plen <= 0 || n <= 0 {
+		return
+	}
+	nb := int((plen + pieceBlockSize - 1) / pieceBlockSize)
+	if p.avail == nil {
+		p.avail = make([]uint64, (nb+63)/64)
+	}
+	first := int((off + pieceBlockSize - 1) / pieceBlockSize) // first block starting at/after off
+	end := off + n
+	last := int(end / pieceBlockSize) // exclusive: blocks fully covered
+	if end >= plen {
+		last = nb // a write reaching the piece end covers its (possibly short) tail block
+	}
+	for b := first; b < last && b < nb; b++ {
+		p.avail[b>>6] |= 1 << uint(b&63)
+	}
+}
+
+// availableFrom reports how many bytes are contiguously readable starting at
+// off: the whole remainder for a complete piece, else the run of consecutive
+// written blocks from off (0 when the block under off hasn't arrived). This is
+// the responsive-read predicate: Reader serves exactly this prefix without
+// waiting for the rest of the piece or its hash.
+func (p *Piece) availableFrom(off int64) int64 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	plen := p.cache.PieceLength
+	if plen <= 0 || off < 0 || off >= plen {
+		return 0
+	}
+	if p.complete {
+		// Complete but with the backing data already released (close path) serves
+		// nothing — mirrors ReadAt returning EOF there.
+		if p.disk == nil && (p.mem == nil || p.mem.buf == nil) {
+			return 0
+		}
+		return plen - off
+	}
+	if p.avail == nil {
+		return 0
+	}
+	nb := int((plen + pieceBlockSize - 1) / pieceBlockSize)
+	b := int(off / pieceBlockSize)
+	for b < nb && p.avail[b>>6]&(1<<uint(b&63)) != 0 {
+		b++
+	}
+	end := int64(b) * pieceBlockSize
+	if end > plen {
+		end = plen
+	}
+	if end <= off {
+		return 0
+	}
+	return end - off
 }
 
 func (p *Piece) ReadAt(b []byte, off int64) (int, error) {
@@ -113,6 +192,7 @@ func (p *Piece) release() {
 	if p.mem != nil {
 		p.mem.Release()
 	}
+	p.avail = nil // the in-memory blocks are gone; don't advertise them as readable
 }
 
 // wipe drops in-memory state AND removes the on-disk file. Used by
@@ -127,6 +207,7 @@ func (p *Piece) wipe() {
 	if p.mem != nil {
 		p.mem.Release()
 	}
+	p.avail = nil
 	p.size = 0
 	p.complete = false
 }

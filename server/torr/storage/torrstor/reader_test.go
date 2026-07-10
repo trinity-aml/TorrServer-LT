@@ -205,3 +205,75 @@ func TestReader_PartialReadBoundary(t *testing.T) {
 		t.Fatal("file content mismatch")
 	}
 }
+
+// Responsive (block-level) serving: a Read must return bytes from an
+// INCOMPLETE piece as soon as the 16 KiB blocks under its offset have been
+// written — never waiting for the rest of the piece or the hash/complete
+// signal — and must never read across a hole.
+func TestReader_ResponsivePartialPiece(t *testing.T) {
+	// 4 blocks per piece so a piece can be partially resident.
+	bigPiece := int64(4 * pieceBlockSize)
+	s := NewStorage()
+	h := mkHash(0x55)
+	s.callbackOpen(21, h, 2, bigPiece)
+	c := s.CacheByHash(h)
+	if c == nil {
+		t.Fatal("cache not registered after Open")
+	}
+
+	blk := func(b byte) []byte { return bytes.Repeat([]byte{b}, pieceBlockSize) }
+
+	// Block 0 of piece 0 lands; the piece is NOT complete (no SignalPieceComplete).
+	if _, err := c.writePiece(0, 0, blk('0')); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewReader(c, nil, FileInfo{Offset: 0, Length: 2 * bigPiece})
+	defer r.Close()
+
+	// Read asks for a full piece but only block 0 is in: it must return exactly
+	// that block, immediately.
+	buf := make([]byte, bigPiece)
+	start := time.Now()
+	n, err := r.Read(buf)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if n != pieceBlockSize {
+		t.Fatalf("read n=%d, want one block (%d)", n, pieceBlockSize)
+	}
+	if !bytes.Equal(buf[:n], blk('0')) {
+		t.Fatal("block 0 content mismatch")
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("partial-piece read took %v — it blocked instead of serving resident blocks", took)
+	}
+
+	// Block 2 lands out of order: offset 16K (block 1) is a HOLE. A read there
+	// must park — and wake the moment block 1 is written, then serve the now
+	// contiguous run (blocks 1..2) without any completion signal.
+	if _, err := c.writePiece(0, 2*int64(pieceBlockSize), blk('2')); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.readableAt(0, int64(pieceBlockSize)); got != 0 {
+		t.Fatalf("readableAt over a hole = %d, want 0", got)
+	}
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		_, _ = c.writePiece(0, int64(pieceBlockSize), blk('1'))
+	}()
+	start = time.Now()
+	n, err = r.Read(buf)
+	if err != nil {
+		t.Fatalf("read after hole fill: %v", err)
+	}
+	if n != 2*pieceBlockSize {
+		t.Fatalf("read n=%d, want the contiguous run of 2 blocks (%d)", n, 2*pieceBlockSize)
+	}
+	if !bytes.Equal(buf[:pieceBlockSize], blk('1')) || !bytes.Equal(buf[pieceBlockSize:n], blk('2')) {
+		t.Fatal("blocks 1..2 content mismatch")
+	}
+	if took := time.Since(start); took < 40*time.Millisecond {
+		t.Logf("warning: hole read returned in %v (expected ~50ms park)", took)
+	}
+}
