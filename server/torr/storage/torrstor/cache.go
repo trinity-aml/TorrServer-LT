@@ -412,6 +412,7 @@ type readerSnap struct {
 	belowHead bool // inside the container-header pin (a header re-read)
 	stale     bool // no Read for staleReaderSec — an idle/seek-abandoned connection
 	nearEOF   bool // forward window reaches the file end (an EOF moov probe, or a seek-to-end)
+	isFocus   bool // virtual snap from the group's wait focus (a fresh park), not a live reader
 }
 
 // groupReaderSnaps buckets every active reader by its group (device), capturing
@@ -495,7 +496,7 @@ func (c *Cache) groupReaderSnaps() map[string][]readerSnap {
 		if c.Have(f.piece) {
 			continue
 		}
-		s := readerSnap{group: g, cur: f.piece, ffirst: f.ffirst, flast: f.flast}
+		s := readerSnap{group: g, cur: f.piece, ffirst: f.ffirst, flast: f.flast, isFocus: true}
 		// isTail/belowHead keep their pin semantics (a park inside a pin is served by
 		// the blocked-force alone; pivoting the window onto a pin churns it), but
 		// deliberately NOT nearEOF: that exclusion guards against the EOF index PROBE
@@ -614,6 +615,44 @@ func (c *Cache) streamAnchors() map[string]int {
 			c.groups[key] = g
 		}
 
+		// A FRESH park farther than a window from the committed anchor is a genuine
+		// far seek — commit the anchor to it AT ONCE, skipping the holds below. The
+		// park (the group's wait-focus virtual snap) means the player is BLOCKED
+		// waiting for bytes THERE; playback cannot be continuing at the old position.
+		// None of the cases the holds defend against produces such a park: a per-chunk
+		// trailing connection parks INSIDE the window near the anchor, the EOF moov
+		// probe reads the resident pinned tail and never parks, and a seek-abandoned
+		// connection's twitch reads resident data and never parks. Without this the
+		// anchor lagged a far seek by anchorHoldSec (backward) or staleReaderSec
+		// (forward, old connection still live) — 2-3s in the field log — during which
+		// the OLD window (up to the whole cache budget of deadlined pieces) kept
+		// downloading at full swarm speed, the seek target crawled on the small
+		// blocked-force lead alone, and the old window's fill was evicted right after.
+		// Committing here rebuilds the whole window + deadline ramp around the target
+		// in the SAME forced apply the park triggered. Parks inside the head/tail pins
+		// are served by the blocked-force alone (pivoting the window onto a pin churns
+		// it); an in-window park needs nothing (the ramp already covers it). If the
+		// player was in fact still reading the old position (an exotic multi-range
+		// client), the normal playMin machinery below pulls the anchor back within
+		// anchorHoldSec on the following ticks — a bounded self-correcting detour.
+		if g.playheadTime != 0 {
+			snapped := false
+			for _, s := range rs {
+				if !s.isFocus || s.belowHead || s.isTail {
+					continue
+				}
+				if d := s.cur - int(g.playhead); d > aheadP || d < -aheadP {
+					g.playhead, g.playheadTime = int64(s.cur), now
+					out[key] = s.cur
+					snapped = true
+				}
+				break // at most one focus snap per group
+			}
+			if snapped {
+				continue
+			}
+		}
+
 		if playOK {
 			ph := int(g.playhead)
 			// Deliberate cross-file switch (episode change, or a seek into another file):
@@ -708,31 +747,6 @@ func (c *Cache) streamAnchorForGroup(key string) (int, bool) {
 // lingering old one. Head/tail re-reads are served from their pins, not the window.
 func (c *Cache) groupPlayheads() map[string]int {
 	return c.streamAnchors()
-}
-
-// groupActivePlayheadMin is the DIRECT (unheld) lowest ACTIVE playback piece in a
-// device — excluding the offset-0 probe, the EOF index re-read, a header re-read,
-// AND idle/stale connections. ensurePieceLocked uses it to detect a speculative
-// read-ahead read (a connection more than a full window ahead of the real
-// playhead) and NOT force-download it, so those pieces aren't pulled outside the
-// cache window and churned; the sliding window fetches them in order instead. The
-// playhead reader is itself the min, so its own reads are never throttled. Returns
-// false when the device has no active playback reader (then nothing is throttled).
-func (c *Cache) groupActivePlayheadMin(group string) (int, bool) {
-	rs, ok := c.groupReaderSnaps()[group]
-	if !ok {
-		return 0, false
-	}
-	min, found := 0, false
-	for _, s := range rs {
-		if s.isProbe || s.isTail || s.belowHead || s.stale {
-			continue
-		}
-		if !found || s.cur < min {
-			min, found = s.cur, true
-		}
-	}
-	return min, found
 }
 
 // groupPlayheadForGroup is groupPlayheads for one device, used by a reader to
@@ -909,16 +923,20 @@ func (c *Cache) applyStreamPriorities() {
 	// off and the head reader races into the cached head, and the still-unread index
 	// never (re)downloads, so playback never starts. Pinned for eviction too, in
 	// readerProtectRanges; the window budget is reduced by it in readerWindowPieces.
+	// The container HEADER at the file start is pinned the same way (headReserve):
+	// players re-read it mid-play and around seeks, and without the pin it looped
+	// through evict → park → deadline-0 re-download for the whole stream.
 	for _, r := range rs {
-		tr := r.tailReserve()
-		for i := tr[0]; i <= tr[1]; i++ {
-			raise(i, streamPinPriority)
-			// Same hole re-fetch as the forward window: the pinned EOF index must stay
-			// resident for the whole stream, but if its data was wiped while libtorrent
-			// keeps the have-bit it would never come back on its own — so the cache sits
-			// a tail-piece short of the budget. Un-have it to pull it back.
-			if !c.Have(i) && h.HasPiece(i) {
-				refetch[i] = struct{}{}
+		for _, rg := range [2][2]int{r.headReserve(), r.tailReserve()} {
+			for i := rg[0]; i <= rg[1]; i++ {
+				raise(i, streamPinPriority)
+				// Same hole re-fetch as the forward window: a pinned piece must stay
+				// resident for the whole stream, but if its data was wiped while libtorrent
+				// keeps the have-bit it would never come back on its own — so the cache sits
+				// a piece short of the budget. Un-have it to pull it back.
+				if !c.Have(i) && h.HasPiece(i) {
+					refetch[i] = struct{}{}
+				}
 			}
 		}
 	}
@@ -1045,24 +1063,28 @@ func (c *Cache) readerWindowPieces() (behind, ahead int) {
 	}
 	// Strict model: the cache holds exactly budget = CacheSize / pieceSize chunks,
 	// split by ReaderReadAHead into a sliding window (behind + current + ahead) plus
-	// the EOF seek-index tail pin held outside it. So with a 64 MB cache, 4 MB pieces,
-	// a 1-piece tail and ReadAhead 95%, budget drops to 15, behind 1, ahead 13: the
-	// window is [playhead-1 .. playhead+13] (60 MB) sliding as a snake, and the 4 MB
-	// idx1/cues/moov stays pinned at the file end (tailReserve) — window + tail == the
-	// 64 MB cache. The HEAD is held only during preload (preloadProtect). behind is
-	// rounded from the slider; ahead takes the rest.
+	// the head/tail pins held outside it. So with a 64 MB cache, 4 MB pieces, a
+	// 1-piece head, a 2-piece tail and ReadAhead 95%, budget drops to 13, behind 1,
+	// ahead 11: the window is [playhead-1 .. playhead+11] sliding as a snake, the
+	// container header stays pinned at the file start (headReserve) and the 4 MB
+	// idx1/cues/moov at the file end (tailReserve) — window + head + tail == the
+	// 64 MB cache. behind is rounded from the slider; ahead takes the rest.
 	cacheB := globalCacheSize()
 	budget := int(cacheB / plen)
 	if budget < 1 {
 		budget = 1
 	}
-	// Carve out the EOF seek index pinned outside the window (tailReserve, held the
-	// whole stream): total resident = window + tail pin must stay within CacheSize.
-	// Use the BUDGET footprint (excludes the optional PadTailPartial piece, which is meant
-	// to run over budget). Skip the subtraction on a tiny cache so the window never drops
-	// below its floor (the tail then shares the budget instead of shrinking it to nothing).
+	// Carve out the head/tail pins held outside the window for the whole stream
+	// (headReserve/tailReserve): total resident = window + pins must stay within
+	// CacheSize. Use the BUDGET footprint (excludes the optional PadTailPartial piece,
+	// which is meant to run over budget). Skip a subtraction on a tiny cache so the
+	// window never drops below its floor (the pin then shares the budget instead of
+	// shrinking it to nothing).
 	if tail := c.tailBudgetPieces(); budget-tail >= streamWindowFloorPieces {
 		budget -= tail
+	}
+	if head := c.headPinPieces(); budget-head >= streamWindowFloorPieces {
+		budget -= head
 	}
 	behind = int((int64(budget)*(100-prc) + 50) / 100) // rounded share of the budget
 	if behind > budget-1 {
@@ -1511,14 +1533,17 @@ func (c *Cache) readerProtectRanges() [][2]int {
 	// file for the WHOLE stream — without this the head reader races through the
 	// cached head, the preload reserve is handed off, and the tail is evicted before
 	// the player has read it (the idx1 read then times out and playback never starts).
-	// This is the only region held outside the sliding window; readerWindowPieces
-	// shrinks the window budget by it so window + tail stays within CacheSize.
+	// The container HEADER (headReserve) is pinned for the same reason: players
+	// re-read it mid-play and around seeks, and LRU-evicting it between re-reads
+	// looped it through deadline-0 re-downloads for the whole stream. These are the
+	// only regions held outside the sliding window; readerWindowPieces shrinks the
+	// window budget by both so window + head + tail stays within CacheSize.
 	c.readersMu.Lock()
 	for r := range c.readers {
 		if r.internal {
 			continue
 		}
-		out = append(out, r.tailReserve())
+		out = append(out, r.headReserve(), r.tailReserve())
 	}
 	c.readersMu.Unlock()
 	// An in-flight preload has no reader yet — keep its head+tail buffer resident

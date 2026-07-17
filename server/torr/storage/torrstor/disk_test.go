@@ -191,8 +191,8 @@ func TestCache_EvictionSparesReaderWindow(t *testing.T) {
 	// ReadAhead 80% the tail pin is the 5 MB EOF index, which on this tiny 16 KB-piece
 	// file is capped to maxTailPinPieces = 6 and bound to the last 6, so the window
 	// budget is 10-6 = 4: behind = round(4*20%) = 1, ahead = 4-1-1 = 2, so at cur=20 the
-	// window is exactly [19..22], the tail index [34..39] stays pinned, and everything
-	// else (including the former head pin [0..1]) is dropped.
+	// window is exactly [19..22], the container header [0..1] and the tail index
+	// [34..39] stay pinned for the whole stream, and everything else is dropped.
 	prev := settings.BTsets()
 	settings.StoreBTsets(&settings.BTSets{UseDisk: false, CacheSize: 10 * pieceLen, ReaderReadAHead: 80})
 	t.Cleanup(func() { settings.StoreBTsets(prev) })
@@ -236,15 +236,15 @@ func TestCache_EvictionSparesReaderWindow(t *testing.T) {
 		return c.pieces[id] != nil
 	}
 	// The whole [19..22] window survives — behind margin + current + forward readahead
-	// — plus the pinned EOF seek index [34..39].
-	for _, keep := range []int{19, 20, 22, 34, 39} {
+	// — plus the pinned container header [0..1] and EOF seek index [34..39] (both held
+	// for the whole stream; players re-read them mid-play and on every seek).
+	for _, keep := range []int{0, 1, 19, 20, 22, 34, 39} {
 		if !present(keep) {
 			t.Fatalf("protected piece %d was evicted", keep)
 		}
 	}
-	// Everything outside the window is dropped, even old ones — INCLUDING the former
-	// head pin [0..1]. The tail index [34..39] now survives (pinned the whole stream).
-	for _, gone := range []int{0, 1, 2, 10, 17, 18, 23, 25, 33} {
+	// Everything outside the window and the pins is dropped, even old ones.
+	for _, gone := range []int{2, 10, 17, 18, 23, 25, 33} {
 		if present(gone) {
 			t.Fatalf("unprotected piece %d should have been evicted", gone)
 		}
@@ -310,16 +310,15 @@ func TestCache_EvictionSparesBothDeviceWindows(t *testing.T) {
 		defer c.mu.RUnlock()
 		return c.pieces[id] != nil
 	}
-	// BOTH device windows survive: [19..22] (A) and [59..62] (B), plus the pinned EOF
-	// seek index [74..79].
-	for _, keep := range []int{19, 20, 22, 59, 60, 62, 74, 79} {
+	// BOTH device windows survive: [19..22] (A) and [59..62] (B), plus the pinned
+	// container header [0..1] and EOF seek index [74..79] (held the whole stream).
+	for _, keep := range []int{0, 1, 19, 20, 22, 59, 60, 62, 74, 79} {
 		if !present(keep) {
 			t.Fatalf("protected piece %d was evicted (device isolation broken)", keep)
 		}
 	}
-	// Pieces well outside both windows are dropped — including the former head pin
-	// [0..1]. The tail index [74..79] now survives (pinned the whole stream).
-	for _, gone := range []int{0, 1, 10, 18, 23, 40, 50, 55, 58, 63, 73} {
+	// Pieces well outside both windows and the pins are dropped.
+	for _, gone := range []int{10, 18, 23, 40, 50, 55, 58, 63, 73} {
 		if present(gone) {
 			t.Fatalf("unprotected piece %d should have been evicted", gone)
 		}
@@ -407,6 +406,69 @@ func TestCache_TailPinSurvivesPreloadHandoff(t *testing.T) {
 		}
 	}
 	// And it converged to the budget by dropping head leftovers past the window.
+	if c.Filled() > c.capacity() {
+		t.Fatalf("eviction did not converge: filled=%d cap=%d", c.Filled(), c.capacity())
+	}
+}
+
+// TestCache_HeadPinKeepsContainerHeaderResident guards the header re-read loop found
+// live: with playback mid-file, the container header (piece 0) sat OUTSIDE the sliding
+// window and pure LRU evicted it between a player's periodic header re-reads (VLC
+// re-opens bytes=0- every few seconds) — each re-read then parked and force-downloaded
+// the piece at deadline 0, and the next eviction dropped it again: a permanent
+// download-evict-redownload cycle. The standing head pin (headReserve) must keep the
+// header resident through mid-stream eviction pressure.
+func TestCache_HeadPinKeepsContainerHeaderResident(t *testing.T) {
+	const MB = int64(1) << 20
+	plen := 4 * MB
+	prev := settings.BTsets()
+	settings.StoreBTsets(&settings.BTSets{UseDisk: false, CacheSize: 64 * MB, ReaderReadAHead: 95})
+	t.Cleanup(func() { settings.StoreBTsets(prev) })
+
+	s := NewStorage()
+	h := mkHash(0xF2)
+	const numPieces = 200
+	fileLen := int64(numPieces) * plen
+	s.callbackOpen(1, h, numPieces, plen)
+	c := s.CacheByHash(h)
+
+	// Header piece 0 is the OLDEST resident piece (last re-read a while ago), the
+	// rest of the cache is the window around the mid-file playhead — filled well
+	// over the 64 MB budget so eviction must reap something.
+	present := []int{0}
+	for i := 80; i < 98; i++ {
+		present = append(present, i)
+	}
+	c.mu.Lock()
+	for n, i := range present {
+		p := newPiece(c, i)
+		if _, err := p.WriteAt([]byte{0x9}, plen-1); err != nil {
+			c.mu.Unlock()
+			t.Fatalf("write %d: %v", i, err)
+		}
+		p.setComplete(true)
+		p.accessed.Store(int64(n)) // piece 0 gets the oldest stamp — the LRU victim
+		c.pieces[i] = p
+	}
+	c.mu.Unlock()
+
+	// Mid-file playback reader at piece 85.
+	r := &Reader{cache: c, group: "dev", file: FileInfo{Offset: 0, Length: fileLen}}
+	r.readahead.Store(60 * MB)
+	r.offset.Store(85 * plen)
+	r.winFirst.Store(85)
+	r.winLast.Store(97)
+	r.lastRead.Store(time.Now().Unix())
+	c.registerReader(r)
+
+	c.evictIfOverCapacity()
+
+	c.mu.RLock()
+	head := c.pieces[0]
+	c.mu.RUnlock()
+	if head == nil {
+		t.Fatalf("container header (piece 0) evicted mid-stream — the header re-read loop is back")
+	}
 	if c.Filled() > c.capacity() {
 		t.Fatalf("eviction did not converge: filled=%d cap=%d", c.Filled(), c.capacity())
 	}

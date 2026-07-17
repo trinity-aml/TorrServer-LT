@@ -774,18 +774,43 @@ func tailBytesFor(plen int64) int64 {
 	return streamTailMinBytes
 }
 
-// streamHeaderPinPieces is the MAX pieces the preload holds at the file START: the
-// container header (AVI main header, MKV/MP4 header). It is kept resident ONLY during
-// preload (preloadProtect) — the strict streaming window carves out nothing for it.
-// The size is BYTE-bounded (streamHeaderPinBytes) and only rounded UP to this cap, so
-// a large piece size covers the few-MB header in one piece. The EOF index at the file
-// END is sized separately by tailBytesFor (the field spec: 1 piece if >5 MB, else
-// 5 MB). groupReaderSnaps / scheduleWindow use headPinPieces / tailPinPieces to
-// recognise the header/EOF-index reader so it doesn't drive a streaming window.
+// streamHeaderPinPieces is the MAX pieces pinned at the file START: the container
+// header (AVI main header, MKV/MP4 header). Like the EOF index it is pinned for the
+// WHOLE stream (headReserve — kept resident by readerProtectRanges and priority>0 by
+// applyStreamPriorities), not just during preload: players re-read the header
+// mid-play and around seeks (VLC re-opens bytes=0- roughly every few seconds), and
+// with the header outside the sliding window pure LRU evicted it between re-reads —
+// each re-read then parked, force-downloaded the piece at deadline 0 (competing with
+// the playhead window for the swarm) and the next eviction dropped it again: a
+// permanent download-evict-redownload loop burning a piece's worth of bandwidth per
+// cycle (verified live: evict piece 0 / blocked[0] pairs every ~10s). The size is
+// BYTE-bounded (streamHeaderPinBytes) and only rounded UP to this cap, so a large
+// piece size covers the few-MB header in one piece. The EOF index at the file END is
+// sized separately by tailBytesFor (the field spec: 1 piece if >5 MB, else 5 MB).
+// groupReaderSnaps / scheduleWindow use headPinPieces / tailPinPieces to recognise
+// the header/EOF-index reader so it doesn't drive a streaming window.
 const (
 	streamHeaderPinPieces = 2
 	streamHeaderPinBytes  = 4 << 20 // container header budget
 )
+
+// headReserve is the piece range at this file's START holding the container header,
+// pinned for the whole stream exactly like the EOF index (tailReserve): eviction
+// keeps it resident (readerProtectRanges) and applyStreamPriorities keeps it
+// priority>0, so a player's periodic header re-reads are served from cache instead
+// of looping through evict → park → deadline-0 re-download. The window budget is
+// reduced by it in readerWindowPieces so window + head + tail stays within CacheSize.
+func (r *Reader) headReserve() [2]int {
+	first := 0
+	if plen := r.cache.PieceLength; plen > 0 {
+		first = int(r.file.Offset / plen)
+	}
+	last := first + r.cache.headPinPieces() - 1
+	if fl := r.fileLastPiece(); last > fl {
+		last = fl
+	}
+	return [2]int{first, last}
+}
 
 // State snapshots this reader's position + prioritised window for the /cache
 // detail view (the web UI highlights it on the piece grid). Lock-free so the
