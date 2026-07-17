@@ -35,8 +35,12 @@ LT_DIR="$SRC_DIR/libtorrent"
 # --- b2 --------------------------------------------------------------
 # Bootstrap Boost's b2 once (host tool). It also makes $BOOST_DIR usable as
 # BOOST_ROOT, from which libtorrent compiles boost_system for the target.
+# The run-check (not just -x) matters in CI: the _src cache is shared between
+# the ubuntu matrix and the macOS runners, so a restored tree can carry a b2
+# binary for the OTHER OS — executable, but not runnable here. Re-bootstrap
+# whenever the cached b2 can't actually run on this host.
 ensure_b2() {
-    if [[ ! -x "$BOOST_DIR/b2" ]]; then
+    if [[ ! -x "$BOOST_DIR/b2" ]] || ! "$BOOST_DIR/b2" --version >/dev/null 2>&1; then
         log "bootstrapping host b2"
         ( cd "$BOOST_DIR" && ./bootstrap.sh >/dev/null )
     fi
@@ -62,10 +66,15 @@ build_libtorrent() {
     # ($LT_DIR). Running two targets from the same CWD races on that file (a
     # parallel windows build can clobber an arm build's .pc). Give each target
     # its own hardlinked copy of the source tree — instant, ~no disk, fully
-    # isolated CWD, and parallel builds stay correct.
+    # isolated CWD, and parallel builds stay correct. BSD cp (a native macOS
+    # runner) has no -l; APFS clonefile (-c) is the same near-free copy there.
     local ltwork="$DEPS_ROOT/.lt-src-$TARGET"
     rm -rf "$ltwork"
-    cp -al "$LT_DIR" "$ltwork"
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        cp -cR "$LT_DIR" "$ltwork" 2>/dev/null || cp -R "$LT_DIR" "$ltwork"
+    else
+        cp -al "$LT_DIR" "$ltwork"
+    fi
 
     log "building libtorrent for $TARGET (toolset $compiler-$B2_VARIANT, crypto=built-in)"
     # shellcheck disable=SC2086
@@ -87,13 +96,16 @@ build_libtorrent() {
     #  2. Those deps live in Libs.private, which pkg-config only emits with
     #     --static. cgo calls pkg-config WITHOUT --static, so fold them into
     #     Libs (after -ltorrent-rasterbar, the order static archives need).
+    # sed -i needs a suffix argument on BSD sed (native macOS runner); the
+    # -i.bak + rm form is the portable spelling for both GNU and BSD.
     local pc="$deps/lib/pkgconfig/libtorrent-rasterbar.pc"
-    sed -i -E 's/-llib([A-Za-z0-9_]+)\.a/-l\1/g' "$pc"
+    sed -i.bak -E 's/-llib([A-Za-z0-9_]+)\.a/-l\1/g' "$pc"
     local privlibs
     privlibs=$(grep -E '^Libs\.private:' "$pc" | grep -oE -- '-l[A-Za-z0-9_]+' | tr '\n' ' ')
     if [[ -n "$privlibs" ]]; then
-        sed -i -E "s#^(Libs:.*)#\1 ${privlibs}#" "$pc"
+        sed -i.bak -E "s#^(Libs:.*)#\1 ${privlibs}#" "$pc"
     fi
+    rm -f "$pc.bak"
 }
 
 # --- Go binary -------------------------------------------------------

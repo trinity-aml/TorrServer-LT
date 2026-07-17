@@ -1,10 +1,14 @@
 name: build-macos
 
 # macOS is built natively on Apple-Silicon runners (macos-latest):
-#  - arm64 builds straight against the runner's Homebrew;
-#  - amd64 cross-builds against an x86_64 Homebrew under Rosetta, so the
-#    artifact is a real Intel binary (a plain build on macos-latest would be
-#    arm64). This avoids the deprecated/flaky macos-13 Intel runner.
+#  - arm64 builds straight with the native clang;
+#  - amd64 builds with `-arch x86_64` (cgo and b2 alike), so the artifact is a
+#    real Intel binary. This avoids the deprecated/flaky macos-13 Intel runner.
+#
+# libtorrent is built from the PINNED source tag via build/darwin-native.sh —
+# the same b2 engine every cross target uses — NOT taken from Homebrew: brew's
+# libtorrent floats (its 2.1.0 bump broke the disk_io shim, which targets the
+# pinned 2.0.x API) and would silently change what a release links against.
 
 on:
   # No `push` trigger: the macOS build does NOT run on every push to master.
@@ -24,54 +28,40 @@ jobs:
   macos:
     name: macos/${{ matrix.arch }}
     runs-on: macos-latest          # Apple Silicon (arm64)
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: arm64
-            goarch: arm64
             artifact: TorrServer-LT-darwin-arm64
           - arch: amd64
-            goarch: amd64
             artifact: TorrServer-LT-darwin-amd64
     steps:
       - uses: actions/checkout@v4
 
-      # arm64: native Homebrew at /opt/homebrew.
-      - name: Install deps (native arm64)
-        if: matrix.arch == 'arm64'
-        run: |
-          set -euo pipefail
-          brew update >/dev/null
-          brew install pkg-config libtorrent-rasterbar
-          echo "BREW=brew" >> "$GITHUB_ENV"
-          echo "ARCHFLAG="  >> "$GITHUB_ENV"
-
-      # amd64: x86_64 Homebrew at /usr/local under Rosetta, then Intel bottles.
-      - name: Install deps (x86_64 via Rosetta)
+      # amd64 cgo/b2 objects build with `-arch x86_64`; the binary runs on the
+      # arm64 host via Rosetta 2 (present on the runners, assert anyway).
+      - name: Ensure Rosetta 2
         if: matrix.arch == 'amd64'
-        env:
-          HOMEBREW_NO_AUTO_UPDATE: '1'
-          HOMEBREW_NO_ENV_HINTS: '1'
-          HOMEBREW_NO_INSTALL_CLEANUP: '1'
-        run: |
-          set -euo pipefail
-          # macos-latest already ships an x86_64 Homebrew at /usr/local and
-          # Rosetta 2; set them up only if missing.
-          /usr/bin/pgrep -q oahd || sudo softwareupdate --install-rosetta --agree-to-license || true
-          if [ ! -x /usr/local/bin/brew ]; then
-            arch -x86_64 /bin/bash -c \
-              "NONINTERACTIVE=1 $(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-          fi
-          # Only libtorrent (pulls boost/openssl). pkg-config stays the arm64 one
-          # already on PATH — it reads the x86_64 .pc fine. brew can exit non-zero
-          # on a harmless PATH-shadow hint, so assert the .pc rather than trust $?.
-          arch -x86_64 /usr/local/bin/brew install libtorrent-rasterbar || true
-          LT=$(arch -x86_64 /usr/local/bin/brew --prefix libtorrent-rasterbar)
-          test -f "$LT/lib/pkgconfig/libtorrent-rasterbar.pc"
-          echo "BREW=arch -x86_64 /usr/local/bin/brew" >> "$GITHUB_ENV"
-          echo "ARCHFLAG=-arch x86_64"                 >> "$GITHUB_ENV"
+        run: /usr/bin/pgrep -q oahd || sudo softwareupdate --install-rosetta --agree-to-license || true
+
+      # Same _src cache key as build.yml, so the Boost+libtorrent sources
+      # fetched by the linux matrix are reused here (the cache is not
+      # OS-partitioned — it is a plain tar of the source trees).
+      - name: Cache Boost + libtorrent sources
+        uses: actions/cache@v4
+        with:
+          path: _src
+          key: src-boost1.85.0-lt2.0.13-v1
+
+      # Per-arch install tree (lib + headers + .pc). With it present the b2
+      # step short-circuits and only the Go binaries are relinked.
+      - name: Cache libtorrent install tree
+        uses: actions/cache@v4
+        with:
+          path: _deps/darwin-${{ matrix.arch }}
+          key: deps-darwin-${{ matrix.arch }}-boost1.85.0-lt2.0.13-v1
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -80,16 +70,15 @@ jobs:
           cache: true
           cache-dependency-path: server/go.sum
 
-      - name: Resolve Homebrew prefixes
-        id: brew
-        run: |
-          set -euo pipefail
-          BOOST=$($BREW --prefix boost)
-          OPENSSL=$($BREW --prefix openssl@3 2>/dev/null || $BREW --prefix openssl)
-          LT=$($BREW --prefix libtorrent-rasterbar)
-          echo "boost=$BOOST"     >> "$GITHUB_OUTPUT"
-          echo "openssl=$OPENSSL" >> "$GITHUB_OUTPUT"
-          echo "lt=$LT"           >> "$GITHUB_OUTPUT"
+      - name: Fetch sources
+        run: bash build/_fetch_sources.sh
+
+      # Builds pinned libtorrent via b2 (cached after the first run), then the
+      # base binary AND the -gst variant (see build/_deps.sh go_build).
+      - name: Build
+        env:
+          TS_VERSION: ${{ inputs.version }}
+        run: bash build/darwin-native.sh ${{ matrix.arch }}
 
       # Native arm64 only: running x86_64 cgo tests under Rosetta is slow, and
       # the build.yml linux-amd64 job already gates the test suite.
@@ -98,52 +87,19 @@ jobs:
         working-directory: server
         env:
           CGO_ENABLED: '1'
-          PKG_CONFIG_PATH: "${{ steps.brew.outputs.lt }}/lib/pkgconfig:${{ steps.brew.outputs.openssl }}/lib/pkgconfig"
-          CGO_CXXFLAGS: "-I${{ steps.brew.outputs.boost }}/include -I${{ steps.brew.outputs.openssl }}/include"
-          CGO_LDFLAGS: "-L${{ steps.brew.outputs.boost }}/lib -L${{ steps.brew.outputs.openssl }}/lib"
+          PKG_CONFIG_PATH: ${{ github.workspace }}/_deps/darwin-arm64/lib/pkgconfig
+          PKG_CONFIG_LIBDIR: ${{ github.workspace }}/_deps/darwin-arm64/lib/pkgconfig
+          CGO_LDFLAGS: "-L${{ github.workspace }}/_deps/darwin-arm64/lib -framework SystemConfiguration -framework CoreFoundation"
         run: go test -count=1 -timeout 180s ./lt/ ./torr/ ./torr/storage/torrstor/ ./dlna/
-
-      - name: Build TorrServer-LT
-        env:
-          CGO_ENABLED: '1'
-          GOOS: darwin
-          GOARCH: ${{ matrix.goarch }}
-          # Homebrew's libtorrent .pc doesn't carry the Boost/OpenSSL include
-          # paths; wire them through so cgo's clang finds boost/config.hpp.
-          CGO_CXXFLAGS: "-I${{ steps.brew.outputs.boost }}/include -I${{ steps.brew.outputs.openssl }}/include"
-          CGO_LDFLAGS: "-L${{ steps.brew.outputs.boost }}/lib -L${{ steps.brew.outputs.openssl }}/lib"
-          PKG_CONFIG_PATH: "${{ steps.brew.outputs.lt }}/lib/pkgconfig:${{ steps.brew.outputs.openssl }}/lib/pkgconfig"
-        run: |
-          set -euo pipefail
-          # ARCHFLAG is empty for arm64; for amd64 it makes every cgo compile and
-          # the final link target x86_64 (GOARCH=amd64 handles the Go objects).
-          export CC="clang $ARCHFLAG"
-          export CXX="clang++ $ARCHFLAG"
-          cd server
-          mkdir -p ../out
-          go build \
-            -ldflags "-s -w -X server/version.Version=${{ inputs.version || 'MatriX.142.LT-1.0.0' }}" \
-            -o "../out/${{ matrix.artifact }}" \
-            ./cmd
-          file "../out/${{ matrix.artifact }}"
-          du -h "../out/${{ matrix.artifact }}"
-          # Second binary with the GStreamer transcoding feature (-tags gst).
-          # Pure Go — the GStreamer libs are dlopen'd at runtime via purego, so
-          # nothing extra is linked; the build cache makes this near-free.
-          go build \
-            -tags gst \
-            -ldflags "-s -w -X server/version.Version=${{ inputs.version || 'MatriX.142.LT-1.0.0' }}" \
-            -o "../out/${{ matrix.artifact }}-gst" \
-            ./cmd
-          file "../out/${{ matrix.artifact }}-gst"
-          du -h "../out/${{ matrix.artifact }}-gst"
 
       # The x86_64 binary runs on the arm64 host via Rosetta, so both probe.
       - name: Probe --version
-        run: ./out/${{ matrix.artifact }} --version
+        run: |
+          _out/${{ matrix.artifact }} --version
+          _out/${{ matrix.artifact }}-gst --version
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: out/${{ matrix.artifact }}*
+          path: _out/${{ matrix.artifact }}*
           if-no-files-found: error
