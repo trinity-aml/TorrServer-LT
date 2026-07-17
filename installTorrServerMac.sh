@@ -20,6 +20,13 @@ scriptname=$(basename "$(test -L "$0" && readlink "$0" || echo "$0")")
 SILENT_MODE=0
 USE_USER_LAUNCHAGENT=0
 USER_PROMPTED=0
+# 1 = install the -gst release variant (GStreamer HLS transcoding compiled in;
+# needs a GStreamer >= 1.22 installed at runtime, loaded dynamically — the base
+# variant has the feature stubbed out). Set by --gst, and kept automatically on
+# update when the installed binary is the -gst one (see checkArch); --no-gst
+# switches an existing -gst install back to the base variant.
+USE_GST_VARIANT=0
+GST_EXPLICIT=0
 
 # Command-line state
 parsedCommand=""
@@ -243,7 +250,11 @@ highlightFirstLetter() {
 }
 
 getBinaryName() {
-  echo "${BINARY_NAME_PREFIX}-${architecture}"
+  if [[ $USE_GST_VARIANT -eq 1 ]]; then
+    echo "${BINARY_NAME_PREFIX}-${architecture}-gst"
+  else
+    echo "${BINARY_NAME_PREFIX}-${architecture}"
+  fi
 }
 
 getVersionTag() {
@@ -541,6 +552,12 @@ checkArch() {
       exit 1
       ;;
   esac
+  # An update keeps the installed variant: if the -gst binary is what's
+  # deployed, stay on it without requiring --gst again. An explicit --gst /
+  # --no-gst always wins over the detection.
+  if [[ $GST_EXPLICIT -eq 0 && -f "${dirInstall}/${BINARY_NAME_PREFIX}-${architecture}-gst" ]]; then
+    USE_GST_VARIANT=1
+  fi
 }
 
 initialCheck() {
@@ -902,6 +919,17 @@ installTorrServer() {
     downloadBinary "$urlBin" "$dirInstall/$binName" "$target_version"
   fi
 
+  # Drop the OTHER variant's binary if switching (base <-> -gst): the plist
+  # below points at the new one, and a leftover would make the sticky variant
+  # detection (checkArch) pick the wrong build on the next update.
+  local otherBin
+  if [[ $USE_GST_VARIANT -eq 1 ]]; then
+    otherBin="${BINARY_NAME_PREFIX}-${architecture}"
+  else
+    otherBin="${BINARY_NAME_PREFIX}-${architecture}-gst"
+  fi
+  rm -f "$dirInstall/$otherBin"
+
   # Create plist and configure service
   configureService
   createPlistFile
@@ -1134,10 +1162,20 @@ Commands:
 
 Options:
   --silent                          Non-interactive mode with defaults
+  --gst                             Install the -gst release variant: GStreamer
+                                    HLS transcoding compiled in (needs a
+                                    GStreamer >= 1.22 installed at runtime,
+                                    e.g. via Homebrew). Updates keep the
+                                    installed variant.
+  --no-gst                          Switch an existing -gst install back to the
+                                    base variant
 
 Examples:
   # Install latest version interactively
   $scriptname --install
+
+  # Install with the GStreamer transcoding variant
+  $scriptname --install --gst --silent
 
   # Install specific version silently
   $scriptname --install 1 --silent
@@ -1223,6 +1261,16 @@ parseArguments() {
         ;;
       --silent)
         SILENT_MODE=1
+        shift
+        ;;
+      --gst)
+        USE_GST_VARIANT=1
+        GST_EXPLICIT=1
+        shift
+        ;;
+      --no-gst)
+        USE_GST_VARIANT=0
+        GST_EXPLICIT=1
         shift
         ;;
       *)

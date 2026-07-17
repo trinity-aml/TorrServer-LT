@@ -2,7 +2,7 @@
 
 > Fork of [YouROK/TorrServer](https://github.com/YouROK/TorrServer) with the BitTorrent core replaced by [libtorrent (arvidn)](https://www.libtorrent.org/).
 >
-> **Status:** work in progress, but the core is functional — streaming, preload, and seeking (including back into already-evicted regions) are verified on real torrents. The HTTP API, on-disk databases (`config.db`, JSON, `accs.db`, viewed) and the `torrs://` token format remain compatible with upstream. The cache layout under `TorrentsSavePath/<hash>/<pieceID>` is preserved.
+> **Status:** feature parity with upstream **MatriX.142.1** (including GStreamer HLS transcoding) on the libtorrent engine — streaming, preload, and seeking (including back into already-evicted regions) are verified on real torrents. The HTTP API, on-disk databases (`config.db`, JSON, `accs.db`, viewed) and the `torrs://` token format remain compatible with upstream. The cache layout under `TorrentsSavePath/<hash>/<pieceID>` is preserved.
 >
 > **Platforms:**
 > - Linux: `amd64`, `arm64`, `armv7`
@@ -33,7 +33,8 @@ The difference from upstream is the underlying torrent engine: `arvidn/libtorren
 - Integration with other apps through API
 - Torznab search (Jackett, Prowlarr, and similar indexer managers)
 - Cross-browser modern web interface
-- Optional DLNA server
+- Optional DLNA server (with category folders)
+- Optional GStreamer HLS transcoding (`-gst` builds; audio AC3/EAC3/DTS → AAC for players without those decoders)
 
 ## Getting Started
 
@@ -41,9 +42,20 @@ The difference from upstream is the underlying torrent engine: `arvidn/libtorren
 
 Download the application for the required platform in the [releases](https://github.com/trinity-aml/TorrServer-LT/releases) page. After installation, open the link <http://127.0.0.1:8090> in the browser.
 
+Every release ships two flavours per desktop platform:
+
+- `TorrServer-LT-<platform>` — the base build;
+- `TorrServer-LT-<platform>-gst` — the same build with **GStreamer HLS
+  transcoding** compiled in (linux amd64/arm64, windows amd64, macOS
+  amd64/arm64). It loads the system GStreamer libraries dynamically at runtime
+  — install [GStreamer](https://gstreamer.freedesktop.org/download/) **1.22+**
+  (with the base/good/bad plugin sets) to actually use it; without GStreamer
+  the binary still works, the transcoding tab just reports unavailable. The
+  base build has the feature stubbed out entirely.
+
 #### Windows
 
-Run `TorrServer-windows-amd64.exe`.
+Run `TorrServer-LT-windows-amd64.exe` (or `TorrServer-LT-windows-amd64-gst.exe` for the transcoding variant).
 
 #### Linux
 
@@ -109,6 +121,12 @@ curl -s https://raw.githubusercontent.com/trinity-aml/TorrServer-LT/master/insta
   sudo bash ./installTorrServerLinux.sh --change-user root --silent
   ```
 
+- Install the GStreamer transcoding (`-gst`) variant:
+
+  ```bash
+  sudo bash ./installTorrServerLinux.sh --install --gst --silent
+  ```
+
 **All available commands:**
 
 - `--install [VERSION]` - Install latest or specific version
@@ -120,6 +138,8 @@ curl -s https://raw.githubusercontent.com/trinity-aml/TorrServer-LT/master/insta
 - `--change-user USER` - Change service user (root|torrserver)
 - `--root` - Run service as root user
 - `--silent` - Non-interactive mode with defaults
+- `--gst` - Install the `-gst` release variant (GStreamer HLS transcoding; amd64/arm64 only, needs a system GStreamer ≥ 1.22 at runtime). Updates keep the installed variant automatically.
+- `--no-gst` - Switch an existing `-gst` install back to the base variant
 - `--help` - Show help message
 
 #### macOS
@@ -273,6 +293,14 @@ libtorrent `dht_max_peers`, default 500), DHT, **PEX** (peer exchange — disabl
 it now actually drops the `ut_pex` plugin), LSD/UPnP, encryption, DLNA, HTTPS,
 proxy and Torznab search.
 
+A `-gst` build adds a **GStreamer** settings tab (PRO mode; shown only when the
+feature is compiled in) with the transcoding options: which codecs to transcode
+(H264/H265/AV1/VP9 video, AAC bitrate/channels for audio), segment length,
+parallel task limit and the GStreamer path/version override. Playback goes
+through `/gst/{hash}/master.m3u8` (HLS); MKV containers with H264/H265/AV1/VP9
+video are supported, audio is transcoded to AAC — for players that can't decode
+AC3/EAC3/DTS.
+
 ## Development
 
 This fork links **libtorrent 2.0.13 (arvidn)** into the Go server through a CGo
@@ -322,7 +350,10 @@ Then open <http://127.0.0.1:8090>.
 `build/` cross-builds **every** supported target on a Linux host: it builds
 libtorrent and `boost_system` from source with Boost.Build (`b2`) into
 `_deps/<target>/`, then links the Go binary against it via pkg-config. Output
-lands in `_out/TorrServer-LT-<target>`.
+lands in `_out/TorrServer-LT-<target>`; the GStreamer-capable platforms (linux
+amd64/arm64, windows amd64, macOS) also get `_out/TorrServer-LT-<target>-gst`
+built with `-tags gst` — the variant is pure Go (GStreamer is dlopen'd at
+runtime via purego), so it needs no extra toolchain and reuses the build cache.
 
 ```bash
 build/all.sh                        # everything the host can build
@@ -353,16 +384,18 @@ prerequisites table: [`build/README.md`](build/README.md).
 Three ways to produce macOS binaries (`darwin-amd64` Intel, `darwin-arm64`
 Apple Silicon):
 
-1. **On a real Mac** — install Go 1.25+ and the Xcode command-line tools, then
-   run `build/darwin-arm64.sh` (or `darwin-amd64.sh`). This is the supported path
-   for anything you distribute.
-2. **CI** — the `.github/workflows/build-macos.yml` runner builds both arches on
-   a macOS host.
+1. **On a real Mac** — install Go and the Xcode command-line tools, then run
+   `build/darwin-native.sh arm64` (or `amd64`). It builds the pinned libtorrent
+   from source via b2 — nothing is taken from Homebrew, whose libtorrent
+   version floats — then both the base and `-gst` binaries. This is the
+   supported path for anything you distribute.
+2. **CI** — `.github/workflows/build-macos.yml` runs that same script for both
+   arches on an Apple-Silicon runner (amd64 via Rosetta/`-arch x86_64`).
 3. **Cross-build from Linux via OSXCross** — needs the Apple macOS SDK, which
    Apple's licence only permits on Apple hardware, so this is a legal grey area
    and is meant for local reproducibility only. Set `OSXCROSS_ROOT` and run the
-   `darwin-*` scripts; the one-time SDK-extraction recipe is in
-   [`build/README.md`](build/README.md).
+   `darwin-arm64.sh` / `darwin-amd64.sh` scripts; the one-time SDK-extraction
+   recipe is in [`build/README.md`](build/README.md).
 
 ### Web UI
 
