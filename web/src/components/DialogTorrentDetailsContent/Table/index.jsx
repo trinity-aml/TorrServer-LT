@@ -34,11 +34,14 @@ const Table = memo(
 
     const isVlcUsed = JSON.parse(localStorage.getItem('isVlcUsed')) ?? false
     const isInfuseUsed = JSON.parse(localStorage.getItem('isInfuseUsed')) ?? false
+    const isSenPlayerUsed = JSON.parse(localStorage.getItem('isSenPlayerUsed')) ?? false
     const isIinaUsed = JSON.parse(localStorage.getItem('isIinaUsed')) ?? false
     const isStandalone = detectStandaloneApp()
     const isMac = isMacOS()
     const isApple = isAppleDevice()
-    const shouldShowOpenLink = !isStandalone || (!(isApple && isInfuseUsed) && !isVlcUsed && !(isMac && isIinaUsed))
+    const shouldShowOpenLink =
+      !isStandalone ||
+      (!(isApple && isInfuseUsed) && !(isApple && isSenPlayerUsed) && !isVlcUsed && !(isMac && isIinaUsed))
 
     return !playableFileList?.length ? (
       'No playable files in this torrent'
@@ -64,6 +67,7 @@ const Table = memo(
               const link = getFileLink(path, id)
               const fullLink = new URL(link, window.location.href)
               const infuseLink = `infuse://x-callback-url/play?url=${encodeURIComponent(fullLink)}`
+              const senPlayerLink = `senplayer://x-callback-url/play?url=${encodeURIComponent(fullLink)}`
               const iinaLink = `iina://weblink?url=${encodeURIComponent(fullLink)}`
 
               return (
@@ -84,6 +88,13 @@ const Table = memo(
                           <a style={{ textDecoration: 'none' }} href={infuseLink}>
                             <Button style={{ width: '100%' }} variant='outlined' color='primary' size='small'>
                               {t('Infuse')}
+                            </Button>
+                          </a>
+                        )}
+                        {isApple && isSenPlayerUsed && (
+                          <a style={{ textDecoration: 'none' }} href={senPlayerLink}>
+                            <Button style={{ width: '100%' }} variant='outlined' color='primary' size='small'>
+                              {t('SenPlayer')}
                             </Button>
                           </a>
                         )}
@@ -140,6 +151,7 @@ const Table = memo(
             const link = getFileLink(path, id)
             const fullLink = new URL(link, window.location.href)
             const infuseLink = `infuse://x-callback-url/play?url=${encodeURIComponent(fullLink)}`
+            const senPlayerLink = `senplayer://x-callback-url/play?url=${encodeURIComponent(fullLink)}`
             const iinaLink = `iina://weblink?url=${encodeURIComponent(fullLink)}`
 
             return (
@@ -187,6 +199,14 @@ const Table = memo(
                       <a style={{ textDecoration: 'none' }} href={infuseLink}>
                         <Button style={{ width: '100%' }} variant='outlined' color='primary' size='small'>
                           {t('Infuse')}
+                        </Button>
+                      </a>
+                    )}
+
+                    {isApple && isSenPlayerUsed && (
+                      <a style={{ textDecoration: 'none' }} href={senPlayerLink}>
+                        <Button style={{ width: '100%' }} variant='outlined' color='primary' size='small'>
+                          {t('SenPlayer')}
                         </Button>
                       </a>
                     )}

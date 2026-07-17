@@ -3,6 +3,7 @@ package web
 import (
 	"net"
 	"os"
+	"server/netbind"
 	"server/proxy"
 	"sort"
 
@@ -21,8 +22,8 @@ import (
 	"server/web/msx"
 
 	"server/log"
-	"server/torr"
 	"server/lt"
+	"server/torr"
 	"server/version"
 	"server/web/api"
 	"server/web/auth"
@@ -115,19 +116,33 @@ func Start() {
 			settings.SetBTSets(settings.BTsets())
 		}
 		go func() {
-			log.TLogln("Start https server at", settings.IP+":"+settings.SslPort)
-			waitChan <- route.RunTLS(settings.IP+":"+settings.SslPort, settings.BTsets().SslCert, settings.BTsets().SslKey)
+			for _, ip := range netbind.Normalize(settings.IPs) {
+				addr := netbind.Addr(ip, settings.SslPort)
+				go func(addr string) {
+					log.TLogln("Start https server at", addr)
+					waitChan <- route.RunTLS(addr, settings.BTsets().SslCert, settings.BTsets().SslKey)
+				}(addr)
+			}
 		}()
 	}
 
 	go func() {
-		addr := settings.IP + ":" + settings.Port
 		if settings.Args != nil && settings.Args.ForceHTTPS && settings.Ssl {
-			waitChan <- runHTTPRedirectToHTTPS(addr)
+			for _, ip := range netbind.Normalize(settings.IPs) {
+				addr := netbind.Addr(ip, settings.Port)
+				go func(addr string) {
+					waitChan <- runHTTPRedirectToHTTPS(addr)
+				}(addr)
+			}
 			return
 		}
-		log.TLogln("Start http server at", addr)
-		waitChan <- route.Run(addr)
+		for _, ip := range netbind.Normalize(settings.IPs) {
+			addr := netbind.Addr(ip, settings.Port)
+			go func(addr string) {
+				log.TLogln("Start http server at", addr)
+				waitChan <- route.Run(addr)
+			}(addr)
+		}
 	}()
 }
 
