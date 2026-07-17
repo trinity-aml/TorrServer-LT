@@ -279,6 +279,8 @@
     "VersionHint": "Встановлена версія GStreamer (мінімум 1.22, наприклад 1.22 або 1.28)",
     "Path": "Шлях до GStreamer",
     "PathHint": "Шлях до встановлення GStreamer. Залиште порожнім для авто визначення.",
+    "PlaylistHLS": "Плейлист із посиланнями на HLS-транскод",
+    "PlaylistHLSHint": "Згенеровані M3U-плейлисти ведуть MKV/WebM-файли на HLS-транскод (аудіо перекодовується в AAC); інші файли отримують прямі посилання.",
     "SectionGeneral": "Основні",
     "SectionPipeline": "Pipeline",
     "SectionTranscoding": "Транскодування",

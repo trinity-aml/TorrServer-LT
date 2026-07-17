@@ -23,3 +23,9 @@ func Stop() {
 func Remove(hash string) bool {
 	return gstreamer.Remove(hash)
 }
+
+// PlaylistHLS reports whether generated M3U playlists should use the HLS
+// transcode endpoint for Matroska/WebM entries (the PlaylistHLS setting).
+func PlaylistHLS() bool {
+	return gstreamer.PlaylistHLS()
+}

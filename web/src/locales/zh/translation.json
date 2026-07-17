@@ -279,6 +279,8 @@
     "VersionHint": "Installed GStreamer version (minimum 1.22, e.g. 1.22 or 1.28)",
     "Path": "GStreamer path",
     "PathHint": "Path to GStreamer installation. Leave empty for auto-detection.",
+    "PlaylistHLS": "播放列表使用 HLS 转码链接",
+    "PlaylistHLSHint": "生成的 M3U 播放列表将 MKV/WebM 条目指向 HLS 转码端点（音频转码为 AAC）；其他文件保留直接链接。",
     "SectionGeneral": "General",
     "SectionPipeline": "Pipeline",
     "SectionTranscoding": "Transcoding",

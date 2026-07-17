@@ -14,6 +14,7 @@ import (
 
 	"github.com/anacrolix/missinggo/v2/httptoo"
 
+	gstreamer "server/gstreamer/bridge"
 	sets "server/settings"
 	"server/torr"
 	"server/torr/state"
@@ -159,6 +160,11 @@ func getM3uList(tor *state.TorrentStatus, host string, fromLast bool) string {
 	// different token and thus an isolated window even behind the same IP. See
 	// torr.streamGroupKey.
 	session := "&ss=" + newSessionToken()
+	// PlaylistHLS (GStreamer settings, -gst builds): point Matroska/WebM entries
+	// at the HLS transcode endpoint so any HLS-capable player gets AAC audio
+	// without hand-building URLs. Only those containers — the transcode pipeline
+	// rejects everything else, so other files keep their direct /stream links.
+	gstHLS := gstreamer.PlaylistHLS()
 	for i, f := range tor.FileStats {
 		if i >= from {
 			if utils.GetMimeType(f.Path) != "*/*" {
@@ -167,6 +173,10 @@ func getM3uList(tor *state.TorrentStatus, host string, fromLast bool) string {
 					fn = f.Path
 				}
 				m3u += "#EXTINF:0," + fn + "\n"
+				if gstHLS && isGstHLSContainer(f.Path) {
+					m3u += host + "/gst/" + tor.Hash + "/master.m3u8?index=" + fmt.Sprint(f.Id) + "\n"
+					continue
+				}
 				fileNamesakes := findFileNamesakes(tor.FileStats, f) // find external media with same name (audio/subtiles tracks)
 				if fileNamesakes != nil {
 					m3u += "#EXTVLCOPT:input-slave="         // include VLC option for external media
@@ -182,6 +192,17 @@ func getM3uList(tor *state.TorrentStatus, host string, fromLast bool) string {
 		}
 	}
 	return m3u
+}
+
+// isGstHLSContainer reports whether the file is one the GStreamer transcode
+// pipeline accepts (Matroska/WebM — see gstreamer.validateProbe). Only these
+// get /gst/ links in a PlaylistHLS playlist.
+func isGstHLSContainer(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".mkv", ".webm":
+		return true
+	}
+	return false
 }
 
 // newSessionToken returns a short random token used to isolate one playback

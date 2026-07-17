@@ -285,6 +285,8 @@
     "VersionHint": "Installed GStreamer version (minimum 1.22, e.g. 1.22 or 1.28)",
     "Path": "GStreamer path",
     "PathHint": "Path to GStreamer installation. Leave empty for auto-detection.",
+    "PlaylistHLS": "Playlist with HLS transcode links",
+    "PlaylistHLSHint": "Generated M3U playlists point MKV/WebM entries at the HLS transcode endpoint (audio transcoded to AAC); other files keep direct links.",
     "SectionGeneral": "General",
     "SectionPipeline": "Pipeline",
     "SectionTranscoding": "Transcoding",

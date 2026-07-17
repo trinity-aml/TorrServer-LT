@@ -36,6 +36,13 @@ type Config struct {
 
 	TempFS     bool `json:"tempfs"`
 	TempFSRing int  `json:"tempfs_ring"`
+
+	// PlaylistHLS (fork extension, not in upstream): generated M3U playlists
+	// point Matroska/WebM entries at the /gst/{hash}/master.m3u8 transcode
+	// endpoint instead of the direct /stream link, so any HLS-capable player
+	// gets the AAC-transcoded audio without hand-building URLs. Other
+	// containers keep their direct links (the pipeline only accepts mkv/webm).
+	PlaylistHLS bool `json:"PlaylistHLS"`
 }
 
 func DefaultConfig() Config {
@@ -126,6 +133,8 @@ type storedConfig struct {
 
 	TempFS     *bool `json:"tempfs"`
 	TempFSRing *int  `json:"tempfs_ring"`
+
+	PlaylistHLS *bool
 }
 
 func applySettingsConfig(conf Config) Config {
@@ -205,8 +214,18 @@ func applySettingsConfig(conf Config) Config {
 	if stored.TempFSRing != nil {
 		conf.TempFSRing = *stored.TempFSRing
 	}
+	if stored.PlaylistHLS != nil {
+		conf.PlaylistHLS = *stored.PlaylistHLS
+	}
 
 	return conf
+}
+
+// PlaylistHLS reports whether generated M3U playlists should point supported
+// (Matroska/WebM) entries at the HLS transcode endpoint. Reads the live
+// config so a settings save takes effect on the next playlist fetch.
+func PlaylistHLS() bool {
+	return LoadConfig().PlaylistHLS
 }
 
 func LoadConfig() Config {

@@ -623,6 +623,7 @@ GStreamer settings are stored separately from the main BitTorrent settings and t
 | `VideoBitrate` | Target video bitrate in kbps when transcoding video. |
 | `tempfs` | Use memory-backed tempfs for segments (Linux). |
 | `tempfs_ring` | Extra tempfs ring blocks (`0` = default). |
+| `PlaylistHLS` | **Fork extension.** Generated M3U playlists point MKV/WebM entries at `/gst/{hash}/master.m3u8` instead of the direct `/stream` link, so any HLS-capable player gets the AAC-transcoded audio straight from the playlist; other containers keep direct links. No effect on base builds. |
 
 ### API
 

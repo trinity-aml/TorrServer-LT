@@ -61,6 +61,7 @@ const emptyConfig = {
   VideoBitrate: 10000,
   tempfs: false,
   tempfs_ring: 0,
+  PlaylistHLS: false,
 }
 
 const componentStatusKind = component => {
@@ -282,6 +283,21 @@ export default function GStreamerSettings() {
           <MenuItem value='play'>{t('GStreamer.SourcePlay')}</MenuItem>
         </Select>
         <FormHelperText style={{ marginTop: 8 }}>{t('GStreamer.SourceHint')}</FormHelperText>
+      </FormGroup>
+
+      <FormGroup>
+        <FormControlLabel
+          control={
+            <Switch
+              checked={Boolean(gstreamerSettings.PlaylistHLS)}
+              onChange={e => updateField('PlaylistHLS', e.target.checked)}
+              color='secondary'
+            />
+          }
+          label={t('GStreamer.PlaylistHLS')}
+          labelPlacement='start'
+        />
+        <FormHelperText>{t('GStreamer.PlaylistHLSHint')}</FormHelperText>
       </FormGroup>
 
       <Divider />
