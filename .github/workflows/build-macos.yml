@@ -122,7 +122,7 @@ jobs:
           cd server
           mkdir -p ../out
           go build \
-            -ldflags "-s -w -X server/version.Version=${{ inputs.version || 'MatriX.141.LT-1.0.0' }}" \
+            -ldflags "-s -w -X server/version.Version=${{ inputs.version || 'MatriX.142.LT-1.0.0' }}" \
             -o "../out/${{ matrix.artifact }}" \
             ./cmd
           file "../out/${{ matrix.artifact }}"
@@ -132,7 +132,7 @@ jobs:
           # nothing extra is linked; the build cache makes this near-free.
           go build \
             -tags gst \
-            -ldflags "-s -w -X server/version.Version=${{ inputs.version || 'MatriX.141.LT-1.0.0' }}" \
+            -ldflags "-s -w -X server/version.Version=${{ inputs.version || 'MatriX.142.LT-1.0.0' }}" \
             -o "../out/${{ matrix.artifact }}-gst" \
             ./cmd
           file "../out/${{ matrix.artifact }}-gst"

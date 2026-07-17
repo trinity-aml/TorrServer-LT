@@ -86,7 +86,7 @@ jobs:
 
       - name: Build
         env:
-          # Empty for branch/PR builds (scripts default to MatriX.141.LT-1.0.0);
+          # Empty for branch/PR builds (scripts default to MatriX.142.LT-1.0.0);
           # set to the tag when called from ts_release.yml.
           TS_VERSION: ${{ inputs.version }}
         run: bash build/${{ matrix.target }}.sh
