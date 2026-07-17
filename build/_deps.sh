@@ -97,9 +97,24 @@ build_libtorrent() {
 }
 
 # --- Go binary -------------------------------------------------------
+# gst_variant_wanted: platforms that get a SECOND binary with the GStreamer
+# transcoding feature compiled in (-tags gst) — the ones a GStreamer runtime
+# exists for, mirroring upstream build-all.sh's GST_PLATFORMS. The feature is
+# pure Go (purego dlopen at runtime, no build-time linkage), so the variant
+# differs only by the build tag; other targets ship the stub-only base binary.
+gst_variant_wanted() {
+    case "$GOOS/$GOARCH" in
+        linux/amd64 | linux/arm64 | windows/amd64 | darwin/amd64 | darwin/arm64) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 go_build() {
     local deps="$1"
     local out="$OUT_DIR/TorrServer-LT-${TARGET}${BINEXT:-}"
+    # -gst suffix BEFORE the .exe extension; the suffix form keeps the CI
+    # artifact globs (TorrServer-LT-<target>*) picking both variants up.
+    local out_gst="$OUT_DIR/TorrServer-LT-${TARGET}-gst${BINEXT:-}"
 
     # Go caches a cgo package's resolved pkg-config flags keyed on the cgo
     # source + CGO_* env, NOT on the .pc file content. So a regenerated/changed
@@ -110,30 +125,42 @@ go_build() {
     pc_stamp=$( { cat "$deps/lib/pkgconfig/libtorrent-rasterbar.pc"; echo "${EXTRA_CGO_LDFLAGS:-}"; } | sha1sum | cut -c1-12 )
 
     log "go build ($TARGET)"
-    # -tags gst compiles in the GStreamer transcoding feature (server/gstreamer).
-    # It is pure Go: the GStreamer libraries are dlopen'd at RUNTIME via purego,
-    # so no headers/libs are needed at build time and nothing extra is linked.
-    # The package's own build constraints keep the real implementation to
-    # (linux|darwin|windows) x (amd64|arm64); every other target gets the stubs
-    # even with the tag, so it is safe to pass unconditionally.
     cd "$ROOT/server"
-    env \
-        CGO_ENABLED=1 \
-        GOOS="$GOOS" GOARCH="$GOARCH" ${GOARM:+GOARM="$GOARM"} \
-        CC="$CC" CXX="$CXX" \
-        PKG_CONFIG_PATH="$deps/lib/pkgconfig" \
-        PKG_CONFIG_LIBDIR="$deps/lib/pkgconfig" \
-        CGO_CFLAGS="-DTS_PC_STAMP=$pc_stamp" \
-        CGO_CXXFLAGS="-DTS_PC_STAMP=$pc_stamp -DTSL_HAVE_LT_INTERNALS" \
-        CGO_LDFLAGS="-L$deps/lib ${EXTRA_CGO_LDFLAGS:-}" \
-        go build \
-        -tags gst \
-        -ldflags "-s -w ${EXTRA_GO_LDFLAGS:-} -X server/version.Version=${TS_VERSION}" \
-        -o "$out" \
-        ./cmd
+    # one_build <output> [extra go build args...] — both variants share the
+    # exact same cgo env, so the second build reuses the Go build cache for
+    # everything except the gst-gated packages (near-free).
+    one_build() {
+        local target_out="$1"
+        shift
+        env \
+            CGO_ENABLED=1 \
+            GOOS="$GOOS" GOARCH="$GOARCH" ${GOARM:+GOARM="$GOARM"} \
+            CC="$CC" CXX="$CXX" \
+            PKG_CONFIG_PATH="$deps/lib/pkgconfig" \
+            PKG_CONFIG_LIBDIR="$deps/lib/pkgconfig" \
+            CGO_CFLAGS="-DTS_PC_STAMP=$pc_stamp" \
+            CGO_CXXFLAGS="-DTS_PC_STAMP=$pc_stamp -DTSL_HAVE_LT_INTERNALS" \
+            CGO_LDFLAGS="-L$deps/lib ${EXTRA_CGO_LDFLAGS:-}" \
+            go build \
+            "$@" \
+            -ldflags "-s -w ${EXTRA_GO_LDFLAGS:-} -X server/version.Version=${TS_VERSION}" \
+            -o "$target_out" \
+            ./cmd
+        file "$target_out"
+        du -h "$target_out"
+    }
 
-    file "$out"
-    du -h "$out"
+    one_build "$out"
+
+    # Second binary WITH the GStreamer transcoding feature for the platforms a
+    # GStreamer runtime exists on (see gst_variant_wanted). -tags gst compiles
+    # in server/gstreamer; the GStreamer libraries are dlopen'd at RUNTIME via
+    # purego, so no headers/libs are needed here and nothing extra is linked —
+    # the variant merely enables the feature for users who install GStreamer.
+    if gst_variant_wanted; then
+        log "go build ($TARGET, gst variant)"
+        one_build "$out_gst" -tags gst
+    fi
 }
 
 # --- orchestrator ----------------------------------------------------

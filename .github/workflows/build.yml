@@ -104,7 +104,9 @@ jobs:
 
       - name: Probe --version
         if: matrix.target == 'linux-amd64'
-        run: _out/TorrServer-LT-linux-amd64 --version
+        run: |
+          _out/TorrServer-LT-linux-amd64 --version
+          _out/TorrServer-LT-linux-amd64-gst --version
 
       - uses: actions/upload-artifact@v4
         with:

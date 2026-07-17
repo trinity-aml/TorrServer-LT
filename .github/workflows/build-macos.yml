@@ -127,6 +127,16 @@ jobs:
             ./cmd
           file "../out/${{ matrix.artifact }}"
           du -h "../out/${{ matrix.artifact }}"
+          # Second binary with the GStreamer transcoding feature (-tags gst).
+          # Pure Go — the GStreamer libs are dlopen'd at runtime via purego, so
+          # nothing extra is linked; the build cache makes this near-free.
+          go build \
+            -tags gst \
+            -ldflags "-s -w -X server/version.Version=${{ inputs.version || 'MatriX.141.LT-1.0.0' }}" \
+            -o "../out/${{ matrix.artifact }}-gst" \
+            ./cmd
+          file "../out/${{ matrix.artifact }}-gst"
+          du -h "../out/${{ matrix.artifact }}-gst"
 
       # The x86_64 binary runs on the arm64 host via Rosetta, so both probe.
       - name: Probe --version
@@ -135,5 +145,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: out/${{ matrix.artifact }}
+          path: out/${{ matrix.artifact }}*
           if-no-files-found: error
