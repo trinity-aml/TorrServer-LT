@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"server/dlna"
+	gstreamer "server/gstreamer/bridge"
 	"server/log"
 	set "server/settings"
 	"server/torr"
@@ -184,6 +185,7 @@ func remTorrent(req torrReqJS, c *gin.Context) {
 		return
 	}
 	torr.RemTorrent(req.Hash)
+	gstreamer.Remove(req.Hash)
 	// TODO: remove
 	if set.BTsets().EnableDLNA {
 		dlna.Stop()
@@ -211,6 +213,7 @@ func dropTorrent(req torrReqJS, c *gin.Context) {
 		return
 	}
 	torr.DropTorrent(req.Hash)
+	gstreamer.Remove(req.Hash)
 	c.Status(200)
 }
 

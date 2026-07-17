@@ -121,20 +121,20 @@ var Mstile150x150png []byte
 //go:embed pages/site.webmanifest
 var Sitewebmanifest []byte
 
-//go:embed pages/static/js/2.54a3c343.chunk.js
-var Staticjs254a3c343chunkjs []byte
+//go:embed pages/static/js/2.9f1c7c0f.chunk.js
+var Staticjs29f1c7c0fchunkjs []byte
 
-//go:embed pages/static/js/2.54a3c343.chunk.js.LICENSE.txt
-var Staticjs254a3c343chunkjsLICENSEtxt []byte
+//go:embed pages/static/js/2.9f1c7c0f.chunk.js.LICENSE.txt
+var Staticjs29f1c7c0fchunkjsLICENSEtxt []byte
 
-//go:embed pages/static/js/2.54a3c343.chunk.js.map
-var Staticjs254a3c343chunkjsmap []byte
+//go:embed pages/static/js/2.9f1c7c0f.chunk.js.map
+var Staticjs29f1c7c0fchunkjsmap []byte
 
-//go:embed pages/static/js/main.4b97c3e9.chunk.js
-var Staticjsmain4b97c3e9chunkjs []byte
+//go:embed pages/static/js/main.efcda243.chunk.js
+var Staticjsmainefcda243chunkjs []byte
 
-//go:embed pages/static/js/main.4b97c3e9.chunk.js.map
-var Staticjsmain4b97c3e9chunkjsmap []byte
+//go:embed pages/static/js/main.efcda243.chunk.js.map
+var Staticjsmainefcda243chunkjsmap []byte
 
 //go:embed pages/static/js/runtime-main.5ed86a79.js
 var Staticjsruntimemain5ed86a79js []byte

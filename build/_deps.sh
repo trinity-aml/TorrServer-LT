@@ -110,6 +110,12 @@ go_build() {
     pc_stamp=$( { cat "$deps/lib/pkgconfig/libtorrent-rasterbar.pc"; echo "${EXTRA_CGO_LDFLAGS:-}"; } | sha1sum | cut -c1-12 )
 
     log "go build ($TARGET)"
+    # -tags gst compiles in the GStreamer transcoding feature (server/gstreamer).
+    # It is pure Go: the GStreamer libraries are dlopen'd at RUNTIME via purego,
+    # so no headers/libs are needed at build time and nothing extra is linked.
+    # The package's own build constraints keep the real implementation to
+    # (linux|darwin|windows) x (amd64|arm64); every other target gets the stubs
+    # even with the tag, so it is safe to pass unconditionally.
     cd "$ROOT/server"
     env \
         CGO_ENABLED=1 \
@@ -121,6 +127,7 @@ go_build() {
         CGO_CXXFLAGS="-DTS_PC_STAMP=$pc_stamp -DTSL_HAVE_LT_INTERNALS" \
         CGO_LDFLAGS="-L$deps/lib ${EXTRA_CGO_LDFLAGS:-}" \
         go build \
+        -tags gst \
         -ldflags "-s -w ${EXTRA_GO_LDFLAGS:-} -X server/version.Version=${TS_VERSION}" \
         -o "$out" \
         ./cmd
