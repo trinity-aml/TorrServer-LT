@@ -106,9 +106,8 @@ type BTSets struct {
 	StoreSettingsInJson bool
 	StoreViewedInJson   bool
 
-	// P2P Proxy
-	EnableProxy bool
-	ProxyHosts  []string
+	// Viewed timecodes
+	TrackTimecode bool // store playback position (timecode) in viewed data
 }
 
 func (v *BTSets) String() string {
@@ -223,9 +222,6 @@ func SetDefaultConfig() {
 		}
 		tdb.Set("Settings", "BitTorr", buf)
 	}
-	//Proxy
-	sets.EnableProxy = false
-	sets.ProxyHosts = []string{"*themoviedb.org", "*tmdb.org", "rutor.info"}
 }
 
 func loadBTSets() {

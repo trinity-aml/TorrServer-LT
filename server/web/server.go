@@ -4,7 +4,6 @@ import (
 	"net"
 	"os"
 	"server/netbind"
-	"server/proxy"
 	"sort"
 
 	"server/torrfs/fuse"
@@ -155,7 +154,6 @@ func Stop() {
 	// Unmount FUSE filesystem if mounted
 	fuse.FuseCleanup()
 	BTS.Disconnect()
-	proxy.Stop()
 	waitChan <- nil
 }
 

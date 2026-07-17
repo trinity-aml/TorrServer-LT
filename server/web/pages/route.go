@@ -1,9 +1,7 @@
 package pages
 
 import (
-	"net/http"
 	"net/url"
-	"server/proxy"
 
 	"github.com/gin-gonic/gin"
 
@@ -30,7 +28,6 @@ func SetupRoute(route gin.IRouter) {
 	template.RouteWebPages(webPagesAuth)
 	authorized.GET("/stat", statPage)
 	authorized.GET("/magnets", getTorrents)
-	authorized.Any("/proxy/*url", proxyUrl)
 }
 
 // stat godoc
@@ -81,12 +78,4 @@ func getTorrents(c *gin.Context) {
 	}
 	html += "</div>"
 	c.Data(200, "text/html; charset=utf-8", []byte(html))
-}
-
-func proxyUrl(c *gin.Context) {
-	if proxy.P2Proxy != nil {
-		proxy.P2Proxy.GinHandler(c)
-		return
-	}
-	c.AbortWithStatus(http.StatusNotFound)
 }
