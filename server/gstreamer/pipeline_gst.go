@@ -561,6 +561,7 @@ func (r *gstRunner) Seek(seconds float64) bool {
 
 	actualSeconds, err := r.startPipeline(seconds)
 	if err != nil {
+		gstDebugln("gstreamer: pipeline seek to", seconds, "s failed:", err)
 		r.freezeAtPosition(seconds)
 		return false
 	}
@@ -636,6 +637,7 @@ func (r *gstRunner) EnsureInit(ctx context.Context, audio int, startIndex int) e
 				return err
 			}
 			if gstRuntime.appSinkIsEOS(r.sink) {
+				gstDebugln("gstreamer: EOS while waiting for init.mp4, start index", startIndex, "position", r.position())
 				return ErrSegmentNotReady
 			}
 			continue
@@ -728,6 +730,7 @@ func (r *gstRunner) GetSegment(ctx context.Context, index int, audio int) (Segme
 			if gstRuntime.appSinkIsEOS(r.sink) {
 				seg, err := r.drainEndOfStream(index)
 				if err != nil {
+					gstDebugln("gstreamer: EOS drain at segment", index, "position", r.position(), "err:", err)
 					return Segment{}, err
 				}
 				return seg, nil
@@ -762,6 +765,7 @@ func (r *gstRunner) GetSegment(ctx context.Context, index int, audio int) (Segme
 		return Segment{}, err
 	}
 
+	gstDebugln("gstreamer: segment", index, "wait timed out, position", r.position())
 	return Segment{}, ErrSegmentNotReady
 }
 
@@ -917,10 +921,27 @@ func (r *gstRunner) startPipeline(seconds float64) (float64, error) {
 
 		positionNS, ok := gstRuntime.elementQueryPosition(pipeline)
 		if !ok {
-			cleanup()
-			return 0, errors.New("gstreamer position query failed after seek")
+			// gst_element_query_position transiently fails right after a flushing
+			// seek (the new segment hasn't propagated to the sinks yet) — retry
+			// briefly, then fall back to the REQUESTED position instead of tearing
+			// the prerolled pipeline down. The query only refines the reader's
+			// segment indexing to the keyframe the seek actually landed on
+			// (SNAP_AFTER lands within a keyframe interval of the request), while
+			// the hard error here collapsed into a bare 502 — and one segment 502
+			// makes HLS players (VLC) abandon the whole playlist item, which on a
+			// series playlist played as "seek jumped to the next episode".
+			deadline := time.Now().Add(2 * time.Second)
+			for !ok && time.Now().Before(deadline) {
+				time.Sleep(100 * time.Millisecond)
+				positionNS, ok = gstRuntime.elementQueryPosition(pipeline)
+			}
 		}
-		actualStartSeconds = float64(positionNS) / 1_000_000_000.0
+		if ok {
+			actualStartSeconds = float64(positionNS) / 1_000_000_000.0
+		} else {
+			gstDebugln("gstreamer: position query failed after seek to", seconds, "s — using the requested position")
+			actualStartSeconds = seconds
+		}
 	}
 
 	if err := r.setPipelineState(pipeline, bus, gstStatePlaying); err != nil {

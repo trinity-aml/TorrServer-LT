@@ -8,6 +8,9 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+
+	"server/log"
+	"server/settings"
 )
 
 func (s *Service) SetupRoute(route gin.IRouter) {
@@ -174,6 +177,7 @@ func (s *Service) segment(c *gin.Context) {
 	audio := parseQueryInt(c, "audio", task.Audio)
 	if !task.hasInitMP4() {
 		if err := task.EnsureInit(c.Request.Context(), audio, index); err != nil {
+			logGstError("EnsureInit", c.Param("hash"), index, err)
 			c.AbortWithError(http.StatusBadGateway, err)
 			return
 		}
@@ -186,8 +190,25 @@ func (s *Service) segment(c *gin.Context) {
 		return writeSegment(c, seg)
 	})
 	if err != nil {
+		logGstError("segment", c.Param("hash"), index, err)
 		c.AbortWithError(http.StatusBadGateway, err)
 		return
+	}
+}
+
+// logGstError surfaces a transcode failure in the debug log: a 502 here makes
+// players (VLC HLS) abandon the whole playlist item — on a series playlist
+// that shows up as "skipped to the next episode" — so the cause must be
+// visible in the field log, not swallowed into an empty error body.
+func logGstError(stage, hash string, index int, err error) {
+	gstDebugln("gstreamer:", stage, "failed hash", hash, "segment", index, "err:", err)
+}
+
+// gstDebugln logs when EnableDebug is set — the transcode path's failures are
+// otherwise invisible (errors collapse into bare 502s).
+func gstDebugln(args ...interface{}) {
+	if s := settings.BTsets(); s != nil && s.EnableDebug {
+		log.TLogln(args...)
 	}
 }
 
