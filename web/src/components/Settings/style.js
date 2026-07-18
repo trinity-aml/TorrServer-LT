@@ -262,7 +262,10 @@ export const GstSettingsContent = styled(SecondarySettingsContent)`
   }
 
   .MuiSelect-outlined {
-    background: #fff;
+    /* Transparent like the outlined text fields in this panel — the theme
+       paints the text, the notched outline draws the border. A hardcoded
+       white here made the select a white box with white text in dark mode. */
+    background: transparent;
   }
 `
 export const StorageButton = styled.div`
