@@ -190,6 +190,11 @@ type group struct {
 	// the anchor back onto the position the player just left.
 	prevPlayhead int64
 	prevSnapMs   int64
+	// snapCancel is set by the instant far-park snap and consumed by the next
+	// applyStreamPriorities (takeSnapCancels): the deadline reconcile then
+	// rebuilds the time-critical set from scratch so libtorrent CANCELs the
+	// old window's in-flight requests (see takeSnapCancels).
+	snapCancel bool
 }
 
 // snapShadowMs is how long after an instant far-park snap the replaced anchor
@@ -254,30 +259,64 @@ func (c *Cache) setWaitFocus(group string, piece, ffirst, flast int, bornMs int6
 }
 
 // snapShadowed reports whether a park/blocked wait at piece, by a reader born
-// at bornMs, is the dying pre-seek connection's last blocked read (see
-// inSnapShadow in streamAnchors): within snapShadowMs of an instant far-park
-// snap, born BEFORE that snap, and within a window of the REPLACED anchor.
-// The anchor maths already drops such readers; this exposes the same test to
-// the paths OUTSIDE the anchor — the group focus (setWaitFocus) and the
-// blocked-force set (applyStreamPriorities) — which otherwise kept the OLD
-// window's pieces deadline-forced for seconds after a far seek: the swarm
-// split between the old and the new position and the seek target trickled in
-// (the residual 3-4s of post-seek resume in the field A/B, after the anchor
-// itself already snapped instantly).
+// at bornMs, is the dying pre-seek connection's lingering blocked read (see
+// inSnapShadow in streamAnchors): born BEFORE the last instant far-park snap
+// and within a window of the REPLACED anchor. The anchor maths already drops
+// such readers; this exposes the same test to the paths OUTSIDE the anchor —
+// the group focus (setWaitFocus) and the blocked-force set
+// (applyStreamPriorities) — which otherwise kept the OLD window's pieces
+// deadline-forced for seconds after a far seek: the swarm split between the
+// old and the new position and the seek target trickled in (the residual
+// 3-4s of post-seek resume in the field A/B, after the anchor itself already
+// snapped instantly).
+//
+// Deliberately NOT time-capped (unlike the anchor's own snapShadowMs window):
+// the field log showed the abandoned connection's sticky wait outliving a 4s
+// cap and re-splitting the swarm at snap+5s. The shadow holds until the next
+// far snap replaces prevPlayhead (or the group is pruned). A pre-snap reader
+// the player genuinely still consumes self-heals: once the anchor follows it
+// back (the anchor shadow DOES expire), the window ramp covers its pieces
+// and the blocked-force is irrelevant; an orphan wait outside any window
+// times out, and the client's retry connection is post-snap-born.
 func (c *Cache) snapShadowed(group string, piece int, bornMs int64) bool {
 	if bornMs == 0 {
 		return false
 	}
 	_, aheadP := c.readerWindowPieces()
-	nowMs := time.Now().UnixMilli()
 	c.groupsMu.Lock()
 	defer c.groupsMu.Unlock()
 	g, ok := c.groups[group]
-	if !ok || g.prevSnapMs == 0 || nowMs-g.prevSnapMs >= snapShadowMs || bornMs >= g.prevSnapMs {
+	if !ok || g.prevSnapMs == 0 || bornMs >= g.prevSnapMs {
 		return false
 	}
 	d := piece - int(g.prevPlayhead)
 	return d <= aheadP && d >= -aheadP
+}
+
+// takeSnapCancels reports whether any group's anchor snapped onto a far seek
+// target since the last apply, clearing the flags. The deadline reconcile
+// uses it to rebuild the time-critical set from scratch (ClearPieceDeadlines
+// → re-add in ascending deadline order), which fires libtorrent's
+// cancel_non_critical: an active CANCEL of every non-time-critical in-flight
+// request on every peer. Without it those already-sent requests — up to
+// request_queue_time (≈3s) of bandwidth PER PEER — kept draining at full
+// swarm speed after a far seek; the field A/B showed ~half the swarm feeding
+// the abandoned window for the first 3s while the seek target trickled in
+// (upstream's anacrolix engine cancels de-planned chunks by design, which is
+// exactly the snappier-seek difference). libtorrent only fires that cancel
+// on the time-critical set's empty→non-empty transition, and our always-on
+// window ramp otherwise keeps the set non-empty for the whole stream.
+func (c *Cache) takeSnapCancels() bool {
+	c.groupsMu.Lock()
+	defer c.groupsMu.Unlock()
+	cancel := false
+	for _, g := range c.groups {
+		if g.snapCancel {
+			cancel = true
+			g.snapCancel = false
+		}
+	}
+	return cancel
 }
 
 // recentWaitFocus returns the group's live focus entry: parked on within
@@ -726,6 +765,7 @@ func (c *Cache) streamAnchors() map[string]int {
 				if d := s.cur - int(g.playhead); (d > aheadP || d < -aheadP) && !inSnapShadow(s) {
 					g.prevPlayhead, g.prevSnapMs = g.playhead, nowMs
 					g.playhead, g.playheadTime = int64(s.cur), now
+					g.snapCancel = true
 					out[key] = s.cur
 					snapped = true
 				}
@@ -881,6 +921,7 @@ func (c *Cache) applyStreamPriorities() {
 	}
 
 	anchors := c.groupPlayheads() // group -> playhead (excludes stale/probe/tail)
+	seekCancel := c.takeSnapCancels()
 	behindP, aheadP := c.readerWindowPieces()
 
 	c.readersMu.Lock()
@@ -1092,15 +1133,55 @@ func (c *Cache) applyStreamPriorities() {
 		c.lastPrios = prios
 	}
 	// Reconcile deadlines: clear the ones that scrolled out, set/refresh the rest.
-	for piece := range c.deadlined {
-		if _, ok := desired[piece]; !ok {
-			_ = h.ResetPieceDeadline(piece)
+	if seekCancel && len(desired) > 0 {
+		// A far seek just snapped the anchor: rebuild the time-critical set from
+		// scratch instead of reconciling. The empty→non-empty transition re-arms
+		// libtorrent's cancel_non_critical (see takeSnapCancels), which CANCELs the
+		// abandoned window's in-flight requests on every peer — otherwise they keep
+		// draining ~request_queue_time of bandwidth per peer against the target.
+		// Ascending deadline order: the first set (the target, deadline 0) fires the
+		// posted cancel; the rest of the ramp lands before the cancel runs on the
+		// network thread, so the whole NEW set is spared and only stale requests die.
+		_ = h.ClearPieceDeadlines()
+		for piece := range c.deadlined {
 			delete(c.deadlined, piece)
 		}
-	}
-	for piece, dl := range desired {
-		_ = h.SetPieceDeadline(piece, dl, false)
-		c.deadlined[piece] = true
+		if s := settings.BTsets(); s != nil && s.EnableDebug {
+			log.TLogln("torrstor.Cache: SEEK-CANCEL rebuilding", len(desired),
+				"deadlines (cancel_non_critical armed)")
+		}
+		type pieceDeadline struct{ piece, dlMs int }
+		ordered := make([]pieceDeadline, 0, len(desired))
+		for piece, dl := range desired {
+			ordered = append(ordered, pieceDeadline{piece, dl})
+		}
+		sort.Slice(ordered, func(i, j int) bool { return ordered[i].dlMs < ordered[j].dlMs })
+		// Deadline ONLY the target + its next piece on this first post-seek apply.
+		// With the full ramp re-armed at once the time-critical picker parallelises
+		// across the ramp and the TARGET loses the race it must win — the field log
+		// showed piece target+1 finishing at seek+2s while the target (the piece the
+		// player is blocked on) finished at +4s. The window pieces keep their
+		// non-zero priorities either way (the normal picker still fetches them), and
+		// the next periodic apply (≤1s) re-arms the full ascending ramp through the
+		// reconcile branch below once the target has had the swarm to itself.
+		if len(ordered) > 2 {
+			ordered = ordered[:2]
+		}
+		for _, d := range ordered {
+			_ = h.SetPieceDeadline(d.piece, d.dlMs, false)
+			c.deadlined[d.piece] = true
+		}
+	} else {
+		for piece := range c.deadlined {
+			if _, ok := desired[piece]; !ok {
+				_ = h.ResetPieceDeadline(piece)
+				delete(c.deadlined, piece)
+			}
+		}
+		for piece, dl := range desired {
+			_ = h.SetPieceDeadline(piece, dl, false)
+			c.deadlined[piece] = true
+		}
 	}
 	// Un-have the forward-window holes so libtorrent re-downloads them into the cache.
 	// Debounced per piece: WeDontHave is applied async on the network thread, so HasPiece

@@ -317,13 +317,22 @@ func buildSessionConfig() (lt.SessionConfig, error) {
 		// requests and choke/drop a peer that over-asks, which *slows* streaming
 		// and can stall it. The default-ish values below pipeline enough for
 		// throughput without tripping peer anti-flood limits.
-		"strict_end_game_mode":         true,  // fetch the final buffer pieces from many peers
-		"prioritize_partial_pieces":    false, // prefer finishing the reader's window in order
-		"announce_to_all_tiers":        true,  // hit every tracker tier for peers fast
-		"announce_to_all_trackers":     true,
-		"min_announce_interval":        30,
-		"max_suggest_pieces":           50,
-		"request_queue_time":           3,    // libtorrent default; ~3s of requests in flight
+		"strict_end_game_mode":      true,  // fetch the final buffer pieces from many peers
+		"prioritize_partial_pieces": false, // prefer finishing the reader's window in order
+		"announce_to_all_tiers":     true,  // hit every tracker tier for peers fast
+		"announce_to_all_trackers":  true,
+		"min_announce_interval":     30,
+		"max_suggest_pieces":        50,
+		// request_queue_time 1 (default 3): per-peer in-flight requests cover ~1s of
+		// that peer's rate instead of ~3s. Still far above any real BDP (rate×RTT),
+		// so throughput is unaffected, but (a) a far seek pivots in ~1s even on
+		// peers that ignore our CANCELs (the stale pre-seek queue drains 3x
+		// faster), and (b) the time-critical picker spreads the seek-target
+		// piece's blocks across MORE peers (each takes a shorter slice), so the
+		// target completes with swarm-wide parallelism the way anacrolix does,
+		// instead of riding one fast peer for 3s. Field A/B: the post-seek swarm
+		// split and the target's trickle-in were the whole resume-time gap.
+		"request_queue_time":           1,
 		"max_out_request_queue":        1500, // cap outstanding block requests per peer
 		"max_allowed_in_request_queue": 2000, // libtorrent default
 		"send_buffer_watermark":        500 * 1024,

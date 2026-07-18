@@ -268,6 +268,14 @@ func TestStreamAnchor_DyingConnectionCannotStealAnchorBack(t *testing.T) {
 	if got := c.groupPlayheads()["dev"]; got != target {
 		t.Fatalf("far park: anchor %d, want %d", got, target)
 	}
+	// The snap arms exactly one seek-cancel (the deadline-set rebuild that fires
+	// libtorrent's cancel_non_critical), consumed by the next apply.
+	if !c.takeSnapCancels() {
+		t.Fatal("far-park snap should arm a seek-cancel")
+	}
+	if c.takeSnapCancels() {
+		t.Fatal("seek-cancel must be consumed by the first take")
+	}
 
 	// The dying old connection parks once more near its position (it was blocked
 	// mid-buffer): the anchor must NOT flap back.
