@@ -1,0 +1,92 @@
+Analyzing file:///tmp/claude-1000/-home-trinity1980-source-TorrServer/e1351fb4-11ac-46a0-a7bd-73f40547aead/scratchpad/multi_lang.mkv
+Done discovering file:///tmp/claude-1000/-home-trinity1980-source-TorrServer/e1351fb4-11ac-46a0-a7bd-73f40547aead/scratchpad/multi_lang.mkv
+
+Properties:
+  Duration: 0:00:02.345215419
+  Seekable: yes
+  Live: no
+  Tags: 
+      datetime: 2026-07-18T11:14:05.53776Z
+      container format: Matroska
+      audio codec: MPEG-4 AAC audio
+      language code: ru
+      title: Audio
+      container-specific-track-id: 3
+      bitrate: 70005
+      video codec: H264
+      encoder: x264
+  container #0: video/x-matroska
+    Tags:
+      datetime: 2026-07-18T11:14:05.53776Z
+      container format: Matroska
+    
+    video #1: video/x-h264, level=(string)1.3, profile=(string)high-4:4:4, codec_data=(buffer)01f4000dffe1001c67f4000d90d968141fb016a0c0c0c8000003000800000301e478a15501000468ce3192, stream-format=(string)avc, alignment=(string)au, width=(int)320, height=(int)240, framerate=(fraction)30/1, interlace-mode=(string)progressive, colorimetry=(string)bt601, pixel-aspect-ratio=(fraction)1/1, coded-picture-structure=(string)frame, chroma-format=(string)4:4:4, bit-depth-luma=(uint)10, bit-depth-chroma=(uint)10, parsed=(boolean)true
+      Tags:
+        video codec: H264
+        container-specific-track-id: 1
+        encoder: x264
+        bitrate: 1815105
+      
+      Codec:
+        video/x-h264, level=(string)1.3, profile=(string)high-4:4:4, codec_data=(buffer)01f4000dffe1001c67f4000d90d968141fb016a0c0c0c8000003000800000301e478a15501000468ce3192, stream-format=(string)avc, alignment=(string)au, width=(int)320, height=(int)240, framerate=(fraction)30/1, interlace-mode=(string)progressive, colorimetry=(string)bt601, pixel-aspect-ratio=(fraction)1/1, coded-picture-structure=(string)frame, chroma-format=(string)4:4:4, bit-depth-luma=(uint)10, bit-depth-chroma=(uint)10, parsed=(boolean)true
+      Stream ID: 51d221d04f8a32521b45e82afe2446e5e44654eae45cd9df36d34e6ce6e52298/001:5337021330939265492
+      Width: 320
+      Height: 240
+      Depth: 30
+      Frame rate: 30/1
+      Pixel aspect ratio: 1/1
+      Interlaced: false
+      Bitrate: 1815105
+      Max bitrate: 0
+    audio #2: audio/mpeg, mpegversion=(int)4, framed=(boolean)true, stream-format=(string)raw, codec_data=(buffer)120856e500, level=(string)2, base-profile=(string)lc, profile=(string)lc, channels=(int)1, rate=(int)44100
+      Tags:
+        audio codec: MPEG-4 AAC audio
+        language code: en
+        title: Audio
+        container-specific-track-id: 2
+        bitrate: 70359
+      
+      Codec:
+        audio/mpeg, mpegversion=(int)4, framed=(boolean)true, stream-format=(string)raw, codec_data=(buffer)120856e500, level=(string)2, base-profile=(string)lc, profile=(string)lc, channels=(int)1, rate=(int)44100
+      Stream ID: 51d221d04f8a32521b45e82afe2446e5e44654eae45cd9df36d34e6ce6e52298/002:504633673064942328
+      Language: en
+      Channels: 1 (unknown layout)
+      Sample rate: 44100
+      Depth: 32
+      Bitrate: 70359
+      Max bitrate: 0
+    audio #3: audio/mpeg, mpegversion=(int)4, framed=(boolean)true, stream-format=(string)raw, codec_data=(buffer)120856e500, level=(string)2, base-profile=(string)lc, profile=(string)lc, channels=(int)1, rate=(int)44100
+      Tags:
+        audio codec: MPEG-4 AAC audio
+        language code: ru
+        title: Audio
+        container-specific-track-id: 3
+        bitrate: 70005
+      
+      Codec:
+        audio/mpeg, mpegversion=(int)4, framed=(boolean)true, stream-format=(string)raw, codec_data=(buffer)120856e500, level=(string)2, base-profile=(string)lc, profile=(string)lc, channels=(int)1, rate=(int)44100
+      Stream ID: 51d221d04f8a32521b45e82afe2446e5e44654eae45cd9df36d34e6ce6e52298/003:3841529243074677862
+      Language: ru
+      Channels: 1 (unknown layout)
+      Sample rate: 44100
+      Depth: 32
+      Bitrate: 70005
+      Max bitrate: 0
+    audio #4: audio/mpeg, mpegversion=(int)4, framed=(boolean)true, stream-format=(string)raw, codec_data=(buffer)120856e500, level=(string)2, base-profile=(string)lc, profile=(string)lc, channels=(int)1, rate=(int)44100
+      Tags:
+        audio codec: MPEG-4 AAC audio
+        language code: fr
+        title: Audio
+        container-specific-track-id: 4
+        bitrate: 70501
+      
+      Codec:
+        audio/mpeg, mpegversion=(int)4, framed=(boolean)true, stream-format=(string)raw, codec_data=(buffer)120856e500, level=(string)2, base-profile=(string)lc, profile=(string)lc, channels=(int)1, rate=(int)44100
+      Stream ID: 51d221d04f8a32521b45e82afe2446e5e44654eae45cd9df36d34e6ce6e52298/004:14824980959381419602
+      Language: fr
+      Channels: 1 (unknown layout)
+      Sample rate: 44100
+      Depth: 32
+      Bitrate: 70501
+      Max bitrate: 0
+
