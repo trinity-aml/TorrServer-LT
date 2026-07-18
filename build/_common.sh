@@ -15,7 +15,7 @@ BOOST_VERSION=${BOOST_VERSION:-1.85.0}
 LIBTORRENT_TAG=${LIBTORRENT_TAG:-v2.0.13}
 # First number must stay >= 132: the Android client gates its settings UI on the
 # leading digit run (>131 shows PreloadCache, hides the legacy PreloadBuffer).
-TS_VERSION=${TS_VERSION:-MatriX.142.LT-1.1.1}
+TS_VERSION=${TS_VERSION:-MatriX.142.LT-1.1.2}
 
 # --- paths -----------------------------------------------------------
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
