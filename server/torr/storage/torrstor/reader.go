@@ -216,6 +216,11 @@ type Reader struct {
 	ensuredPiece int
 	ensuredAtMs  int64
 
+	// bornMs is when this reader was created (set once in NewReader, then
+	// read-only). The anchor maths uses it to tell a pre-seek connection's dying
+	// park from a fresh seek: see streamAnchors' inSnapShadow.
+	bornMs int64
+
 	// stopTicker ends the periodic re-prioritize loop; closed once by Close.
 	stopTicker chan struct{}
 }
@@ -235,6 +240,7 @@ func NewReader(cache *Cache, handle *lt.Torrent, file FileInfo, group ...string)
 		file:         file,
 		stopTicker:   make(chan struct{}),
 		ensuredPiece: -1,
+		bornMs:       time.Now().UnixMilli(),
 	}
 	if len(group) > 0 {
 		r.group = group[0]
@@ -457,6 +463,14 @@ func (r *Reader) ensurePieceLocked(piece int, pieceOff int64) error {
 			// and asking for the data back here would make libtorrent re-read the whole
 			// piece off our disk_io into a read_piece_alert we never consume.
 			_ = r.handle.SetPieceDeadline(piece, 0, false)
+			// Register it in the reconcile's tracking set: this deadline is set OUTSIDE
+			// applyStreamPriorities, and untracked it stayed time-critical (a deadline
+			// overrides priority 0) until the piece completed even after the window and
+			// the blocked force left it — a dying pre-seek connection's park kept its
+			// old-window piece downloading against the fresh seek target this way.
+			r.cache.priMu.Lock()
+			r.cache.deadlined[piece] = true
+			r.cache.priMu.Unlock()
 		}
 	}
 	parent := r.ctx
@@ -483,7 +497,7 @@ func (r *Reader) ensurePieceLocked(piece int, pieceOff int64) error {
 	if plen := r.cache.PieceLength; plen > 0 {
 		ffirst = int(r.file.Offset / plen)
 	}
-	r.cache.setWaitFocus(r.group, piece, ffirst, r.fileLastPiece())
+	r.cache.setWaitFocus(r.group, piece, ffirst, r.fileLastPiece(), r.bornMs)
 	if !fresh {
 		if s := settings.BTsets(); s != nil && s.EnableDebug {
 			log.TLogln("torrstor.Reader: PARK piece", piece, "off", pieceOff,

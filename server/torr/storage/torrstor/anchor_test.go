@@ -162,7 +162,7 @@ func TestStreamAnchor_FreshFarParkSnapsAtOnce(t *testing.T) {
 	// connection is STILL active (the player hasn't torn it down yet). The anchor
 	// must snap to the park at once — not after the old connection goes stale.
 	target := 300 + aheadP + 20
-	c.setWaitFocus("dev", target, 0, numPieces-1)
+	c.setWaitFocus("dev", target, 0, numPieces-1, 0)
 	if got := c.groupPlayheads()["dev"]; got != target {
 		t.Fatalf("forward far park: anchor %d, want %d at once (old active connection held it)", got, target)
 	}
@@ -170,7 +170,7 @@ func TestStreamAnchor_FreshFarParkSnapsAtOnce(t *testing.T) {
 	// Backward far seek: fresh park a full window below the (just-recommitted)
 	// anchor must snap down immediately, skipping anchorHoldSec.
 	back := target - aheadP - 30
-	c.setWaitFocus("dev", back, 0, numPieces-1)
+	c.setWaitFocus("dev", back, 0, numPieces-1, 0)
 	if got := c.groupPlayheads()["dev"]; got != back {
 		t.Fatalf("backward far park: anchor %d, want %d at once (anchorHoldSec held it)", got, back)
 	}
@@ -182,7 +182,7 @@ func TestStreamAnchor_FreshFarParkSnapsAtOnce(t *testing.T) {
 	// two pieces ahead of the anchor must not shove the anchor up onto itself.
 	r.offset.Store(int64(back) * plen)
 	r.lastRead.Store(time.Now().Unix())
-	c.setWaitFocus("dev", back+2, 0, numPieces-1)
+	c.setWaitFocus("dev", back+2, 0, numPieces-1, 0)
 	if got := c.groupPlayheads()["dev"]; got != back {
 		t.Fatalf("in-window park moved the anchor to %d, want it held at %d", got, back)
 	}
@@ -215,14 +215,92 @@ func TestStreamAnchor_HeadPinParkDoesNotSnap(t *testing.T) {
 	}
 
 	// Header re-read parks on piece 0 (inside headPinPieces): no snap.
-	c.setWaitFocus("dev", 0, 0, numPieces-1)
+	c.setWaitFocus("dev", 0, 0, numPieces-1, 0)
 	if got := c.groupPlayheads()["dev"]; got != 300 {
 		t.Fatalf("header-pin park dragged the anchor to %d, want 300", got)
 	}
 
 	// Tail-pin park (EOF index re-read after eviction): no snap either.
-	c.setWaitFocus("dev", numPieces-1, 0, numPieces-1)
+	c.setWaitFocus("dev", numPieces-1, 0, numPieces-1, 0)
 	if got := c.groupPlayheads()["dev"]; got != 300 {
 		t.Fatalf("tail-pin park dragged the anchor to %d, want 300", got)
+	}
+}
+
+// TestStreamAnchor_DyingConnectionCannotStealAnchorBack reproduces the VLC
+// direct-link ping-pong from the field log: at the moment of a far seek the
+// player's OLD connection is blocked mid-buffer on a not-yet-complete piece, so
+// right after the seek's park it parks once more at the old position — and the
+// anchor flapped 183→4→5→183, holding both windows deadline-forced and
+// splitting the swarm while the seek target trickled in (10.9s resume vs
+// upstream's 2s). For snapShadowMs after the snap, parks AND live reads from a
+// connection born before the snap near the replaced anchor must not move the
+// anchor; a NEW connection seeking back there commits instantly as before.
+func TestStreamAnchor_DyingConnectionCannotStealAnchorBack(t *testing.T) {
+	const MB = int64(1) << 20
+	plen := 4 * MB
+	prev := settings.BTsets()
+	settings.StoreBTsets(&settings.BTSets{UseDisk: false, CacheSize: 64 * MB, ReaderReadAHead: 95})
+	t.Cleanup(func() { settings.StoreBTsets(prev) })
+
+	s := NewStorage()
+	h := mkHash(0xE5)
+	const numPieces = 700
+	s.callbackOpen(1, h, numPieces, plen)
+	c := s.CacheByHash(h)
+	fileLen := int64(numPieces) * plen
+	_, aheadP := c.readerWindowPieces()
+
+	// Old playback connection at piece 300, born a minute ago, ACTIVE.
+	rOld := &Reader{cache: c, group: "dev", file: FileInfo{Offset: 0, Length: fileLen}}
+	rOld.bornMs = time.Now().UnixMilli() - 60_000
+	rOld.offset.Store(300 * plen)
+	rOld.winFirst.Store(300)
+	rOld.lastRead.Store(time.Now().Unix())
+	c.registerReader(rOld)
+	if got := c.groupPlayheads()["dev"]; got != 300 {
+		t.Fatalf("anchor should commit at 300, got %d", got)
+	}
+
+	// Far seek: fresh park from the NEW connection (born now) — instant snap.
+	target := 300 + aheadP + 40
+	c.setWaitFocus("dev", target, 0, numPieces-1, time.Now().UnixMilli())
+	if got := c.groupPlayheads()["dev"]; got != target {
+		t.Fatalf("far park: anchor %d, want %d", got, target)
+	}
+
+	// The dying old connection parks once more near its position (it was blocked
+	// mid-buffer): the anchor must NOT flap back.
+	c.setWaitFocus("dev", 302, 0, numPieces-1, rOld.bornMs)
+	if got := c.groupPlayheads()["dev"]; got != target {
+		t.Fatalf("dying park stole the anchor back to %d, want %d", got, target)
+	}
+	// ...and it must not overwrite the group focus either: the focus is what keeps
+	// the seek target blocked-forced across the new connection's chunk gaps.
+	if f, ok := c.recentWaitFocus("dev"); !ok || f.piece != target {
+		t.Fatalf("dying park overwrote the group focus (got piece %d, ok=%v), want %d kept", f.piece, ok, target)
+	}
+	// The same shadow test feeds the blocked-force set: the dying reader's sticky
+	// wait at its old position is shadowed, a fresh reader's wait at the target is not.
+	if !c.snapShadowed("dev", 302, rOld.bornMs) {
+		t.Fatal("dying connection's old-position wait should be snap-shadowed")
+	}
+	if c.snapShadowed("dev", target, time.Now().UnixMilli()) {
+		t.Fatal("fresh wait at the seek target must not be snap-shadowed")
+	}
+
+	// Its LIVE read at the old position (still active for staleReaderSec) must
+	// not pull the anchor down through the playMin path either.
+	rOld.offset.Store(302 * plen)
+	rOld.lastRead.Store(time.Now().Unix())
+	if got := c.groupPlayheads()["dev"]; got != target {
+		t.Fatalf("dying live read pulled the anchor to %d, want %d", got, target)
+	}
+
+	// A genuinely NEW connection (born after the snap) seeking back commits
+	// instantly — the shadow only covers pre-snap readers.
+	c.setWaitFocus("dev", 300, 0, numPieces-1, time.Now().UnixMilli())
+	if got := c.groupPlayheads()["dev"]; got != 300 {
+		t.Fatalf("fresh seek-back: anchor %d, want 300 at once", got)
 	}
 }

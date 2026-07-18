@@ -183,16 +183,33 @@ type Cache struct {
 type group struct {
 	playhead     int64
 	playheadTime int64
+	// prevPlayhead/prevSnapMs shadow the anchor REPLACED by the last instant
+	// far-park snap (see streamAnchors): for snapShadowMs after the snap,
+	// readers born BEFORE it that sit near this old position are the abandoned
+	// pre-seek connection draining its last blocked read — they must not pull
+	// the anchor back onto the position the player just left.
+	prevPlayhead int64
+	prevSnapMs   int64
 }
+
+// snapShadowMs is how long after an instant far-park snap the replaced anchor
+// position stays shadowed (see group.prevPlayhead). Long enough to outlive the
+// dying connection's final parks + staleReaderSec; short enough that an exotic
+// client genuinely still reading the old position (multi-range) is only
+// detoured briefly before the normal playMin machinery reclaims the anchor.
+const snapShadowMs = 4000
 
 // waitFocusEntry is one group's sticky blocked/seek-target piece (see
 // Cache.waitFocus): the piece, its file's piece bounds (for the forward lead and
-// the anchor's virtual-reader classification), and when it was last parked on.
+// the anchor's virtual-reader classification), when it was last parked on, and
+// the birth time of the reader that parked (0 = unknown, treated as new) so the
+// anchor maths can tell a dying pre-seek connection's park from a fresh seek.
 type waitFocusEntry struct {
 	piece  int
 	ffirst int
 	flast  int
 	atMs   int64
+	bornMs int64
 }
 
 // waitFocusLingerMs is how long a group's wait focus outlives the reader that
@@ -222,10 +239,45 @@ func newCache(s *Storage, sid int64, hash [20]byte, numPieces int, pieceLength i
 // setWaitFocus records the group's current blocked/seek-target piece (called on
 // every reader park; cheap). See Cache.waitFocus for why it must survive the
 // reader itself.
-func (c *Cache) setWaitFocus(group string, piece, ffirst, flast int) {
+func (c *Cache) setWaitFocus(group string, piece, ffirst, flast int, bornMs int64) {
+	// A dying pre-seek connection parks once more while it drains (see
+	// snapShadowed); letting that park overwrite the focus would swap the fresh
+	// seek target out of the blocked-force merge during the new connection's
+	// chunk gaps — handing the force (and the anchor's virtual reader) back to
+	// the position the player just left.
+	if c.snapShadowed(group, piece, bornMs) {
+		return
+	}
 	c.waitFocusMu.Lock()
-	c.waitFocus[group] = waitFocusEntry{piece: piece, ffirst: ffirst, flast: flast, atMs: time.Now().UnixMilli()}
+	c.waitFocus[group] = waitFocusEntry{piece: piece, ffirst: ffirst, flast: flast, atMs: time.Now().UnixMilli(), bornMs: bornMs}
 	c.waitFocusMu.Unlock()
+}
+
+// snapShadowed reports whether a park/blocked wait at piece, by a reader born
+// at bornMs, is the dying pre-seek connection's last blocked read (see
+// inSnapShadow in streamAnchors): within snapShadowMs of an instant far-park
+// snap, born BEFORE that snap, and within a window of the REPLACED anchor.
+// The anchor maths already drops such readers; this exposes the same test to
+// the paths OUTSIDE the anchor — the group focus (setWaitFocus) and the
+// blocked-force set (applyStreamPriorities) — which otherwise kept the OLD
+// window's pieces deadline-forced for seconds after a far seek: the swarm
+// split between the old and the new position and the seek target trickled in
+// (the residual 3-4s of post-seek resume in the field A/B, after the anchor
+// itself already snapped instantly).
+func (c *Cache) snapShadowed(group string, piece int, bornMs int64) bool {
+	if bornMs == 0 {
+		return false
+	}
+	_, aheadP := c.readerWindowPieces()
+	nowMs := time.Now().UnixMilli()
+	c.groupsMu.Lock()
+	defer c.groupsMu.Unlock()
+	g, ok := c.groups[group]
+	if !ok || g.prevSnapMs == 0 || nowMs-g.prevSnapMs >= snapShadowMs || bornMs >= g.prevSnapMs {
+		return false
+	}
+	d := piece - int(g.prevPlayhead)
+	return d <= aheadP && d >= -aheadP
 }
 
 // recentWaitFocus returns the group's live focus entry: parked on within
@@ -405,14 +457,15 @@ func (c *Cache) StreamingReaders() int {
 type readerSnap struct {
 	group     string
 	cur       int
-	ffirst    int  // first torrent piece of this reader's file
-	flast     int  // last torrent piece of this reader's file (inclusive)
-	isProbe   bool // offset-0 ServeContent probe (not a real playhead)
-	isTail    bool // sitting in the file's EOF index pin (a pinned re-read)
-	belowHead bool // inside the container-header pin (a header re-read)
-	stale     bool // no Read for staleReaderSec — an idle/seek-abandoned connection
-	nearEOF   bool // forward window reaches the file end (an EOF moov probe, or a seek-to-end)
-	isFocus   bool // virtual snap from the group's wait focus (a fresh park), not a live reader
+	ffirst    int   // first torrent piece of this reader's file
+	flast     int   // last torrent piece of this reader's file (inclusive)
+	isProbe   bool  // offset-0 ServeContent probe (not a real playhead)
+	isTail    bool  // sitting in the file's EOF index pin (a pinned re-read)
+	belowHead bool  // inside the container-header pin (a header re-read)
+	stale     bool  // no Read for staleReaderSec — an idle/seek-abandoned connection
+	nearEOF   bool  // forward window reaches the file end (an EOF moov probe, or a seek-to-end)
+	isFocus   bool  // virtual snap from the group's wait focus (a fresh park), not a live reader
+	bornMs    int64 // reader's birth time (focus: of the parking reader); 0 = unknown/new
 }
 
 // groupReaderSnaps buckets every active reader by its group (device), capturing
@@ -426,7 +479,7 @@ func (c *Cache) groupReaderSnaps() map[string][]readerSnap {
 	out := make(map[string][]readerSnap, len(c.readers))
 	for r := range c.readers {
 		cur := r.currentPiece()
-		s := readerSnap{group: r.group, cur: cur, ffirst: 0, flast: c.NumPieces - 1}
+		s := readerSnap{group: r.group, cur: cur, ffirst: 0, flast: c.NumPieces - 1, bornMs: r.bornMs}
 		if plen > 0 {
 			// File piece range, so the anchor maths can tell a deliberate cross-file
 			// switch (different file than the committed anchor) from a same-file seek.
@@ -496,7 +549,7 @@ func (c *Cache) groupReaderSnaps() map[string][]readerSnap {
 		if c.Have(f.piece) {
 			continue
 		}
-		s := readerSnap{group: g, cur: f.piece, ffirst: f.ffirst, flast: f.flast, isFocus: true}
+		s := readerSnap{group: g, cur: f.piece, ffirst: f.ffirst, flast: f.flast, isFocus: true, bornMs: f.bornMs}
 		// isTail/belowHead keep their pin semantics (a park inside a pin is served by
 		// the blocked-force alone; pivoting the window onto a pin churns it), but
 		// deliberately NOT nearEOF: that exclusion guards against the EOF index PROBE
@@ -534,6 +587,7 @@ func (c *Cache) streamAnchors() map[string]int {
 	// diverged by the tail-pin width). aheadP is the forward window in pieces.
 	_, aheadP := c.readerWindowPieces()
 	now := time.Now().Unix()
+	nowMs := time.Now().UnixMilli()
 
 	c.groupsMu.Lock()
 	defer c.groupsMu.Unlock()
@@ -587,6 +641,36 @@ func (c *Cache) streamAnchors() map[string]int {
 		isSeekLeftover := func(s readerSnap) bool {
 			return s.stale && activeOK && s.cur < activeMin-aheadP
 		}
+
+		g := c.groups[key]
+		if g == nil {
+			g = &group{}
+			c.groups[key] = g
+		}
+		// inSnapShadow: for snapShadowMs after an instant far-park snap (below), a
+		// reader/park BORN BEFORE that snap and sitting within a window of the
+		// REPLACED anchor is the abandoned pre-seek connection draining its last
+		// blocked read — not playback, and not a seek back. Seen live (VLC, direct
+		// link): at the moment of a far seek the old connection was blocked
+		// mid-buffer on a not-yet-complete piece, so it parked one more time right
+		// after the seek's own park and the anchor ping-ponged 183→4→5→183 within
+		// 3s — both windows' pieces held deadline-forced at once and the swarm
+		// split between them while the seek target trickled in (the 10s resume).
+		// Such readers are dropped from the anchor maths (the playMin pull-down
+		// AND the instant snap); a connection born AFTER the snap — a genuine
+		// quick seek back — is untouched and commits by the usual rules.
+		// snapShadowed applies the same test OUTSIDE the anchor: to the group
+		// focus (setWaitFocus) and the blocked-force set (applyStreamPriorities).
+		inSnapShadow := func(s readerSnap) bool {
+			if g.prevSnapMs == 0 || nowMs-g.prevSnapMs >= snapShadowMs {
+				return false
+			}
+			if s.bornMs == 0 || s.bornMs >= g.prevSnapMs {
+				return false
+			}
+			d := s.cur - int(g.prevPlayhead)
+			return d <= aheadP && d >= -aheadP
+		}
 		// playMin = lowest PLAYBACK position; anyMin = lowest of any non-pin reader.
 		// playFfirst/playFlast track the FILE the playMin reader belongs to, so the
 		// hold logic can recognise a deliberate cross-file switch (episode change).
@@ -600,19 +684,13 @@ func (c *Cache) streamAnchors() map[string]int {
 			if !anyOK || s.cur < anyMin {
 				anyMin, anyOK = s.cur, true
 			}
-			if s.belowHead {
+			if s.belowHead || inSnapShadow(s) {
 				continue
 			}
 			if !playOK || s.cur < playMin {
 				playMin, playOK = s.cur, true
 				playFfirst, playFlast = s.ffirst, s.flast
 			}
-		}
-
-		g := c.groups[key]
-		if g == nil {
-			g = &group{}
-			c.groups[key] = g
 		}
 
 		// A FRESH park farther than a window from the committed anchor is a genuine
@@ -622,7 +700,11 @@ func (c *Cache) streamAnchors() map[string]int {
 		// None of the cases the holds defend against produces such a park: a per-chunk
 		// trailing connection parks INSIDE the window near the anchor, the EOF moov
 		// probe reads the resident pinned tail and never parks, and a seek-abandoned
-		// connection's twitch reads resident data and never parks. Without this the
+		// connection's twitch on RESIDENT data never parks. The one abandoned-connection
+		// park that DOES exist — it was blocked on a not-yet-complete piece at the
+		// moment of the seek and parks once more while dying — is filtered by
+		// inSnapShadow above (it is near the just-replaced anchor and older than the
+		// snap). Without the snap itself the
 		// anchor lagged a far seek by anchorHoldSec (backward) or staleReaderSec
 		// (forward, old connection still live) — 2-3s in the field log — during which
 		// the OLD window (up to the whole cache budget of deadlined pieces) kept
@@ -641,7 +723,8 @@ func (c *Cache) streamAnchors() map[string]int {
 				if !s.isFocus || s.belowHead || s.isTail {
 					continue
 				}
-				if d := s.cur - int(g.playhead); d > aheadP || d < -aheadP {
+				if d := s.cur - int(g.playhead); (d > aheadP || d < -aheadP) && !inSnapShadow(s) {
+					g.prevPlayhead, g.prevSnapMs = g.playhead, nowMs
 					g.playhead, g.playheadTime = int64(s.cur), now
 					out[key] = s.cur
 					snapped = true
@@ -831,6 +914,13 @@ func (c *Cache) applyStreamPriorities() {
 	for _, r := range rs {
 		wp := int(r.waitPiece.Load())
 		if wp < 0 || c.Have(wp) {
+			continue
+		}
+		// The dying pre-seek connection's sticky park (see snapShadowed): its old-
+		// position piece must not hold a blocked-force lead against the fresh seek
+		// target. If the player truly is still reading there (an exotic multi-range
+		// client), the force re-engages when the shadow expires — a bounded detour.
+		if c.snapShadowed(r.group, wp, r.bornMs) {
 			continue
 		}
 		// Remember it as blocked so the force loop below guarantees it downloads,
