@@ -62,6 +62,7 @@ const emptyConfig = {
   tempfs: false,
   tempfs_ring: 0,
   PlaylistHLS: false,
+  AudioLang: '',
 }
 
 const componentStatusKind = component => {
@@ -298,6 +299,32 @@ export default function GStreamerSettings() {
           labelPlacement='start'
         />
         <FormHelperText>{t('GStreamer.PlaylistHLSHint')}</FormHelperText>
+      </FormGroup>
+
+      <FormGroup style={{ marginTop: 12, marginBottom: 20 }}>
+        <InputLabel htmlFor='gstreamer-audio-lang' disabled={!gstreamerSettings.PlaylistHLS}>
+          {t('GStreamer.AudioLang')}
+        </InputLabel>
+        <Select
+          id='gstreamer-audio-lang'
+          value={gstreamerSettings.AudioLang || ''}
+          onChange={e => updateField('AudioLang', e.target.value)}
+          disabled={!gstreamerSettings.PlaylistHLS}
+          displayEmpty
+          variant='outlined'
+          margin='dense'
+          fullWidth
+        >
+          <MenuItem value=''>{t('GStreamer.AudioLangDefault')}</MenuItem>
+          <MenuItem value='ru'>Русский</MenuItem>
+          <MenuItem value='en'>English</MenuItem>
+          <MenuItem value='uk'>Українська</MenuItem>
+          <MenuItem value='bg'>Български</MenuItem>
+          <MenuItem value='zh'>中文</MenuItem>
+          <MenuItem value='fr'>Français</MenuItem>
+          <MenuItem value='ro'>Română</MenuItem>
+        </Select>
+        <FormHelperText style={{ marginTop: 8 }}>{t('GStreamer.AudioLangHint')}</FormHelperText>
       </FormGroup>
 
       <Divider />

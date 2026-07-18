@@ -68,7 +68,7 @@ func newPipelineRunner(task *Task, audio int) (pipelineRunner, error) {
 
 	runner := &gstRunner{
 		task:       task,
-		audioIndex: validAudioIndex(task.Probe, audio),
+		audioIndex: resolveAudioIndex(task.Probe, audio, task.Config.AudioLang),
 	}
 	runner.reader = Mp4BoxReader(
 		func(data []byte) {
@@ -589,7 +589,7 @@ func (r *gstRunner) EnsureInit(ctx context.Context, audio int, startIndex int) e
 		}
 	} else if !r.statePlaying {
 		r.statePlaying = true
-		r.audioIndex = validAudioIndex(r.task.Probe, audio)
+		r.audioIndex = resolveAudioIndex(r.task.Probe, audio, r.task.Config.AudioLang)
 		if startSeconds > 0 {
 			r.reader.SeekReset(startSeconds)
 			r.positionSeekSeconds = startSeconds
@@ -681,7 +681,7 @@ func (r *gstRunner) GetSegment(ctx context.Context, index int, audio int) (Segme
 		}
 	} else if !r.statePlaying {
 		r.statePlaying = true
-		r.audioIndex = validAudioIndex(r.task.Probe, audio)
+		r.audioIndex = resolveAudioIndex(r.task.Probe, audio, r.task.Config.AudioLang)
 		startSeconds := 0.0
 		if index > 0 {
 			startSeconds = float64(index * r.task.Config.SegmentSeconds)
@@ -1037,22 +1037,4 @@ func (r *gstRunner) setPosition(seconds float64) {
 
 func (r *gstRunner) position() float64 {
 	return math.Float64frombits(r.positionSeconds.Load())
-}
-
-func validAudioIndex(probe ProbeInfo, requested int) int {
-	fallback := -1
-
-	for _, track := range probe.Tracks {
-		if track.Type != "audio" {
-			continue
-		}
-		if fallback < 0 {
-			fallback = track.Index
-		}
-		if track.Index == requested {
-			return requested
-		}
-	}
-
-	return fallback
 }

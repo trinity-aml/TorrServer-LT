@@ -43,6 +43,14 @@ type Config struct {
 	// gets the AAC-transcoded audio without hand-building URLs. Other
 	// containers keep their direct links (the pipeline only accepts mkv/webm).
 	PlaylistHLS bool `json:"PlaylistHLS"`
+
+	// AudioLang (fork extension): preferred audio-track language for the HLS
+	// transcode when the request doesn't pick a track explicitly (playlist
+	// links carry no ?audio=). A canonical two-letter code ("ru", "en", …);
+	// empty = current behavior, the container's first audio track. Matched
+	// against the discoverer language tags via canonicalAudioLang, so "rus",
+	// "ru-RU" and "Russian" in the container all match "ru".
+	AudioLang string `json:"AudioLang"`
 }
 
 func DefaultConfig() Config {
@@ -104,6 +112,7 @@ func (c Config) normalized() Config {
 	if c.Source != "play" {
 		c.Source = "stream"
 	}
+	c.AudioLang = canonicalAudioLang(c.AudioLang)
 	return c
 }
 
@@ -135,6 +144,7 @@ type storedConfig struct {
 	TempFSRing *int  `json:"tempfs_ring"`
 
 	PlaylistHLS *bool
+	AudioLang   *string
 }
 
 func applySettingsConfig(conf Config) Config {
@@ -216,6 +226,9 @@ func applySettingsConfig(conf Config) Config {
 	}
 	if stored.PlaylistHLS != nil {
 		conf.PlaylistHLS = *stored.PlaylistHLS
+	}
+	if stored.AudioLang != nil {
+		conf.AudioLang = *stored.AudioLang
 	}
 
 	return conf

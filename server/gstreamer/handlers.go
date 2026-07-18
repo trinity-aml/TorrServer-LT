@@ -70,13 +70,19 @@ func (s *Service) master(c *gin.Context) {
 
 	hash := c.Param("hash")
 	fileID := firstNonEmpty(c.Query("index"), c.Query("id"), c.Query("fileID"))
-	audio := parseQueryInt(c, "audio", 0)
+	// -1 = no explicit track pick (playlist links carry no ?audio=): the
+	// AudioLang preference — or the container's first track — decides, in
+	// resolveAudioIndex. An explicit ?audio=N keeps winning as before.
+	audio := parseQueryInt(c, "audio", -1)
 
 	task, err := s.GetOrAdd(hash, fileID, audio)
 	if err != nil {
 		abortWithSourceError(c, err)
 		return
 	}
+	// The playlist embeds the RESOLVED track index in init/segment URLs, so
+	// every follow-up request is explicit and consistent with this master.
+	audio = resolveAudioIndex(task.Probe, audio, task.Config.AudioLang)
 
 	duration := task.Probe.DurationSeconds()
 	if duration <= 0 {

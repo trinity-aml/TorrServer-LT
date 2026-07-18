@@ -89,6 +89,65 @@ func (p ProbeInfo) Audio() *TrackInfo {
 	return nil
 }
 
+// audioLangAliases maps the language-tag spellings seen in container metadata
+// (ISO 639-1/639-2 codes and English/native names — matroskademux tags carry
+// any of them) to the canonical two-letter code the AudioLang setting stores.
+var audioLangAliases = map[string]string{
+	"ru": "ru", "rus": "ru", "russian": "ru", "русский": "ru",
+	"en": "en", "eng": "en", "english": "en",
+	"uk": "uk", "ukr": "uk", "ukrainian": "uk", "ua": "uk", "українська": "uk",
+	"bg": "bg", "bul": "bg", "bulgarian": "bg", "български": "bg",
+	"zh": "zh", "chi": "zh", "zho": "zh", "cmn": "zh", "chinese": "zh",
+	"fr": "fr", "fra": "fr", "fre": "fr", "french": "fr", "français": "fr",
+	"ro": "ro", "ron": "ro", "rum": "ro", "romanian": "ro", "română": "ro",
+}
+
+// canonicalAudioLang normalizes a language tag ("rus", "ru-RU", "Russian") to
+// the canonical two-letter code, or "" when unknown/empty.
+func canonicalAudioLang(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if v == "" {
+		return ""
+	}
+	// Strip a region subtag: "ru-RU", "en_US".
+	if i := strings.IndexAny(v, "-_"); i > 0 {
+		v = v[:i]
+	}
+	return audioLangAliases[v]
+}
+
+// resolveAudioIndex picks the audio track the transcode pipeline muxes in.
+// An explicitly requested existing track always wins (the player's own track
+// switcher). With no explicit pick (requested < 0, or a stale index that no
+// longer exists), a configured AudioLang selects the first track whose
+// container language tag matches; otherwise — the container's first audio
+// track, the pre-setting behavior. Returns -1 when the file has no audio.
+func resolveAudioIndex(probe ProbeInfo, requested int, lang string) int {
+	fallback := -1
+	langMatch := -1
+	want := canonicalAudioLang(lang)
+
+	for _, track := range probe.Tracks {
+		if track.Type != "audio" {
+			continue
+		}
+		if fallback < 0 {
+			fallback = track.Index
+		}
+		if track.Index == requested {
+			return requested
+		}
+		if want != "" && langMatch < 0 && canonicalAudioLang(track.Language) == want {
+			langMatch = track.Index
+		}
+	}
+
+	if langMatch >= 0 {
+		return langMatch
+	}
+	return fallback
+}
+
 func (p ProbeInfo) AudioTrack(index int) *TrackInfo {
 	fallback := -1
 	for i := range p.Tracks {
