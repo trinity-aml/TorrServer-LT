@@ -241,22 +241,30 @@ func (t *Torrent) signalGotInfo() {
 	// default piece priority 1, which downloads the WHOLE torrent and thrashes
 	// the bounded cache. So bail until metadata is ready and wait for a later
 	// alert (metadata_received / torrent_finished) or WaitInfo's fast path.
-	if t.lh == nil {
+	//
+	// Snapshot the handle ONCE: Close() nils t.lh with no synchronization, and
+	// an instance that loses a concurrent add race (remove → immediate re-add,
+	// e.g. /gst/remove followed by the next playlist request) is Closed while
+	// its NewTorrent goroutine is still in here — the re-read of t.lh between
+	// the nil check and the call segfaulted on the nil receiver. A call on a
+	// CLOSED handle is harmless (the C slot lookup returns an error).
+	lh := t.lh
+	if lh == nil {
 		return
 	}
-	if have, _ := t.lh.HaveMetadata(); !have {
+	if have, _ := lh.HaveMetadata(); !have {
 		return
 	}
 	t.gotInfoOnce.Do(func() {
 		// Switch to lazy/streaming mode: download nothing until a Reader's
 		// window or Preload bumps the specific pieces it needs.
-		_ = t.lh.SetAllPiecesPriority(0)
+		_ = lh.SetAllPiecesPriority(0)
 		// Backfill the spec with the just-received info-dict: a magnet-added
 		// torrent's spec has no InfoBytes, so without this every DB save stores
 		// the bare magnet and every server restart re-fetches metadata from the
 		// swarm (slow playlists / slow first play after restart).
 		if t.TorrentSpec != nil && len(t.TorrentSpec.InfoBytes) == 0 {
-			if mb, err := t.lh.Metadata(); err == nil && len(mb) > 0 {
+			if mb, err := lh.Metadata(); err == nil && len(mb) > 0 {
 				t.mu.Lock()
 				t.TorrentSpec.InfoBytes = mb
 				t.mu.Unlock()
@@ -274,11 +282,13 @@ func (t *Torrent) WaitInfo() bool {
 	if t == nil {
 		return false
 	}
-	if t.lh == nil {
+	// Same handle snapshot as signalGotInfo: Close() nils t.lh concurrently.
+	lh := t.lh
+	if lh == nil {
 		return false
 	}
 	// Fast path: already have metadata (e.g. info bytes were passed in).
-	if have, _ := t.lh.HaveMetadata(); have {
+	if have, _ := lh.HaveMetadata(); have {
 		t.signalGotInfo()
 		return true
 	}
