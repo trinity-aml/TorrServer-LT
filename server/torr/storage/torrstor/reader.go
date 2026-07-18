@@ -206,8 +206,10 @@ type Reader struct {
 	// 0, cancelling its in-flight requests; the next park re-raised it, and the
 	// 7→0→7 flap kept cancelling the piece's blocks — the post-seek freeze (VLC time
 	// frozen for 60s until the read timed out). So it is only overwritten by the
-	// next park (a different piece), neutralised by completion (the apply skips a
-	// piece the cache Has), or cleared by an explicit Seek.
+	// next park (a different piece), cleared by an explicit Seek, or SPENT when the
+	// read position moves past the piece (see Read) — merely skipping a resident
+	// piece per-apply was not terminal: eviction made it un-Have and the stale flag
+	// resurrected the force forever (the behind-the-window re-download cycle).
 	waitPiece atomic.Int64
 
 	// ensuredPiece/ensuredAtMs dedupe ensurePieceLocked's control-plane work across
@@ -404,6 +406,20 @@ func (r *Reader) Read(p []byte) (int, error) {
 	}
 
 	r.offset.Store(off + int64(written))
+	// The sticky park flag (see waitPiece) is SPENT once the read position moves
+	// past the parked piece — the blocked read was served in full. Without this
+	// terminal condition the only neutraliser was c.Have(): when LRU later
+	// evicted that piece (nobody reads it again, so it is the coldest entry),
+	// Have flipped back to false and the stale flag re-entered the blocked-force
+	// — which re-downloaded a piece nobody wants, whose arrival re-triggered the
+	// over-cap evict, which re-armed the flag: the same piece re-downloading
+	// every ~10s behind the advancing window for the rest of the stream (field
+	// log: piece 184 fetched 36 times / 288 MB during 4 minutes of playback).
+	if plen := r.cache.PieceLength; plen > 0 {
+		if wp := r.waitPiece.Load(); wp >= 0 && (off+int64(written))/plen > wp {
+			r.waitPiece.CompareAndSwap(wp, -1)
+		}
+	}
 	if written > 0 {
 		r.scheduleWindow()
 	}
