@@ -37,12 +37,14 @@ type Config struct {
 	TempFS     bool `json:"tempfs"`
 	TempFSRing int  `json:"tempfs_ring"`
 
-	// PlaylistHLS (fork extension, not in upstream): generated M3U playlists
-	// point Matroska/WebM entries at the /gst/{hash}/master.m3u8 transcode
-	// endpoint instead of the direct /stream link, so any HLS-capable player
-	// gets the AAC-transcoded audio without hand-building URLs. Other
-	// containers keep their direct links (the pipeline only accepts mkv/webm).
-	PlaylistHLS bool `json:"PlaylistHLS"`
+	// Proxy (fork extension, not in upstream): GStreamer proxy mode. When on,
+	// generated M3U playlists point supported (Matroska/WebM) entries at the
+	// /gst/{hash}/master.m3u8 HLS transcode endpoint instead of the direct
+	// /stream link, so any HLS-capable player gets the AAC-transcoded audio
+	// without hand-building URLs. Other containers keep their direct links (the
+	// pipeline only accepts mkv/webm). Replaces the former PlaylistHLS setting;
+	// the old key is still read once for migration (see applySettingsConfig).
+	Proxy bool `json:"Proxy"`
 
 	// AudioLang (fork extension): preferred audio-track language for the HLS
 	// transcode when the request doesn't pick a track explicitly (playlist
@@ -143,8 +145,11 @@ type storedConfig struct {
 	TempFS     *bool `json:"tempfs"`
 	TempFSRing *int  `json:"tempfs_ring"`
 
+	Proxy     *bool
+	AudioLang *string
+
+	// PlaylistHLS is the pre-rename key, kept for one-way migration into Proxy.
 	PlaylistHLS *bool
-	AudioLang   *string
 }
 
 func applySettingsConfig(conf Config) Config {
@@ -224,8 +229,14 @@ func applySettingsConfig(conf Config) Config {
 	if stored.TempFSRing != nil {
 		conf.TempFSRing = *stored.TempFSRing
 	}
+	// Migration: honor the old PlaylistHLS key first, then let a present Proxy
+	// key win. Once the config is saved again it serializes only Proxy, so the
+	// legacy key drops out of storage on the next SaveConfig.
 	if stored.PlaylistHLS != nil {
-		conf.PlaylistHLS = *stored.PlaylistHLS
+		conf.Proxy = *stored.PlaylistHLS
+	}
+	if stored.Proxy != nil {
+		conf.Proxy = *stored.Proxy
 	}
 	if stored.AudioLang != nil {
 		conf.AudioLang = *stored.AudioLang
@@ -234,11 +245,12 @@ func applySettingsConfig(conf Config) Config {
 	return conf
 }
 
-// PlaylistHLS reports whether generated M3U playlists should point supported
-// (Matroska/WebM) entries at the HLS transcode endpoint. Reads the live
-// config so a settings save takes effect on the next playlist fetch.
-func PlaylistHLS() bool {
-	return LoadConfig().PlaylistHLS
+// ProxyMode reports whether GStreamer proxy mode is on: generated M3U
+// playlists point supported (Matroska/WebM) entries at the HLS transcode
+// endpoint. Reads the live config so a settings save takes effect on the next
+// playlist fetch.
+func ProxyMode() bool {
+	return LoadConfig().Proxy
 }
 
 func LoadConfig() Config {

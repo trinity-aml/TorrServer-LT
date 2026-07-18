@@ -18,8 +18,8 @@ func Remove(_ string) bool {
 	return false
 }
 
-// PlaylistHLS is always false without the gst build tag: playlists keep their
+// ProxyMode is always false without the gst build tag: playlists keep their
 // direct /stream links because there is nothing to transcode with.
-func PlaylistHLS() bool {
+func ProxyMode() bool {
 	return false
 }

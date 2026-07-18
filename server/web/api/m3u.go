@@ -160,11 +160,11 @@ func getM3uList(tor *state.TorrentStatus, host string, fromLast bool) string {
 	// different token and thus an isolated window even behind the same IP. See
 	// torr.streamGroupKey.
 	session := "&ss=" + newSessionToken()
-	// PlaylistHLS (GStreamer settings, -gst builds): point Matroska/WebM entries
-	// at the HLS transcode endpoint so any HLS-capable player gets AAC audio
+	// Proxy mode (GStreamer settings, -gst builds): route Matroska/WebM entries
+	// through the HLS transcode endpoint so any HLS-capable player gets AAC audio
 	// without hand-building URLs. Only those containers — the transcode pipeline
 	// rejects everything else, so other files keep their direct /stream links.
-	gstHLS := gstreamer.PlaylistHLS()
+	gstProxy := gstreamer.ProxyMode()
 	for i, f := range tor.FileStats {
 		if i >= from {
 			if utils.GetMimeType(f.Path) != "*/*" {
@@ -173,7 +173,7 @@ func getM3uList(tor *state.TorrentStatus, host string, fromLast bool) string {
 					fn = f.Path
 				}
 				m3u += "#EXTINF:0," + fn + "\n"
-				if gstHLS && isGstHLSContainer(f.Path) {
+				if gstProxy && isGstHLSContainer(f.Path) {
 					m3u += host + "/gst/" + tor.Hash + "/master.m3u8?index=" + fmt.Sprint(f.Id) + "\n"
 					continue
 				}
@@ -196,7 +196,7 @@ func getM3uList(tor *state.TorrentStatus, host string, fromLast bool) string {
 
 // isGstHLSContainer reports whether the file is one the GStreamer transcode
 // pipeline accepts (Matroska/WebM — see gstreamer.validateProbe). Only these
-// get /gst/ links in a PlaylistHLS playlist.
+// get /gst/ links when GStreamer proxy mode is on.
 func isGstHLSContainer(path string) bool {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".mkv", ".webm":

@@ -61,7 +61,7 @@ const emptyConfig = {
   VideoBitrate: 10000,
   tempfs: false,
   tempfs_ring: 0,
-  PlaylistHLS: false,
+  Proxy: false,
   AudioLang: '',
 }
 
@@ -290,26 +290,26 @@ export default function GStreamerSettings() {
         <FormControlLabel
           control={
             <Switch
-              checked={Boolean(gstreamerSettings.PlaylistHLS)}
-              onChange={e => updateField('PlaylistHLS', e.target.checked)}
+              checked={Boolean(gstreamerSettings.Proxy)}
+              onChange={e => updateField('Proxy', e.target.checked)}
               color='secondary'
             />
           }
-          label={t('GStreamer.PlaylistHLS')}
+          label={t('GStreamer.Proxy')}
           labelPlacement='start'
         />
-        <FormHelperText>{t('GStreamer.PlaylistHLSHint')}</FormHelperText>
+        <FormHelperText>{t('GStreamer.ProxyHint')}</FormHelperText>
       </FormGroup>
 
       <FormGroup style={{ marginTop: 12, marginBottom: 20 }}>
-        <InputLabel htmlFor='gstreamer-audio-lang' disabled={!gstreamerSettings.PlaylistHLS}>
+        <InputLabel htmlFor='gstreamer-audio-lang' disabled={!gstreamerSettings.Proxy}>
           {t('GStreamer.AudioLang')}
         </InputLabel>
         <Select
           id='gstreamer-audio-lang'
           value={gstreamerSettings.AudioLang || ''}
           onChange={e => updateField('AudioLang', e.target.value)}
-          disabled={!gstreamerSettings.PlaylistHLS}
+          disabled={!gstreamerSettings.Proxy}
           displayEmpty
           variant='outlined'
           margin='dense'

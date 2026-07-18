@@ -24,8 +24,9 @@ func Remove(hash string) bool {
 	return gstreamer.Remove(hash)
 }
 
-// PlaylistHLS reports whether generated M3U playlists should use the HLS
-// transcode endpoint for Matroska/WebM entries (the PlaylistHLS setting).
-func PlaylistHLS() bool {
-	return gstreamer.PlaylistHLS()
+// ProxyMode reports whether GStreamer proxy mode is on: generated M3U
+// playlists route supported (Matroska/WebM) entries through the HLS transcode
+// endpoint (the Proxy setting).
+func ProxyMode() bool {
+	return gstreamer.ProxyMode()
 }
