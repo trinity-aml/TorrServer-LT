@@ -23,3 +23,9 @@ func Remove(_ string) bool {
 func ProxyMode() bool {
 	return false
 }
+
+// ProxyContainerExts is always nil without the gst build tag: nothing is
+// routed through the transcode, so playlists keep their direct /stream links.
+func ProxyContainerExts() []string {
+	return nil
+}

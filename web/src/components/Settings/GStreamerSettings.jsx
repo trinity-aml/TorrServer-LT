@@ -53,14 +53,19 @@ const emptyConfig = {
   AACChannels: 0,
   AACSamplerate: 0,
   SegmentSeconds: 6,
-  appsinkBuffers: 1000,
+  SegmentDiff: 20,
+  Subtitles: true,
   TranscodeH264: false,
   TranscodeH265: false,
   TranscodeAV1: false,
   TranscodeVP9: false,
+  TranscodeVP8: false,
+  TranscodeAVI: false,
+  HDRToSDR: false,
+  HardwareAcceleration: true,
+  UseGPU: true,
+  X264Ultrafast: false,
   VideoBitrate: 10000,
-  tempfs: false,
-  tempfs_ring: 0,
   Proxy: false,
   AudioLang: '',
 }
@@ -404,15 +409,15 @@ export default function GStreamerSettings() {
       />
 
       <TextField
-        label={t('GStreamer.AppSinkBuffers')}
+        label={t('GStreamer.SegmentDiff')}
         type='number'
-        value={gstreamerSettings.appsinkBuffers}
-        onChange={e => updateField('appsinkBuffers', Number(e.target.value))}
+        value={gstreamerSettings.SegmentDiff ?? 20}
+        onChange={e => updateField('SegmentDiff', Number(e.target.value))}
         margin='normal'
-        helperText={t('GStreamer.AppSinkBuffersHint')}
+        helperText={t('GStreamer.SegmentDiffHint')}
         variant='outlined'
         fullWidth
-        inputProps={{ min: 1 }}
+        inputProps={{ min: 0 }}
       />
 
       <TextField
@@ -485,6 +490,34 @@ export default function GStreamerSettings() {
           label={t('GStreamer.TranscodeVP9')}
           labelPlacement='start'
         />
+      </FormGroup>
+
+      <FormGroup>
+        <FormControlLabel
+          control={
+            <Switch
+              checked={Boolean(gstreamerSettings.TranscodeVP8)}
+              onChange={e => updateField('TranscodeVP8', e.target.checked)}
+              color='secondary'
+            />
+          }
+          label={t('GStreamer.TranscodeVP8')}
+          labelPlacement='start'
+        />
+      </FormGroup>
+
+      <FormGroup>
+        <FormControlLabel
+          control={
+            <Switch
+              checked={Boolean(gstreamerSettings.TranscodeAVI)}
+              onChange={e => updateField('TranscodeAVI', e.target.checked)}
+              color='secondary'
+            />
+          }
+          label={t('GStreamer.TranscodeAVI')}
+          labelPlacement='start'
+        />
         <FormHelperText margin='none'>{t('GStreamer.TranscodeHint')}</FormHelperText>
       </FormGroup>
 
@@ -496,29 +529,77 @@ export default function GStreamerSettings() {
         <FormControlLabel
           control={
             <Switch
-              checked={Boolean(gstreamerSettings.tempfs)}
-              onChange={e => updateField('tempfs', e.target.checked)}
+              checked={Boolean(gstreamerSettings.Subtitles)}
+              onChange={e => updateField('Subtitles', e.target.checked)}
               color='secondary'
             />
           }
-          label={t('GStreamer.TempFS')}
+          label={t('GStreamer.Subtitles')}
           labelPlacement='start'
         />
-        <FormHelperText margin='none'>{t('GStreamer.TempFSHint')}</FormHelperText>
+        <FormHelperText margin='none'>{t('GStreamer.SubtitlesHint')}</FormHelperText>
       </FormGroup>
 
-      <TextField
-        label={t('GStreamer.TempFSRing')}
-        type='number'
-        value={gstreamerSettings.tempfs_ring}
-        onChange={e => updateField('tempfs_ring', Number(e.target.value))}
-        margin='normal'
-        helperText={t('GStreamer.TempFSRingHint')}
-        variant='outlined'
-        fullWidth
-        inputProps={{ min: 0 }}
-        disabled={!gstreamerSettings.tempfs}
-      />
+      <FormGroup>
+        <FormControlLabel
+          control={
+            <Switch
+              checked={Boolean(gstreamerSettings.HardwareAcceleration)}
+              onChange={e => updateField('HardwareAcceleration', e.target.checked)}
+              color='secondary'
+            />
+          }
+          label={t('GStreamer.HardwareAcceleration')}
+          labelPlacement='start'
+        />
+        <FormHelperText margin='none'>{t('GStreamer.HardwareAccelerationHint')}</FormHelperText>
+      </FormGroup>
+
+      <FormGroup>
+        <FormControlLabel
+          control={
+            <Switch
+              checked={Boolean(gstreamerSettings.UseGPU)}
+              onChange={e => updateField('UseGPU', e.target.checked)}
+              color='secondary'
+              disabled={!gstreamerSettings.HardwareAcceleration}
+            />
+          }
+          label={t('GStreamer.UseGPU')}
+          labelPlacement='start'
+        />
+        <FormHelperText margin='none'>{t('GStreamer.UseGPUHint')}</FormHelperText>
+      </FormGroup>
+
+      <FormGroup>
+        <FormControlLabel
+          control={
+            <Switch
+              checked={Boolean(gstreamerSettings.HDRToSDR)}
+              onChange={e => updateField('HDRToSDR', e.target.checked)}
+              color='secondary'
+            />
+          }
+          label={t('GStreamer.HDRToSDR')}
+          labelPlacement='start'
+        />
+        <FormHelperText margin='none'>{t('GStreamer.HDRToSDRHint')}</FormHelperText>
+      </FormGroup>
+
+      <FormGroup>
+        <FormControlLabel
+          control={
+            <Switch
+              checked={Boolean(gstreamerSettings.X264Ultrafast)}
+              onChange={e => updateField('X264Ultrafast', e.target.checked)}
+              color='secondary'
+            />
+          }
+          label={t('GStreamer.X264Ultrafast')}
+          labelPlacement='start'
+        />
+        <FormHelperText margin='none'>{t('GStreamer.X264UltrafastHint')}</FormHelperText>
+      </FormGroup>
 
       <Box mt={3} mb={2} display='flex' flexWrap='wrap' style={{ gap: 10 }}>
         <Button

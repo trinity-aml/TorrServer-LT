@@ -160,11 +160,12 @@ func getM3uList(tor *state.TorrentStatus, host string, fromLast bool) string {
 	// different token and thus an isolated window even behind the same IP. See
 	// torr.streamGroupKey.
 	session := "&ss=" + newSessionToken()
-	// Proxy mode (GStreamer settings, -gst builds): route Matroska/WebM entries
-	// through the HLS transcode endpoint so any HLS-capable player gets AAC audio
-	// without hand-building URLs. Only those containers — the transcode pipeline
-	// rejects everything else, so other files keep their direct /stream links.
-	gstProxy := gstreamer.ProxyMode()
+	// Proxy mode (GStreamer settings, -gst builds): route supported-container
+	// entries through the HLS transcode endpoint so any HLS-capable player gets
+	// AAC audio without hand-building URLs. Matroska/WebM always; AVI too when
+	// TranscodeAVI is on. The pipeline rejects everything else, so other files
+	// keep their direct /stream links. Computed once (reads the config).
+	proxyExts := gstreamer.ProxyContainerExts()
 	for i, f := range tor.FileStats {
 		if i >= from {
 			if utils.GetMimeType(f.Path) != "*/*" {
@@ -173,7 +174,7 @@ func getM3uList(tor *state.TorrentStatus, host string, fromLast bool) string {
 					fn = f.Path
 				}
 				m3u += "#EXTINF:0," + fn + "\n"
-				if gstProxy && isGstHLSContainer(f.Path) {
+				if isProxyContainer(proxyExts, f.Path) {
 					m3u += host + "/gst/" + tor.Hash + "/master.m3u8?index=" + fmt.Sprint(f.Id) + "\n"
 					continue
 				}
@@ -194,13 +195,19 @@ func getM3uList(tor *state.TorrentStatus, host string, fromLast bool) string {
 	return m3u
 }
 
-// isGstHLSContainer reports whether the file is one the GStreamer transcode
-// pipeline accepts (Matroska/WebM — see gstreamer.validateProbe). Only these
-// get /gst/ links when GStreamer proxy mode is on.
-func isGstHLSContainer(path string) bool {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".mkv", ".webm":
-		return true
+// isProxyContainer reports whether path's extension is in the proxy-eligible
+// set (gstreamer.ProxyContainerExts) — those files get /gst/ links instead of
+// a direct /stream link. An empty set (proxy off, or a non-gst build) means
+// never.
+func isProxyContainer(exts []string, path string) bool {
+	if len(exts) == 0 {
+		return false
+	}
+	e := strings.ToLower(filepath.Ext(path))
+	for _, x := range exts {
+		if e == x {
+			return true
+		}
 	}
 	return false
 }

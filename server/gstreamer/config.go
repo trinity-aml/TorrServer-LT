@@ -1,3 +1,5 @@
+//go:build gst
+
 package gstreamer
 
 import (
@@ -22,36 +24,39 @@ type Config struct {
 
 	InactiveMinutes int `json:"InactiveMinutes"`
 
-	AACBitrateKbps int `json:"AACBitrateKbps"`
-	AACChannels    int `json:"AACChannels"`
-	AACSamplerate  int `json:"AACSamplerate"`
-	SegmentSeconds int `json:"SegmentSeconds"`
-	AppSinkBuffers int `json:"appsinkBuffers"`
+	AACBitrateKbps int  `json:"AACBitrateKbps"`
+	AACChannels    int  `json:"AACChannels"`
+	AACSamplerate  int  `json:"AACSamplerate"`
+	SegmentSeconds int  `json:"SegmentSeconds"`
+	SegmentDiff    int  `json:"SegmentDiff"`
+	Subtitles      bool `json:"Subtitles"`
 
-	TranscodeH264 bool `json:"TranscodeH264"`
-	TranscodeH265 bool `json:"TranscodeH265"`
-	TranscodeAV1  bool `json:"TranscodeAV1"`
-	TranscodeVP9  bool `json:"TranscodeVP9"`
-	VideoBitrate  int  `json:"VideoBitrate"`
-
-	TempFS     bool `json:"tempfs"`
-	TempFSRing int  `json:"tempfs_ring"`
+	TranscodeH264        bool `json:"TranscodeH264"`
+	TranscodeH265        bool `json:"TranscodeH265"`
+	TranscodeAV1         bool `json:"TranscodeAV1"`
+	TranscodeVP9         bool `json:"TranscodeVP9"`
+	TranscodeVP8         bool `json:"TranscodeVP8"`
+	TranscodeAVI         bool `json:"TranscodeAVI"`
+	HDRToSDR             bool `json:"HDRToSDR"`
+	HardwareAcceleration bool `json:"HardwareAcceleration"`
+	UseGPU               bool `json:"UseGPU"`
+	X264Ultrafast        bool `json:"X264Ultrafast"`
+	VideoBitrate         int  `json:"VideoBitrate"`
 
 	// Proxy (fork extension, not in upstream): GStreamer proxy mode. When on,
-	// generated M3U playlists point supported (Matroska/WebM) entries at the
-	// /gst/{hash}/master.m3u8 HLS transcode endpoint instead of the direct
-	// /stream link, so any HLS-capable player gets the AAC-transcoded audio
-	// without hand-building URLs. Other containers keep their direct links (the
-	// pipeline only accepts mkv/webm). Replaces the former PlaylistHLS setting;
+	// generated M3U playlists point supported entries (see isGstHLSContainer)
+	// at the /gst/{hash}/master.m3u8 HLS transcode endpoint instead of the
+	// direct /stream link, so any HLS-capable player gets the AAC-transcoded
+	// audio without hand-building URLs. Replaces the former PlaylistHLS setting;
 	// the old key is still read once for migration (see applySettingsConfig).
 	Proxy bool `json:"Proxy"`
 
 	// AudioLang (fork extension): preferred audio-track language for the HLS
 	// transcode when the request doesn't pick a track explicitly (playlist
 	// links carry no ?audio=). A canonical two-letter code ("ru", "en", …);
-	// empty = current behavior, the container's first audio track. Matched
-	// against the discoverer language tags via canonicalAudioLang, so "rus",
-	// "ru-RU" and "Russian" in the container all match "ru".
+	// empty = the container's first audio track. Matched against the discoverer
+	// language tags via canonicalAudioLang, so "rus", "ru-RU" and "Russian" all
+	// map to "ru". See resolveAudioIndex.
 	AudioLang string `json:"AudioLang"`
 }
 
@@ -61,14 +66,16 @@ func DefaultConfig() Config {
 
 func defaultConfigWithoutSettings() Config {
 	conf := Config{
-		GSTVersion:      minGSTVersion,
-		Source:          "stream",
-		InactiveMinutes: 5,
-		AACBitrateKbps:  256,
-		SegmentSeconds:  6,
-		AppSinkBuffers:  1000,
-		VideoBitrate:    10_000,
-		TempFS:          false,
+		GSTVersion:           minGSTVersion,
+		Source:               "stream",
+		InactiveMinutes:      5,
+		AACBitrateKbps:       256,
+		SegmentSeconds:       6,
+		SegmentDiff:          20,
+		Subtitles:            true,
+		HardwareAcceleration: true,
+		UseGPU:               true,
+		VideoBitrate:         10_000,
 	}
 
 	if runtime.GOOS == "windows" {
@@ -98,14 +105,11 @@ func (c Config) normalized() Config {
 	if c.SegmentSeconds <= 0 {
 		c.SegmentSeconds = 6
 	}
-	if c.AppSinkBuffers <= 0 {
-		c.AppSinkBuffers = 1000
+	if c.SegmentDiff < 0 {
+		c.SegmentDiff = 0
 	}
 	if c.VideoBitrate <= 0 {
 		c.VideoBitrate = 10_000
-	}
-	if c.TempFSRing < 0 {
-		c.TempFSRing = 0
 	}
 	if c.GSTVersion < minGSTVersion {
 		c.GSTVersion = minGSTVersion
@@ -134,16 +138,20 @@ type storedConfig struct {
 	AACChannels    *int
 	AACSamplerate  *int
 	SegmentSeconds *int
-	AppSinkBuffers *int `json:"appsinkBuffers"`
+	SegmentDiff    *int
+	Subtitles      *bool
 
-	TranscodeH264 *bool
-	TranscodeH265 *bool
-	TranscodeAV1  *bool
-	TranscodeVP9  *bool
-	VideoBitrate  *int
-
-	TempFS     *bool `json:"tempfs"`
-	TempFSRing *int  `json:"tempfs_ring"`
+	TranscodeH264        *bool
+	TranscodeH265        *bool
+	TranscodeAV1         *bool
+	TranscodeVP9         *bool
+	TranscodeVP8         *bool
+	TranscodeAVI         *bool
+	HDRToSDR             *bool
+	HardwareAcceleration *bool
+	UseGPU               *bool
+	X264Ultrafast        *bool
+	VideoBitrate         *int
 
 	Proxy     *bool
 	AudioLang *string
@@ -205,8 +213,11 @@ func applySettingsConfig(conf Config) Config {
 	if stored.SegmentSeconds != nil {
 		conf.SegmentSeconds = *stored.SegmentSeconds
 	}
-	if stored.AppSinkBuffers != nil {
-		conf.AppSinkBuffers = *stored.AppSinkBuffers
+	if stored.SegmentDiff != nil {
+		conf.SegmentDiff = *stored.SegmentDiff
+	}
+	if stored.Subtitles != nil {
+		conf.Subtitles = *stored.Subtitles
 	}
 	if stored.TranscodeH264 != nil {
 		conf.TranscodeH264 = *stored.TranscodeH264
@@ -220,14 +231,26 @@ func applySettingsConfig(conf Config) Config {
 	if stored.TranscodeVP9 != nil {
 		conf.TranscodeVP9 = *stored.TranscodeVP9
 	}
+	if stored.TranscodeVP8 != nil {
+		conf.TranscodeVP8 = *stored.TranscodeVP8
+	}
+	if stored.TranscodeAVI != nil {
+		conf.TranscodeAVI = *stored.TranscodeAVI
+	}
+	if stored.HDRToSDR != nil {
+		conf.HDRToSDR = *stored.HDRToSDR
+	}
+	if stored.HardwareAcceleration != nil {
+		conf.HardwareAcceleration = *stored.HardwareAcceleration
+	}
+	if stored.UseGPU != nil {
+		conf.UseGPU = *stored.UseGPU
+	}
+	if stored.X264Ultrafast != nil {
+		conf.X264Ultrafast = *stored.X264Ultrafast
+	}
 	if stored.VideoBitrate != nil {
 		conf.VideoBitrate = *stored.VideoBitrate
-	}
-	if stored.TempFS != nil {
-		conf.TempFS = *stored.TempFS
-	}
-	if stored.TempFSRing != nil {
-		conf.TempFSRing = *stored.TempFSRing
 	}
 	// Migration: honor the old PlaylistHLS key first, then let a present Proxy
 	// key win. Once the config is saved again it serializes only Proxy, so the
@@ -241,20 +264,7 @@ func applySettingsConfig(conf Config) Config {
 	if stored.AudioLang != nil {
 		conf.AudioLang = *stored.AudioLang
 	}
-
 	return conf
-}
-
-// ProxyMode reports whether GStreamer proxy mode is on: generated M3U
-// playlists point supported (Matroska/WebM) entries at the HLS transcode
-// endpoint. Reads the live config so a settings save takes effect on the next
-// playlist fetch.
-func ProxyMode() bool {
-	return LoadConfig().Proxy
-}
-
-func LoadConfig() Config {
-	return DefaultConfig()
 }
 
 func SaveConfig(conf Config) error {
@@ -280,4 +290,30 @@ func SaveConfig(conf Config) error {
 	db.Rem("Settings", "gst")
 	db.Rem("Settings", "GStreamer")
 	return nil
+}
+
+// ProxyMode reports whether GStreamer proxy mode is on (the Proxy setting):
+// generated M3U playlists route supported entries through the HLS transcode
+// endpoint. Reads the stored config fresh (DefaultConfig) so a settings save
+// takes effect on the next playlist fetch, without the gst-binary probe that
+// CurrentConfig runs.
+func ProxyMode() bool {
+	return DefaultConfig().Proxy
+}
+
+// ProxyContainerExts is the set of lowercase file extensions the M3U playlist
+// routes through the /gst HLS transcode when proxy mode is on, or nil when it
+// is off. Matroska/WebM are always eligible; .avi only when TranscodeAVI is
+// enabled, since the pipeline gates the AVI demuxer on that setting (see
+// validateProbe). Reads the stored config once per playlist fetch.
+func ProxyContainerExts() []string {
+	conf := DefaultConfig()
+	if !conf.Proxy {
+		return nil
+	}
+	exts := []string{".mkv", ".webm"}
+	if conf.TranscodeAVI {
+		exts = append(exts, ".avi")
+	}
+	return exts
 }

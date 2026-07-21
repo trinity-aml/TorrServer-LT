@@ -30,3 +30,9 @@ func Remove(hash string) bool {
 func ProxyMode() bool {
 	return gstreamer.ProxyMode()
 }
+
+// ProxyContainerExts returns the file extensions eligible for /gst proxy
+// routing under the current config (nil when proxy mode is off).
+func ProxyContainerExts() []string {
+	return gstreamer.ProxyContainerExts()
+}
