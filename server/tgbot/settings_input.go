@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tele "gopkg.in/telebot.v4"
+	"server/bonjour"
 	"server/dlna"
 	"server/rutor"
 	"server/settings"
@@ -191,6 +192,10 @@ func applySettingsInput(c tele.Context, setting, value string) {
 	dlna.Stop()
 	if sets.EnableDLNA {
 		dlna.Start()
+	}
+	bonjour.Stop()
+	if sets.EnableBonjour {
+		bonjour.Start()
 	}
 	rutor.Stop()
 	rutor.Start()

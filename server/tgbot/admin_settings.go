@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	tele "gopkg.in/telebot.v4"
+	"server/bonjour"
 	"server/dlna"
 	"server/rutor"
 	"server/settings"
@@ -407,6 +408,7 @@ func settingsCallback(c tele.Context, action string) error {
 		}
 		torr.SetDefSettings()
 		dlna.Stop()
+		bonjour.Stop()
 		rutor.Stop()
 		rutor.Start()
 		msg := sendSettingsMenuText(c, uid, "4")
@@ -610,6 +612,10 @@ func settingsCallback(c tele.Context, action string) error {
 	dlna.Stop()
 	if sets.EnableDLNA {
 		dlna.Start()
+	}
+	bonjour.Stop()
+	if sets.EnableBonjour {
+		bonjour.Start()
 	}
 	rutor.Stop()
 	rutor.Start()
