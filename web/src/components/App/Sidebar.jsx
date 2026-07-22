@@ -7,6 +7,9 @@ import RemoveAll from 'components/RemoveAll'
 import AboutDialog from 'components/About'
 import CloseServer from 'components/CloseServer'
 import SearchDialogButton from 'components/Search'
+import ServerStatus from 'components/ServerStatus'
+import ExportLibrary from 'components/ExportLibrary'
+import ImportLibrary from 'components/ImportLibrary'
 import { memo } from 'react'
 import CheckIcon from '@material-ui/icons/Check'
 import ClearIcon from '@material-ui/icons/Clear'
@@ -23,6 +26,9 @@ const Sidebar = ({ isDrawerOpen, isOffline, isLoading, setGlobalFilterCategory }
       <List>
         <AddDialogButton isOffline={isOffline} isLoading={isLoading} />
         <SearchDialogButton isOffline={isOffline} isLoading={isLoading} />
+
+        <ExportLibrary isOffline={isOffline} isLoading={isLoading} />
+        <ImportLibrary isOffline={isOffline} isLoading={isLoading} />
 
         <RemoveAll isOffline={isOffline} isLoading={isLoading} />
       </List>
@@ -58,6 +64,8 @@ const Sidebar = ({ isDrawerOpen, isOffline, isLoading, setGlobalFilterCategory }
       <Divider />
 
       <List>
+        <ServerStatus isOffline={isOffline} isLoading={isLoading} />
+
         <SettingsDialog isOffline={isOffline} isLoading={isLoading} />
 
         <AboutDialog />
