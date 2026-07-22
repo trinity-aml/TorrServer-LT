@@ -303,9 +303,18 @@ func streamNoAuth(c *gin.Context) {
 
 	tor := torr.GetTorrent(spec.InfoHash.HexString())
 	if tor == nil {
-		c.Header("WWW-Authenticate", "Basic realm=Authorization Required")
-		c.AbortWithStatus(http.StatusUnauthorized)
-		return
+		// StreamWA: auto-add an unknown torrent so external players can stream/get
+		// m3u without auth (link is a magnet/hash — TestLink rejects remote URLs).
+		if !sets.StreamWA {
+			c.Header("WWW-Authenticate", "Basic realm=Authorization Required")
+			c.AbortWithStatus(http.StatusUnauthorized)
+			return
+		}
+		tor, err = torr.AddTorrent(spec, title, poster, "", category)
+		if err != nil {
+			c.AbortWithError(http.StatusInternalServerError, err)
+			return
+		}
 	}
 
 	if title == "" {
