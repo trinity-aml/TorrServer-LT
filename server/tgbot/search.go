@@ -1,6 +1,7 @@
 package tgbot
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -33,7 +34,7 @@ func cmdSearch(c tele.Context) error {
 			list = append(list, rutor.Search(query)...)
 		}
 		if sets.BTsets() != nil && sets.BTsets().EnableTorznabSearch {
-			list = append(list, torznab.Search(query, -1)...)
+			list = append(list, torznab.Search(context.Background(), query, -1, "5000,2000", 0, 100)...)
 		}
 		source := "RuTor+Torznab"
 		sendSearchResultsAsync(c.Bot(), c.Sender(), statusMsg, uid, query, list, source)
@@ -86,7 +87,7 @@ func cmdTorznab(c tele.Context) error {
 		return err
 	}
 	go func() {
-		list := torznab.Search(query, index)
+		list := torznab.Search(context.Background(), query, index, "5000,2000", 0, 100)
 		sendSearchResultsAsync(c.Bot(), c.Sender(), statusMsg, uid, query, list, "Torznab")
 	}()
 	return nil

@@ -20,6 +20,10 @@ import (
 //	@Tags			API
 //
 //	@Param			query	query	string	true	"Torznab query"
+//	@Param			index	query	string	false	"Indexer index (-1 = all configured)"
+//	@Param			cat		query	string	false	"Torznab categories, comma-separated (default 5000,2000 = TV+Movies)"
+//	@Param			offset	query	string	false	"Result offset for pagination"
+//	@Param			limit	query	string	false	"Max results (default 100, capped at 250)"
 //
 //	@Produce		json
 //	@Success		200	{array}	models.TorrentDetails	"Torznab torrent search result(s)"
@@ -36,12 +40,102 @@ func torznabSearch(c *gin.Context) {
 		index = i
 	}
 
+	// Default to TV+Movies so existing clients keep video-only results; pass an
+	// explicit (possibly empty) cat to widen or narrow the search.
+	cat := c.DefaultQuery("cat", "5000,2000")
+	offset := 0
+	if o, err := strconv.Atoi(c.DefaultQuery("offset", "0")); err == nil && o > 0 {
+		offset = o
+	}
+	limit := 100
+	if l, err := strconv.Atoi(c.DefaultQuery("limit", "100")); err == nil && l > 0 {
+		limit = l
+	}
+	if limit > 250 {
+		limit = 250
+	}
+
 	query, _ = url.QueryUnescape(query)
-	list := torznab.Search(query, index)
+	list := torznab.Search(c.Request.Context(), query, index, cat, offset, limit)
 	if list == nil {
 		list = []*models.TorrentDetails{}
 	}
 	c.JSON(200, list)
+}
+
+type torznabCapsCategory struct {
+	ID            string                `json:"id"`
+	Name          string                `json:"name"`
+	Subcategories []torznabCapsCategory `json:"subcategories,omitempty"`
+}
+
+type torznabCapsResponse struct {
+	Limits struct {
+		Max     int `json:"max"`
+		Default int `json:"default"`
+	} `json:"limits"`
+	Categories []torznabCapsCategory `json:"categories"`
+}
+
+func torznabCapsCategoryFromModel(cat torznab.CapsCategory) torznabCapsCategory {
+	out := torznabCapsCategory{
+		ID:   cat.ID,
+		Name: cat.Name,
+	}
+	for _, sub := range cat.Subcats {
+		out.Subcategories = append(out.Subcategories, torznabCapsCategoryFromModel(sub))
+	}
+	return out
+}
+
+// torznabCaps godoc
+//
+//	@Summary		Fetch torznab indexer capabilities
+//	@Description	Returns the categories and limits advertised by a configured indexer.
+//
+//	@Tags			API
+//
+//	@Param			index	query	string	true	"Indexer index in the configured list"
+//
+//	@Produce		json
+//	@Success		200	{object}	torznabCapsResponse	"Indexer capabilities"
+//	@Router			/torznab/caps [get]
+func torznabCaps(c *gin.Context) {
+	if !sets.BTsets().EnableTorznabSearch {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "torznab disabled"})
+		return
+	}
+
+	indexStr := c.Query("index")
+	if indexStr == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "index required"})
+		return
+	}
+	index, err := strconv.Atoi(indexStr)
+	if err != nil || index < 0 || index >= len(sets.BTsets().TorznabUrls) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid index"})
+		return
+	}
+
+	config := sets.BTsets().TorznabUrls[index]
+	if config.Host == "" || config.Key == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "indexer not configured"})
+		return
+	}
+
+	caps, err := torznab.FetchCaps(c.Request.Context(), config.Host, config.Key)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	resp := torznabCapsResponse{}
+	resp.Limits.Max = caps.Limits.Max
+	resp.Limits.Default = caps.Limits.Default
+	for _, cat := range caps.Categories {
+		resp.Categories = append(resp.Categories, torznabCapsCategoryFromModel(cat))
+	}
+	c.JSON(200, resp)
 }
 
 type torznabTestReq struct {
@@ -56,7 +150,7 @@ func torznabTest(c *gin.Context) {
 		return
 	}
 
-	if err := torznab.Test(req.Host, req.Key); err != nil {
+	if err := torznab.Test(c.Request.Context(), req.Host, req.Key); err != nil {
 		c.JSON(200, gin.H{"success": false, "error": err.Error()})
 		return
 	}

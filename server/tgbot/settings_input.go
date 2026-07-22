@@ -1,6 +1,7 @@
 package tgbot
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -177,7 +178,7 @@ func applySettingsInput(c tele.Context, setting, value string) {
 		if !strings.HasPrefix(host, "http") {
 			host = "https://" + host
 		}
-		if err := torznab.Test(host, key); err != nil {
+		if err := torznab.Test(context.Background(), host, key); err != nil {
 			_ = c.Send(fmt.Sprintf(tr(uid, "settings_torznab_test_fail"), err.Error()))
 			return
 		}
