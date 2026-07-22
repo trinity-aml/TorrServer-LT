@@ -66,5 +66,8 @@ func SetupRoute(route gin.IRouter) {
 	authorized.GET("/gst/settings", GetGStreamerSettings)
 	authorized.POST("/gst/settings", UpdateGStreamerSettings)
 
+	// Structured server status (integration flags + BT stats + raw /stat text).
+	authorized.GET("/runtime/status", runtimeStatus)
+
 	authorized.GET("/ffp/:hash/:id", ffp)
 }
