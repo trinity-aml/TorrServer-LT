@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"unsafe"
 
 	"github.com/gin-gonic/gin"
@@ -78,9 +79,35 @@ func CheckAuth() gin.HandlerFunc {
 			return
 		}
 
+		// SPA XHR/fetch probes must not trigger the browser's native Basic dialog.
+		// The initial document navigation (Accept: text/html) and third-party
+		// clients (Accept: */*, or those that already send Authorization) still get
+		// the challenge, so native players are unaffected.
+		if !shouldSendBasicChallenge(c) {
+			c.AbortWithStatus(http.StatusUnauthorized)
+			return
+		}
+
 		c.Header("WWW-Authenticate", "Basic realm=Authorization Required")
 		c.AbortWithStatus(http.StatusUnauthorized)
 	}
+}
+
+// shouldSendBasicChallenge is false for typical SPA/API clients (JSON Accept,
+// X-Requested-With, or Sec-Fetch-Mode: cors) so the web app can handle the 401
+// itself instead of the browser popping up its native Basic-auth prompt.
+func shouldSendBasicChallenge(c *gin.Context) bool {
+	accept := strings.ToLower(c.GetHeader("Accept"))
+	if strings.Contains(accept, "application/json") || strings.Contains(accept, "+json") {
+		return false
+	}
+	if c.GetHeader("X-Requested-With") != "" {
+		return false
+	}
+	if strings.EqualFold(c.GetHeader("Sec-Fetch-Mode"), "cors") {
+		return false
+	}
+	return true
 }
 
 func processAccounts(accounts gin.Accounts) authPairs {
