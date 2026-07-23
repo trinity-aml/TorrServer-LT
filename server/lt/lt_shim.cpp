@@ -37,8 +37,16 @@
 #ifdef TSL_HAVE_LT_INTERNALS
 #include <libtorrent/download_priority.hpp>
 #include <libtorrent/io_context.hpp>
+#if LIBTORRENT_VERSION_NUM >= 20100
+// 2.1 moved the internal headers under aux_ (classes now in lt::aux::; the
+// methods we call are unchanged and native_handle() already returns the
+// aux type, so only the include paths differ).
+#include <libtorrent/aux_/piece_picker.hpp>
+#include <libtorrent/aux_/torrent.hpp>
+#else
 #include <libtorrent/piece_picker.hpp>
 #include <libtorrent/torrent.hpp>
+#endif
 #include <libtorrent/aux_/session_interface.hpp>
 #endif
 

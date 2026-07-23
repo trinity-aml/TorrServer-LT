@@ -23,6 +23,7 @@
 #include <libtorrent/session_params.hpp>
 #include <libtorrent/storage_defs.hpp>
 #include <libtorrent/units.hpp>
+#include <libtorrent/version.hpp>
 
 #include <atomic>
 #include <condition_variable>
@@ -107,6 +108,15 @@ inline int64_t storage_id_of(lt::storage_index_t s) {
     using U = typename lt::aux::underlying_index_t<lt::storage_index_t>::type;
     return static_cast<int64_t>(static_cast<U>(s));
 }
+
+// libtorrent 2.1 turned status_t into a flags type: "no error" is the empty
+// flag set and the bits live in lt::disk_status::*. 2.0 spelled the same
+// thing status_t::no_error. One name for both so the handlers read clean.
+#if LIBTORRENT_VERSION_NUM >= 20100
+constexpr lt::status_t tsl_status_ok{};
+#else
+constexpr lt::status_t tsl_status_ok = lt::status_t::no_error;
+#endif
 
 } // namespace
 
@@ -236,7 +246,11 @@ public:
         // handlers to be posted, not invoked re-entrantly — calling them
         // synchronously breaks its piece-completion bookkeeping (it never
         // schedules async_hash, so pieces never finish).
+#if LIBTORRENT_VERSION_NUM >= 20100
+        lt::disk_buffer_holder holder(*this, buf); // 2.1 dropped the size arg
+#else
         lt::disk_buffer_holder holder(*this, buf, r.length);
+#endif
         lt::post(io_, [h = std::move(handler), holder = std::move(holder), err]() mutable {
             h(std::move(holder), err);
         });
@@ -306,7 +320,7 @@ public:
                             std::function<void(lt::status_t, std::string const&, lt::storage_error const&)> handler) override
     {
         lt::post(io_, [h = std::move(handler), p = std::move(p)]() mutable {
-            h(lt::status_t::no_error, p, lt::storage_error{});
+            h(tsl_status_ok, p, lt::storage_error{});
         });
     }
 
@@ -330,7 +344,7 @@ public:
         // 4.1: nothing on disk yet — let libtorrent treat all pieces as missing.
         // 4.2 hooks `have()` callback to populate the bitmap before this step.
         lt::post(io_, [h = std::move(handler)]() mutable {
-            h(lt::status_t::no_error, lt::storage_error{});
+            h(tsl_status_ok, lt::storage_error{});
         });
     }
 
@@ -374,6 +388,13 @@ public:
     // ----- buffer_allocator_interface -----
 
     void free_disk_buffer(char* buf) override { std::free(buf); }
+
+#if LIBTORRENT_VERSION_NUM >= 20100
+    // New pure virtual in 2.1: batched frees from the peer connection loop.
+    void free_multiple_buffers(lt::span<char*> bufs) override {
+        for (char* b : bufs) std::free(b);
+    }
+#endif
 
 private:
     // ----- hashing thread pool -----

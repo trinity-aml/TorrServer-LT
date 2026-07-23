@@ -7,8 +7,10 @@ name: build-macos
 #
 # libtorrent is built from the PINNED source tag via build/darwin-native.sh —
 # the same b2 engine every cross target uses — NOT taken from Homebrew: brew's
-# libtorrent floats (its 2.1.0 bump broke the disk_io shim, which targets the
-# pinned 2.0.x API) and would silently change what a release links against.
+# libtorrent floats and would silently change what a release links against
+# (and it lacks the internal symbols the shim needs, TSL_HAVE_LT_INTERNALS).
+# The pin lives in build/_common.sh (currently v2.1.0 + static OpenSSL for
+# webtorrent/https).
 
 on:
   # No `push` trigger: the macOS build does NOT run on every push to master.
@@ -53,7 +55,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: _src
-          key: src-boost1.85.0-lt2.0.13-v1
+          key: src-boost1.85.0-lt2.1.0-ossl3.5.7-v1
 
       # Per-arch install tree (lib + headers + .pc). With it present the b2
       # step short-circuits and only the Go binaries are relinked.
@@ -61,7 +63,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: _deps/darwin-${{ matrix.arch }}
-          key: deps-darwin-${{ matrix.arch }}-boost1.85.0-lt2.0.13-v1
+          key: deps-darwin-${{ matrix.arch }}-boost1.85.0-lt2.1.0-ossl3.5.7-v1
 
       - name: Set up Go
         uses: actions/setup-go@v5

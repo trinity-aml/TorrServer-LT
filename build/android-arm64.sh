@@ -26,9 +26,17 @@ EXTRA_GO_LDFLAGS="-checklinkname=0"
 # ships the bare binary — no libc++_shared alongside — so the executable dies
 # at load time ("cannot locate symbol ... __ndk1..."). Link libc++ statically.
 EXTRA_CGO_LDFLAGS="-static-libstdc++"
+# OpenSSL's android-* Configure targets need ANDROID_NDK_ROOT + the toolchain
+# on PATH; the API level define matches minSdk above.
+ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
+OPENSSL_PATH="$TC/bin"
+OPENSSL_EXTRA_ARGS="-D__ANDROID_API__=${API}"
+# usrsctp/libjuice: cross via the NDK's own cmake toolchain file.
+CMAKE_CROSS_ARGS="-DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-${API}"
 
 export TARGET GOOS GOARCH CC CXX B2_COMPILER B2_VARIANT B2_TOOLSET_CXX B2_FLAGS \
-       EXTRA_GO_LDFLAGS EXTRA_CGO_LDFLAGS
+       EXTRA_GO_LDFLAGS EXTRA_CGO_LDFLAGS \
+       ANDROID_NDK_ROOT OPENSSL_PATH OPENSSL_EXTRA_ARGS CMAKE_CROSS_ARGS
 
 # shellcheck source=_deps.sh
 . "$(dirname "$0")/_deps.sh"

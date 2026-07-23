@@ -12,7 +12,11 @@ set -euo pipefail
 
 # --- pinned versions -------------------------------------------------
 BOOST_VERSION=${BOOST_VERSION:-1.85.0}
-LIBTORRENT_TAG=${LIBTORRENT_TAG:-v2.0.13}
+LIBTORRENT_TAG=${LIBTORRENT_TAG:-v2.1.0}
+# Static OpenSSL per target: required by webtorrent=on (DTLS + wss:// trackers)
+# and gives libtorrent https tracker/web-seed support (crypto=openssl).
+# 3.5 is the LTS branch (EOL 2030-04).
+OPENSSL_VERSION=${OPENSSL_VERSION:-3.5.7}
 # First number must stay >= 132: the Android client gates its settings UI on the
 # leading digit run (>131 shows PreloadCache, hides the legacy PreloadBuffer).
 TS_VERSION=${TS_VERSION:-MatriX.142.LT-1.1.4}

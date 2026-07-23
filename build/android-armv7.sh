@@ -22,9 +22,15 @@ B2_FLAGS="target-os=android address-model=32 architecture=arm"
 EXTRA_GO_LDFLAGS="-checklinkname=0"
 # See android-arm64.sh: link libc++ statically, the app ships no libc++_shared.
 EXTRA_CGO_LDFLAGS="-static-libstdc++"
+# See android-arm64.sh: OpenSSL android Configure env + NDK cmake toolchain.
+ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
+OPENSSL_PATH="$TC/bin"
+OPENSSL_EXTRA_ARGS="-D__ANDROID_API__=${API}"
+CMAKE_CROSS_ARGS="-DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake -DANDROID_ABI=armeabi-v7a -DANDROID_PLATFORM=android-${API}"
 
 export TARGET GOOS GOARCH GOARM CC CXX B2_COMPILER B2_VARIANT B2_TOOLSET_CXX \
-       B2_FLAGS EXTRA_GO_LDFLAGS EXTRA_CGO_LDFLAGS
+       B2_FLAGS EXTRA_GO_LDFLAGS EXTRA_CGO_LDFLAGS \
+       ANDROID_NDK_ROOT OPENSSL_PATH OPENSSL_EXTRA_ARGS CMAKE_CROSS_ARGS
 
 # shellcheck source=_deps.sh
 . "$(dirname "$0")/_deps.sh"

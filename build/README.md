@@ -1,21 +1,26 @@
 # Local cross-build (no Docker)
 
 These scripts build **TorrServer-LT** for every supported target straight on a
-Linux host — no Docker, no QEMU, no cmake. Each one builds libtorrent (and
-`boost_system` straight from the Boost source tree) with Boost.Build (`b2`)
-into `_deps/<target>/`, then links the Go binary against it through pkg-config.
-Final binaries land in `_out/TorrServer-LT-<target>`.
+Linux host — no Docker, no QEMU. Each one builds a static OpenSSL, the WebRTC
+deps (usrsctp/libjuice, via cmake) and libtorrent (plus `boost_system` straight
+from the Boost source tree, via Boost.Build/`b2`) into `_deps/<target>/`, then
+links the Go binary against it through pkg-config. Final binaries land in
+`_out/TorrServer-LT-<target>`.
 
 libtorrent's own `Jamfile` emits a correct `libtorrent-rasterbar.pc` from its
 `install` target, so the per-target Cflags/defines/Libs flow straight into cgo
 (`server/lt` uses `#cgo pkg-config: libtorrent-rasterbar`). libtorrent is built
-with `crypto=built-in`, so there is no OpenSSL cross-dependency.
+with `crypto=openssl` (static, built from source — no system OpenSSL needed)
+and `webtorrent=on`: https trackers/web seeds plus WebTorrent (`wss://`
+trackers, WebRTC browser peers) work on every target. libdatachannel's Jamfile
+would build usrsctp/libjuice with the HOST compiler; `_deps.sh` cross-builds
+them itself and patches that Jamfile to consume the prebuilt archives.
 
 ```
 build/
-  _common.sh         paths + pinned versions (Boost 1.85.0, libtorrent v2.0.13)
-  _fetch_sources.sh  download Boost + clone libtorrent into _src/  (idempotent)
-  _deps.sh           shared engine: b2 install libtorrent → go_build
+  _common.sh         paths + pinned versions (Boost 1.85.0, libtorrent v2.1.0, OpenSSL 3.5.7)
+  _fetch_sources.sh  download Boost + OpenSSL + clone libtorrent into _src/  (idempotent)
+  _deps.sh           shared engine: openssl + webrtc deps + b2 install libtorrent → go_build
   _osxcross.sh       locate OSXCross wrappers/SDK (darwin targets)
   all.sh             build every target whose toolchain is present
   <target>.sh        per-target toolchain setup + cross_build
@@ -35,8 +40,8 @@ TARGETS="linux-arm64" build/all.sh # a subset
 
 ## Prerequisites per target
 
-The host needs `go`, `curl`, `git` and a host C++ compiler (to bootstrap
-Boost's `b2`). No cmake.
+The host needs `go`, `curl`, `git`, `cmake` (for the WebRTC deps) and a host
+C++ compiler (to bootstrap Boost's `b2`).
 
 | Target          | Install                                                                 |
 |-----------------|-------------------------------------------------------------------------|

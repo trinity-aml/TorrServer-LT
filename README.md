@@ -304,7 +304,7 @@ and the API — in the [GStreamer](#gstreamer) section below.
 
 ## Development
 
-This fork links **libtorrent 2.0.13 (arvidn)** into the Go server through a CGo
+This fork links **libtorrent 2.1.0 (arvidn)** into the Go server through a CGo
 shim (`server/lt`). Unlike upstream's pure-Go engine, every build is therefore
 **CGo + C++** and needs a libtorrent/Boost toolchain. One shim feature — the
 per-piece `we_dont_have` the streaming cache uses to re-download evicted regions
@@ -373,11 +373,15 @@ Targets and the cross-toolchain each needs:
 | `android-arm64` / `android-armv7` | Android NDK r26+ (`export ANDROID_NDK_HOME=…`) |
 | `darwin-arm64` / `darwin-amd64`   | OSXCross + Apple macOS SDK (see below)     |
 
-libtorrent is built with `crypto=built-in`, so there is no OpenSSL cross
-dependency; the only dynamic deps in the final binary are libc/libstdc++/libgcc
-(Windows links those static too). Versions are pinned in `build/_common.sh`
-(Boost 1.85.0, libtorrent v2.0.13) and overridable, e.g.
-`LIBTORRENT_TAG=v2.0.11 build/linux-arm64.sh`. Full detail and the per-target
+libtorrent is built with `crypto=openssl` and `webtorrent=on`: each target gets
+a static OpenSSL built from source (no system OpenSSL needed) plus the WebRTC
+deps (libdatachannel/usrsctp/libjuice), enabling https trackers/web seeds and
+WebTorrent (`wss://` trackers, browser peers). `cmake` is required on the build
+host for the WebRTC deps. Everything links statically — the only dynamic deps
+in the final binary are libc/libstdc++/libgcc (Windows links those static
+too). Versions are pinned in `build/_common.sh` (Boost 1.85.0, libtorrent
+v2.1.0, OpenSSL 3.5.7) and overridable, e.g.
+`LIBTORRENT_TAG=v2.0.13 build/linux-arm64.sh`. Full detail and the per-target
 prerequisites table: [`build/README.md`](build/README.md).
 
 ### macOS

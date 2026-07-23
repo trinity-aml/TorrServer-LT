@@ -12,7 +12,7 @@
 # Stage 1 milestone: only proves the toolchain works end-to-end (lt.Version()).
 # Real wiring of session/torrent/storage lands in later milestones.
 
-ARG LT_TAG=v2.0.13
+ARG LT_TAG=v2.1.0
 ARG GO_VERSION=1.25
 ARG ALPINE_VERSION=3.20
 
@@ -33,11 +33,17 @@ RUN git clone --branch ${LT_TAG} --depth 1 --recurse-submodules \
         https://github.com/arvidn/libtorrent.git
 
 WORKDIR /src/libtorrent/build
+# deprecated-functions=ON (ABI v2): the shim's torrent_info-from-buffer path
+# uses ctors that libtorrent 2.1 marks deprecated under ABI < 4; OFF (= newest
+# ABI) would remove them. webtorrent=ON is fine here: a NATIVE cmake build
+# handles the vendored libdatachannel + its submodules correctly (the cross
+# problem only exists in the b2 path, see build/_deps.sh).
 RUN cmake .. \
         -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_SHARED_LIBS=OFF \
         -Dstatic_runtime=ON \
-        -Ddeprecated-functions=OFF \
+        -Ddeprecated-functions=ON \
+        -Dwebtorrent=ON \
         -Dbuild_examples=OFF \
         -Dbuild_tests=OFF \
         -Dpython-bindings=OFF \

@@ -29,7 +29,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: _src
-          key: src-boost1.85.0-lt2.0.13-v1
+          key: src-boost1.85.0-lt2.1.0-ossl3.5.7-v1
       - name: Fetch Boost + libtorrent
         if: steps.cache.outputs.cache-hit != 'true'
         run: bash build/_fetch_sources.sh
@@ -56,7 +56,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: _src
-          key: src-boost1.85.0-lt2.0.13-v1
+          key: src-boost1.85.0-lt2.1.0-ossl3.5.7-v1
 
       # Cache the per-target install tree (lib + headers + .pc). With it present
       # build_libtorrent short-circuits and only the Go binary is relinked.
@@ -64,7 +64,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: _deps/${{ matrix.target }}
-          key: deps-${{ matrix.target }}-boost1.85.0-lt2.0.13-v1
+          key: deps-${{ matrix.target }}-boost1.85.0-lt2.1.0-ossl3.5.7-v1
 
       - name: Set up Go
         uses: actions/setup-go@v5

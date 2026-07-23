@@ -4,10 +4,10 @@
 #
 # Builds the PINNED libtorrent ($LIBTORRENT_TAG in _common.sh) from source via
 # b2, exactly like every cross target — instead of linking against Homebrew's
-# libtorrent, whose version floats: brew's bump to 2.1.0 broke the CI macOS
-# jobs (our disk_io shim targets the 2.0.x disk_interface API), which is why
-# this script exists. amd64 on an Apple-Silicon host builds via `-arch x86_64`
-# (cgo + b2 both), producing a real Intel binary.
+# libtorrent, whose version floats and lacks the internal symbols the shim
+# needs (TSL_HAVE_LT_INTERNALS); a floating brew version once broke the CI
+# macOS jobs, which is why this script exists. amd64 on an Apple-Silicon host
+# builds via `-arch x86_64` (cgo + b2 both), producing a real Intel binary.
 #
 # The osxcross variants (darwin-{arm64,amd64}.sh) stay for Linux-host local
 # builds; this one needs no SDK juggling — just Xcode CLT and Go.
@@ -43,9 +43,14 @@ B2_TOOLSET_CXX="clang++ $ARCHFLAG"
 B2_FLAGS="target-os=darwin address-model=64 architecture=$B2_ARCH"
 # libtorrent's ip_notifier needs SystemConfiguration (its .pc doesn't say so).
 EXTRA_CGO_LDFLAGS="-framework SystemConfiguration -framework CoreFoundation"
+# webrtc deps: cmake can't take "clang -arch ..." as CMAKE_C_COMPILER; pass a
+# bare clang + the arch via CMAKE_OSX_ARCHITECTURES instead. (OpenSSL's
+# darwin64-*-cc Configure targets carry the -arch flag themselves.)
+OSXARCH=$([[ "$ARCH" == amd64 ]] && echo x86_64 || echo arm64)
+CMAKE_CROSS_ARGS="-DCMAKE_C_COMPILER=clang -DCMAKE_OSX_ARCHITECTURES=$OSXARCH"
 
 export TARGET GOOS GOARCH CC CXX B2_COMPILER B2_VARIANT B2_TOOLSET_CXX B2_FLAGS \
-       EXTRA_CGO_LDFLAGS
+       EXTRA_CGO_LDFLAGS CMAKE_CROSS_ARGS
 
 # shellcheck source=_deps.sh
 . "$(dirname "$0")/_deps.sh"

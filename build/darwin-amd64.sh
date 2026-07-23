@@ -30,9 +30,14 @@ B2_USERCONFIG_EXTRA=": <archiver>$OSX_LIBTOOL"
 # ip_notifier uses SystemConfiguration/SCDynamicStore). Go already pulls
 # CoreFoundation+Security for its runtime; add the libtorrent ones here.
 EXTRA_CGO_LDFLAGS="-framework SystemConfiguration -framework CoreFoundation"
+# See darwin-arm64.sh: osxcross ar/ranlib for OpenSSL, explicit Darwin cross
+# set for the webrtc deps' cmake.
+OPENSSL_AR="$OSX_AR"
+OPENSSL_RANLIB="$OSX_RANLIB"
+CMAKE_CROSS_ARGS="-DCMAKE_SYSTEM_NAME=Darwin -DCMAKE_C_COMPILER=$OSX_CC -DCMAKE_OSX_ARCHITECTURES=x86_64${OSXCROSS_SDKROOT:+ -DCMAKE_OSX_SYSROOT=$OSXCROSS_SDKROOT} -DCMAKE_AR=$(command -v "$OSX_AR") -DCMAKE_RANLIB=$(command -v "$OSX_RANLIB")"
 
 export TARGET GOOS GOARCH CC CXX B2_COMPILER B2_VARIANT B2_TOOLSET_CXX B2_FLAGS \
-       B2_USERCONFIG_EXTRA
+       B2_USERCONFIG_EXTRA OPENSSL_AR OPENSSL_RANLIB CMAKE_CROSS_ARGS
 
 # shellcheck source=_deps.sh
 . "$(dirname "$0")/_deps.sh"
