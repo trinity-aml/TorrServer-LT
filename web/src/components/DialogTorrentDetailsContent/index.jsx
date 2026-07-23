@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { Button, ButtonGroup } from '@material-ui/core'
 import ptt from 'parse-torrent-title'
 import axios from 'axios'
-import { viewedHost } from 'utils/Hosts'
+import { viewedHost, torrentsHost } from 'utils/Hosts'
 import { GETTING_INFO } from 'torrentStates'
 import CircularProgress from '@material-ui/core/CircularProgress'
 import { useTranslation } from 'react-i18next'
@@ -105,6 +105,28 @@ export default function DialogTorrentDetailsContent({ closeDialog, torrent }) {
       } else setViewedFileList()
     })
   }, [hash])
+
+  useEffect(() => {
+    // A DB record without a file list (e.g. added by a client that didn't cache
+    // TorrServer.Files in Data and stored no info-dict — Lampa, an import, an
+    // older build) would leave this dialog on "no playable files" forever.
+    // `torrents get` makes the server promote the record into the session and
+    // fetch metadata from the swarm (torr.GetTorrent); the 1s list poll then
+    // delivers file_stats. Poke every 5s while the list is still empty — a
+    // single call isn't enough because a promoted torrent with no active reader
+    // auto-drops (TorrentDisconnectTimeout, up to 60s), which would abort a slow
+    // metadata fetch. Each poke also refreshes the torrent's expiry, keeping it
+    // alive until the info-dict arrives — including while it sits in
+    // GETTING_INFO (metadata in flight), where the dialog shows its spinner. The
+    // ONLY stop condition is file_stats appearing: once they do, the prop
+    // updates, this effect re-runs, the guard returns early and the cleanup
+    // clears the interval.
+    if (torrentFileList?.length) return undefined
+    const poke = () => axios.post(torrentsHost(), { action: 'get', hash }).catch(() => {})
+    poke()
+    const timer = setInterval(poke, 5000)
+    return () => clearInterval(timer)
+  }, [hash, torrentFileList])
 
   // Cache section: show the configured cache size (from settings, falls back to the
   // live cache Capacity) as the total, and how much of it is currently filled.
