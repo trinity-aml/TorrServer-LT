@@ -261,20 +261,53 @@ const Torrent = ({ torrent }) => {
     playerTitle: title || player.label,
   })
 
+  // Play a file with the default audio: the single track's own index when there
+  // is exactly one, or -1 (let the server pick per AudioLang) when there is none.
+  const playWithDefaultAudio = (player, tracks) => {
+    const index = tracks.length === 1 ? Number(probeTrackValue(tracks[0], 'Index')) : -1
+    setSelectedPlayer(playerWithAudio(player, Number.isInteger(index) && index >= 0 ? index : -1))
+  }
+
   const showAudioTracks = (player, tracks, anchor) => {
-    if (!tracks.length) {
-      setSelectedPlayer(playerWithAudio(player, 0))
+    // Only offer the picker when there's an actual choice (2+ audio tracks);
+    // 0 or 1 track just plays with the default track.
+    if (tracks.length <= 1) {
+      playWithDefaultAudio(player, tracks)
       return
     }
     setAudioMenuPlayer(player)
-    const target = anchor || audioButtonRef.current
+    const target = anchor || audioButtonRef.current || episodeButtonRef.current
     if (target) {
       setAudioMenuAnchor(target)
     } else {
       window.requestAnimationFrame(() => {
-        if (isMounted.current) setAudioMenuAnchor(audioButtonRef.current)
+        if (isMounted.current) setAudioMenuAnchor(audioButtonRef.current || episodeButtonRef.current)
       })
     }
+  }
+
+  // Probe a file's audio tracks, retrying while the probe fails. On a cold
+  // torrent the file head isn't cached yet, so the first probe (which reads the
+  // container header off the stream) errors; the request itself starts the head
+  // download, so a short poll lets it succeed instead of silently falling back
+  // to track 0 and only working on the user's SECOND click. Returns the track
+  // list on success; throws once the attempts run out.
+  const probeAudioTracksWithRetry = async (player, attempts = 20, delay = 1500) => {
+    let lastError
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      if (!isMounted.current) return []
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const { data: probe } = await axios.get(gstreamerProbeUrl(hash, player.id))
+        return probeAudioTracks(probe)
+      } catch (error) {
+        lastError = error
+        if (attempt === attempts - 1) break
+        // eslint-disable-next-line no-await-in-loop
+        await wait(delay)
+      }
+    }
+    throw lastError
   }
 
   const resolveAudioTracks = async (player, anchor) => {
@@ -286,14 +319,15 @@ const Torrent = ({ torrent }) => {
 
     setIsResolvingAudio(true)
     try {
-      const { data: probe } = await axios.get(gstreamerProbeUrl(hash, player.id))
+      const tracks = await probeAudioTracksWithRetry(player)
       if (!isMounted.current) return
 
-      const tracks = probeAudioTracks(probe)
       setAudioTracksByFile(current => ({ ...current, [player.id]: tracks }))
       showAudioTracks(player, tracks, anchor)
     } catch (_) {
-      if (isMounted.current) setSelectedPlayer(playerWithAudio(player, 0))
+      // Probe never became available (dead swarm / unsupported container): fall
+      // back to playing with the server-picked default track.
+      if (isMounted.current) setSelectedPlayer(playerWithAudio(player, -1))
     } finally {
       if (isMounted.current) setIsResolvingAudio(false)
     }
@@ -378,44 +412,20 @@ const Torrent = ({ torrent }) => {
 
           {singlePlayer && !unsupportedPlayers[singlePlayer.key] ? (
             singlePlayer.hls ? (
-              <>
-                <StyledButton
-                  ref={audioButtonRef}
-                  disabled={isResolvingAudio || isResolvingPlayers}
-                  aria-haspopup='menu'
-                  aria-expanded={Boolean(audioMenuAnchor)}
-                  onClick={event => resolveAudioTracks(singlePlayer, event.currentTarget)}
-                >
-                  {isResolvingAudio || isResolvingPlayers ? (
-                    <CircularProgress size={20} color='inherit' />
-                  ) : (
-                    <PlayArrowIcon />
-                  )}
-                  <span>{t('Play')}</span>
-                </StyledButton>
-                <Menu
-                  anchorEl={audioMenuAnchor}
-                  open={Boolean(audioMenuAnchor)}
-                  onClose={() => setAudioMenuAnchor(null)}
-                  getContentAnchorEl={null}
-                  anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-                  transformOrigin={{ vertical: 'top', horizontal: 'left' }}
-                  PaperProps={{ style: { maxHeight: '65vh', width: 420, maxWidth: 'calc(100vw - 32px)' } }}
-                >
-                  {audioMenuTracks.map((track, ordinal) => {
-                    const label = audioTrackLabel(track, ordinal)
-                    const index = probeTrackValue(track, 'Index') ?? ordinal
-                    return (
-                      <MenuItem key={index} onClick={() => selectAudioTrack(track, ordinal)}>
-                        <ListItemIcon style={{ minWidth: 34 }}>
-                          <AudiotrackIcon fontSize='small' />
-                        </ListItemIcon>
-                        <ListItemText primary={label.primary} secondary={label.secondary} />
-                      </MenuItem>
-                    )
-                  })}
-                </Menu>
-              </>
+              <StyledButton
+                ref={audioButtonRef}
+                disabled={isResolvingAudio || isResolvingPlayers}
+                aria-haspopup='menu'
+                aria-expanded={Boolean(audioMenuAnchor)}
+                onClick={event => resolveAudioTracks(singlePlayer, event.currentTarget)}
+              >
+                {isResolvingAudio || isResolvingPlayers ? (
+                  <CircularProgress size={20} color='inherit' />
+                ) : (
+                  <PlayArrowIcon />
+                )}
+                <span>{t('Play')}</span>
+              </StyledButton>
             ) : (
               <VideoPlayer
                 title={title}
@@ -430,11 +440,12 @@ const Torrent = ({ torrent }) => {
             <>
               <StyledButton
                 ref={episodeButtonRef}
+                disabled={isResolvingAudio}
                 aria-haspopup='menu'
                 aria-expanded={Boolean(episodeMenuAnchor)}
                 onClick={event => setEpisodeMenuAnchor(event.currentTarget)}
               >
-                <PlayArrowIcon />
+                {isResolvingAudio ? <CircularProgress size={20} color='inherit' /> : <PlayArrowIcon />}
                 <span>{t('Play')}</span>
               </StyledButton>
               <Menu
@@ -451,7 +462,11 @@ const Torrent = ({ torrent }) => {
                     key={player.key}
                     onClick={() => {
                       setEpisodeMenuAnchor(null)
-                      setSelectedPlayer(player)
+                      // For a transcoded (hls) episode, probe its audio tracks and
+                      // offer the picker just like a single-file movie does; a plain
+                      // stream has no server-side track list, so play it directly.
+                      if (player.hls) resolveAudioTracks(player, episodeButtonRef.current)
+                      else setSelectedPlayer(player)
                     }}
                   >
                     <ListItemIcon style={{ minWidth: 34 }}>
@@ -477,6 +492,32 @@ const Torrent = ({ torrent }) => {
               <span>{t('Playlist')}</span>
             </StyledButton>
           )}
+
+          {/* Shared audio-track picker — driven by audioMenuAnchor from either a
+              single-file movie or a chosen episode, so it must live outside the
+              play-button branches (which render only one of them at a time). */}
+          <Menu
+            anchorEl={audioMenuAnchor}
+            open={Boolean(audioMenuAnchor)}
+            onClose={() => setAudioMenuAnchor(null)}
+            getContentAnchorEl={null}
+            anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+            transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+            PaperProps={{ style: { maxHeight: '65vh', width: 420, maxWidth: 'calc(100vw - 32px)' } }}
+          >
+            {audioMenuTracks.map((track, ordinal) => {
+              const label = audioTrackLabel(track, ordinal)
+              const index = probeTrackValue(track, 'Index') ?? ordinal
+              return (
+                <MenuItem key={index} onClick={() => selectAudioTrack(track, ordinal)}>
+                  <ListItemIcon style={{ minWidth: 34 }}>
+                    <AudiotrackIcon fontSize='small' />
+                  </ListItemIcon>
+                  <ListItemText primary={label.primary} secondary={label.secondary} />
+                </MenuItem>
+              )
+            })}
+          </Menu>
 
           {selectedPlayer && (
             <VideoPlayer
