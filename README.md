@@ -82,7 +82,7 @@ curl -s https://raw.githubusercontent.com/trinity-aml/TorrServer-LT/master/insta
 - Install a specific version:
 
   ```bash
-  sudo bash ./installTorrServerLinux.sh --install MatriX.142.LT-1.1.4 --silent
+  sudo bash ./installTorrServerLinux.sh --install MatriX.142.LT-1.1.5 --silent
   ```
 
 - Update to latest version:
