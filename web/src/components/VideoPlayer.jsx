@@ -300,7 +300,17 @@ const VideoPlayer = ({
     if (Hls.isSupported()) {
       hlsPlayer = new Hls()
       hlsRef.current = hlsPlayer
+      // A cold GStreamer pipeline answers /gst/.../master.m3u8 with 502 until
+      // the file head is buffered (server-side state-change timeout). This hits
+      // an episode inside a multi-file torrent hardest — its head sits at a
+      // file offset that libtorrent only fetches once playback is requested. A
+      // manifest-level failure has no level to resume, so startLoad() can't
+      // recover and the player would hang forever. Re-fetch the manifest for up
+      // to ~30s (matching the server's pipeline-ready window) until it warms up.
+      let manifestRetries = 0
+      const maxManifestRetries = 15
       hlsPlayer.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
+        manifestRetries = 0
         setSubtitleTracks(data.subtitleTracks || [])
         setSubtitleTrack(hlsPlayer.subtitleTrack)
         video.play().catch(() => {})
@@ -315,7 +325,21 @@ const VideoPlayer = ({
         if (!data.fatal) return
 
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-          hlsPlayer.startLoad()
+          // manifestLoadError / manifestLoadTimeOut / manifestParsingError etc.
+          const isManifest = typeof data.details === 'string' && data.details.indexOf('manifest') === 0
+          if (isManifest) {
+            if (manifestRetries < maxManifestRetries) {
+              manifestRetries += 1
+              window.setTimeout(() => {
+                if (hlsRef.current === hlsPlayer) hlsPlayer.loadSource(videoSrc)
+              }, 2000)
+            } else {
+              hlsPlayer.stopLoad()
+              setLoading(false)
+            }
+          } else {
+            hlsPlayer.startLoad()
+          }
         } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
           hlsPlayer.recoverMediaError()
         } else {
