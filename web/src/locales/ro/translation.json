@@ -234,6 +234,14 @@
   "TorrentState": "Starea torentului",
   "TorrentStatus": "Statutul torrentului",
   "TorrentWorking": "Activ",
+  "JacRed": {
+    "APIKeyOptional": "Cheie API (opțional)",
+    "ConnectionSuccessful": "Conexiune reușită",
+    "EnableJacRedSearch": "Activați căutarea JacRed",
+    "EnableSearchViaJacRed": "Căutare printr-un server agregator JacRed",
+    "JacRedHostURL": "URL server JacRed",
+    "Test": "Test"
+  },
   "Torznab": {
     "AddServer": "Adaugă server",
     "APIKey": "Cheie API",

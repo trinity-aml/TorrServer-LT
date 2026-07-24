@@ -255,6 +255,14 @@
   "TorrentState": "Torrent State",
   "TorrentStatus": "Torrent Status",
   "TorrentWorking": "Active",
+  "JacRed": {
+    "APIKeyOptional": "API Key (Optional)",
+    "ConnectionSuccessful": "Connection successful",
+    "EnableJacRedSearch": "Enable JacRed Search",
+    "EnableSearchViaJacRed": "Enable search via a JacRed aggregator server",
+    "JacRedHostURL": "JacRed Host URL",
+    "Test": "Test"
+  },
   "Torznab": {
     "AddServer": "Add Server",
     "APIKey": "API Key",

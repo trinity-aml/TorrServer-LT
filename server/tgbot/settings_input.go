@@ -12,6 +12,7 @@ import (
 	tele "gopkg.in/telebot.v4"
 	"server/bonjour"
 	"server/dlna"
+	"server/jacred"
 	"server/rutor"
 	"server/settings"
 	"server/torr"
@@ -183,6 +184,40 @@ func applySettingsInput(c tele.Context, setting, value string) {
 			return
 		}
 		_ = c.Send(tr(uid, "settings_torznab_test_ok"))
+		return
+	case "jacred_seturl":
+		parts := strings.SplitN(value, "|", 2)
+		host := strings.TrimSpace(parts[0])
+		key := ""
+		if len(parts) > 1 {
+			key = strings.TrimSpace(parts[1])
+		}
+		if host != "" && !strings.HasPrefix(host, "http") {
+			host = "http://" + host
+		}
+		sets.JacRedUrl = host
+		sets.JacRedKey = key
+		sets.EnableJacRedSearch = host != ""
+		_ = c.Send(fmt.Sprintf(tr(uid, "settings_input_done"), "JacRed", valueOrClear(host)))
+	case "jacred_test":
+		if value == "" {
+			_ = c.Send(tr(uid, "settings_input_jacred_usage"))
+			return
+		}
+		parts := strings.SplitN(value, "|", 2)
+		host := strings.TrimSpace(parts[0])
+		key := ""
+		if len(parts) > 1 {
+			key = strings.TrimSpace(parts[1])
+		}
+		if !strings.HasPrefix(host, "http") {
+			host = "http://" + host
+		}
+		if err := jacred.Test(context.Background(), host, key); err != nil {
+			_ = c.Send(fmt.Sprintf(tr(uid, "settings_jacred_test_fail"), err.Error()))
+			return
+		}
+		_ = c.Send(tr(uid, "settings_jacred_test_ok"))
 		return
 	default:
 		_ = c.Send(tr(uid, "callback_unknown"))

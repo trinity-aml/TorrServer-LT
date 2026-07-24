@@ -17,18 +17,21 @@ import {
 import CircularProgress from '@material-ui/core/CircularProgress'
 import DeleteIcon from '@material-ui/icons/Delete'
 import axios from 'axios'
-import { torznabTestHost } from 'utils/Hosts'
+import { torznabTestHost, jacredTestHost } from 'utils/Hosts'
 
 import { SecondarySettingsContent, SettingSectionLabel } from './style'
 
 export default function TorznabSettings({ settings, inputForm, updateSettings }) {
   const { t } = useTranslation()
-  const { EnableRutorSearch, EnableTorznabSearch, TorznabUrls } = settings || {}
+  const { EnableRutorSearch, EnableTorznabSearch, TorznabUrls, EnableJacRedSearch, JacRedUrl, JacRedKey } =
+    settings || {}
   const [newHost, setNewHost] = useState('')
   const [newKey, setNewKey] = useState('')
   const [newName, setNewName] = useState('')
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState(null)
+  const [testingJac, setTestingJac] = useState(false)
+  const [testResultJac, setTestResultJac] = useState(null)
 
   const handleAdd = () => {
     if (newHost && newKey) {
@@ -64,6 +67,25 @@ export default function TorznabSettings({ settings, inputForm, updateSettings })
       setTestResult({ success: false, msg: e.message })
     }
     setTesting(false)
+  }
+
+  const handleTestJac = async () => {
+    setTestingJac(true)
+    setTestResultJac(null)
+    try {
+      const { data } = await axios.post(jacredTestHost(), {
+        host: JacRedUrl,
+        key: JacRedKey || '',
+      })
+      if (data.success) {
+        setTestResultJac({ success: true, msg: t('JacRed.ConnectionSuccessful') })
+      } else {
+        setTestResultJac({ success: false, msg: data.error })
+      }
+    } catch (e) {
+      setTestResultJac({ success: false, msg: e.message })
+    }
+    setTestingJac(false)
   }
 
   return (
@@ -184,6 +206,70 @@ export default function TorznabSettings({ settings, inputForm, updateSettings })
           {testResult && (
             <Typography variant='caption' style={{ color: testResult.success ? 'green' : 'red' }}>
               {testResult.msg}
+            </Typography>
+          )}
+        </div>
+      </div>
+
+      <FormGroup>
+        <FormControlLabel
+          control={
+            <Switch
+              checked={EnableJacRedSearch || false}
+              onChange={inputForm}
+              id='EnableJacRedSearch'
+              color='secondary'
+            />
+          }
+          label={t('JacRed.EnableJacRedSearch')}
+          labelPlacement='start'
+        />
+        <FormHelperText margin='none'>{t('JacRed.EnableSearchViaJacRed')}</FormHelperText>
+      </FormGroup>
+
+      <div
+        style={{
+          padding: '20px 0',
+          opacity: EnableJacRedSearch ? 1 : 0.5,
+          pointerEvents: EnableJacRedSearch ? 'auto' : 'none',
+        }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <TextField
+            onChange={inputForm}
+            id='JacRedUrl'
+            label={t('JacRed.JacRedHostURL')}
+            value={JacRedUrl || ''}
+            type='url'
+            placeholder='http://127.0.0.1:9117'
+            variant='outlined'
+            size='small'
+            fullWidth
+          />
+          <TextField
+            onChange={inputForm}
+            id='JacRedKey'
+            label={t('JacRed.APIKeyOptional')}
+            value={JacRedKey || ''}
+            type='text'
+            variant='outlined'
+            size='small'
+            fullWidth
+          />
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 10 }}>
+            <Button
+              variant='outlined'
+              color='secondary'
+              onClick={handleTestJac}
+              disabled={!JacRedUrl || testingJac}
+              style={{ flex: '1 1 auto', minWidth: 100 }}
+            >
+              {testingJac ? <CircularProgress size={24} color='inherit' /> : t('JacRed.Test')}
+            </Button>
+          </div>
+          {testResultJac && (
+            <Typography variant='caption' style={{ color: testResultJac.success ? 'green' : 'red' }}>
+              {testResultJac.msg}
             </Typography>
           )}
         </div>

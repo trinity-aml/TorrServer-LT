@@ -20,7 +20,7 @@ import {
   InputLabel,
 } from '@material-ui/core'
 import { CloudDownload as DownloadIcon, ArrowUpward, ArrowDownward } from '@material-ui/icons'
-import { torznabSearchHost, torrentsHost, settingsHost, searchHost } from 'utils/Hosts'
+import { torznabSearchHost, torrentsHost, settingsHost, searchHost, jacredSearchHost } from 'utils/Hosts'
 import useOnStandaloneAppOutsideClick from 'utils/useOnStandaloneAppOutsideClick'
 import { StyledDialog, StyledHeader } from 'style/CustomMaterialUiStyles'
 import { parseSizeToBytes, formatSizeToClassicUnits } from 'utils/Utils'
@@ -39,6 +39,7 @@ export default function SearchDialog({ handleClose }) {
   const [errorMsg, setErrorMsg] = useState('')
   const [trackers, setTrackers] = useState([])
   const [enableRutor, setEnableRutor] = useState(false)
+  const [enableJacred, setEnableJacred] = useState(false)
   const [selectedTracker, setSelectedTracker] = useState(-1)
   const [sortField, setSortField] = useState('') // '', 'size', 'seeds', 'peers'
   const [sortDirection, setSortDirection] = useState('desc') // 'asc' or 'desc'
@@ -55,6 +56,7 @@ export default function SearchDialog({ handleClose }) {
             setTrackers(data.TorznabUrls)
           }
           setEnableRutor(!!data.EnableRutorSearch)
+          setEnableJacred(!!data.EnableJacRedSearch)
         }
       })
       .catch(() => {})
@@ -71,6 +73,8 @@ export default function SearchDialog({ handleClose }) {
 
       if (selectedTracker === 'rutor') {
         url = searchHost()
+      } else if (selectedTracker === 'jacred') {
+        url = jacredSearchHost()
       } else if (selectedTracker !== -1) {
         params.index = selectedTracker
       }
@@ -191,6 +195,7 @@ export default function SearchDialog({ handleClose }) {
               <Select value={selectedTracker} onChange={e => setSelectedTracker(e.target.value)} label={t('Tracker')}>
                 <MenuItem value={-1}>{t('AllTrackers')}</MenuItem>
                 {enableRutor && <MenuItem value='rutor'>{t('Rutor')}</MenuItem>}
+                {enableJacred && <MenuItem value='jacred'>JacRed</MenuItem>}
                 {trackers.map((tracker, index) => (
                   <MenuItem key={`${tracker.Host}-${tracker.Key}`} value={index}>
                     {tracker.Name || tracker.Host}

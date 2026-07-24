@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	tele "gopkg.in/telebot.v4"
+	"server/jacred"
 	"server/rutor"
 	"server/rutor/models"
 	sets "server/settings"
@@ -14,7 +15,7 @@ import (
 )
 
 func cmdSearch(c tele.Context) error {
-	if sets.BTsets() == nil || (!sets.BTsets().EnableRutorSearch && !sets.BTsets().EnableTorznabSearch) {
+	if sets.BTsets() == nil || (!sets.BTsets().EnableRutorSearch && !sets.BTsets().EnableTorznabSearch && !sets.BTsets().EnableJacRedSearch) {
 		return c.Send(tr(c.Sender().ID, "search_disabled_rutor"))
 	}
 
@@ -30,14 +31,20 @@ func cmdSearch(c tele.Context) error {
 	}
 	go func() {
 		var list []*models.TorrentDetails
+		var sources []string
 		if sets.BTsets() != nil && sets.BTsets().EnableRutorSearch {
 			list = append(list, rutor.Search(query)...)
+			sources = append(sources, "RuTor")
 		}
 		if sets.BTsets() != nil && sets.BTsets().EnableTorznabSearch {
 			list = append(list, torznab.Search(context.Background(), query, -1, "5000,2000", 0, 100)...)
+			sources = append(sources, "Torznab")
 		}
-		source := "RuTor+Torznab"
-		sendSearchResultsAsync(c.Bot(), c.Sender(), statusMsg, uid, query, list, source)
+		if sets.BTsets() != nil && sets.BTsets().EnableJacRedSearch {
+			list = append(list, jacred.Search(context.Background(), query)...)
+			sources = append(sources, "JacRed")
+		}
+		sendSearchResultsAsync(c.Bot(), c.Sender(), statusMsg, uid, query, list, strings.Join(sources, "+"))
 	}()
 	return nil
 }
@@ -89,6 +96,28 @@ func cmdTorznab(c tele.Context) error {
 	go func() {
 		list := torznab.Search(context.Background(), query, index, "5000,2000", 0, 100)
 		sendSearchResultsAsync(c.Bot(), c.Sender(), statusMsg, uid, query, list, "Torznab")
+	}()
+	return nil
+}
+
+func cmdJacRed(c tele.Context) error {
+	if sets.BTsets() == nil || !sets.BTsets().EnableJacRedSearch {
+		return c.Send(tr(c.Sender().ID, "search_disabled_jacred"))
+	}
+
+	args := c.Args()
+	if len(args) == 0 {
+		return c.Send(tr(c.Sender().ID, "jacred_usage"))
+	}
+	query := strings.Join(args, " ")
+	uid := c.Sender().ID
+	statusMsg, err := c.Bot().Send(c.Sender(), tr(uid, "searching"))
+	if err != nil {
+		return err
+	}
+	go func() {
+		list := jacred.Search(context.Background(), query)
+		sendSearchResultsAsync(c.Bot(), c.Sender(), statusMsg, uid, query, list, "JacRed")
 	}()
 	return nil
 }

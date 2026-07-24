@@ -38,13 +38,13 @@ func sendSettingsMenuText(c tele.Context, uid int64, page string) string {
 	switch page {
 	case "1":
 		msg += "\n\n"
-		msg += fmt.Sprintf("🔍 %s: RuTor %s · Torznab %s\n", tr(uid, "settings_section_search"), boolIcon(s.EnableRutorSearch), boolIcon(s.EnableTorznabSearch))
+		msg += fmt.Sprintf("🔍 %s: RuTor %s · Torznab %s · JacRed %s\n", tr(uid, "settings_section_search"), boolIcon(s.EnableRutorSearch), boolIcon(s.EnableTorznabSearch), boolIcon(s.EnableJacRedSearch))
 		msg += fmt.Sprintf("📺 %s: DLNA %s · IPv6 %s · DHT %s · PEX %s · TCP %s · UTP %s\n", tr(uid, "settings_section_network"), boolIcon(s.EnableDLNA), boolIcon(s.EnableIPv6), boolIcon(!s.DisableDHT), boolIcon(!s.DisablePEX), boolIcon(!s.DisableTCP), boolIcon(!s.DisableUTP))
 		msg += fmt.Sprintf("📦 %s: CacheDrop %s · UseDisk %s\n", tr(uid, "settings_section_other"), boolIcon(s.RemoveCacheOnDrop), boolIcon(s.UseDisk))
 	case "1a":
 		msg += " — " + tr(uid, "settings_section_search")
 		msg += "\n\n"
-		msg += fmt.Sprintf("RuTor %s · Torznab %s", boolIcon(s.EnableRutorSearch), boolIcon(s.EnableTorznabSearch))
+		msg += fmt.Sprintf("RuTor %s · Torznab %s · JacRed %s", boolIcon(s.EnableRutorSearch), boolIcon(s.EnableTorznabSearch), boolIcon(s.EnableJacRedSearch))
 	case "1b":
 		msg += " — " + tr(uid, "settings_section_network")
 		msg += "\n\n"
@@ -166,6 +166,7 @@ func sendSettingsMenuKbd(uid int64, page string) *tele.ReplyMarkup {
 			{
 				{Text: toggleBtn("RuTor", s.EnableRutorSearch), Unique: "fset", Data: "rutor|1a"},
 				{Text: toggleBtn("Torznab", s.EnableTorznabSearch), Unique: "fset", Data: "torznab|1a"},
+				{Text: toggleBtn("JacRed", s.EnableJacRedSearch), Unique: "fset", Data: "jacred|1a"},
 			},
 		}
 	case "1b":
@@ -311,6 +312,11 @@ func sendSettingsMenuKbd(uid int64, page string) *tele.ReplyMarkup {
 				{Text: "🔍 " + tr(uid, "settings_torznab_test"), Unique: "fset", Data: "ask|torznab_test"},
 				{Text: "➕ " + tr(uid, "settings_add_torznab"), Unique: "fset", Data: "ask|torznab_add"},
 				{Text: "🗑 " + tr(uid, "settings_clear_torznab"), Unique: "fset", Data: "torznab_clear"},
+			},
+			{
+				{Text: "🔍 " + tr(uid, "settings_jacred_test"), Unique: "fset", Data: "ask|jacred_test"},
+				{Text: "➕ " + tr(uid, "settings_set_jacred"), Unique: "fset", Data: "ask|jacred_seturl"},
+				{Text: "🗑 " + tr(uid, "settings_clear_jacred"), Unique: "fset", Data: "jacred_clear"},
 			},
 		}
 	case "4":
@@ -473,6 +479,10 @@ func settingsCallback(c tele.Context, action string) error {
 			hint = tr(uid, "settings_hint_torznab")
 		case "torznab_test":
 			hint = tr(uid, "settings_hint_torznab_test")
+		case "jacred_seturl":
+			hint = tr(uid, "settings_hint_jacred")
+		case "jacred_test":
+			hint = tr(uid, "settings_hint_jacred_test")
 		default:
 			return c.Respond(&tele.CallbackResponse{Text: tr(uid, "callback_unknown")})
 		}
@@ -511,6 +521,8 @@ func settingsCallback(c tele.Context, action string) error {
 		sets.EnableRutorSearch = !sets.EnableRutorSearch
 	case "torznab":
 		sets.EnableTorznabSearch = !sets.EnableTorznabSearch
+	case "jacred":
+		sets.EnableJacRedSearch = !sets.EnableJacRedSearch
 	case "dlna":
 		sets.EnableDLNA = !sets.EnableDLNA
 	case "ipv6":
@@ -546,6 +558,23 @@ func settingsCallback(c tele.Context, action string) error {
 			return c.Respond(&tele.CallbackResponse{Text: tr(uid, "settings_readonly")})
 		}
 		sets.TorznabUrls = nil
+		page = "3"
+		torr.SetSettings(sets)
+		rutor.Stop()
+		rutor.Start()
+		msg := sendSettingsMenuText(c, uid, page)
+		kbd := sendSettingsMenuKbd(uid, page)
+		if _, err := c.Bot().Edit(c.Callback().Message, msg, kbd, tele.ModeHTML); err != nil {
+			_ = sendSettingsMenuPage(c, uid, page)
+		}
+		return c.Respond(&tele.CallbackResponse{Text: tr(uid, "settings_saved")})
+	case "jacred_clear":
+		if settings.ReadOnly {
+			return c.Respond(&tele.CallbackResponse{Text: tr(uid, "settings_readonly")})
+		}
+		sets.JacRedUrl = ""
+		sets.JacRedKey = ""
+		sets.EnableJacRedSearch = false
 		page = "3"
 		torr.SetSettings(sets)
 		rutor.Stop()

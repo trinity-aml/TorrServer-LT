@@ -227,6 +227,14 @@
   "TorrentState": "État du torrent",
   "TorrentStatus": "Statut du torrent",
   "TorrentWorking": "Actif",
+  "JacRed": {
+    "APIKeyOptional": "Clé API (facultatif)",
+    "ConnectionSuccessful": "Connexion réussie",
+    "EnableJacRedSearch": "Activer la recherche JacRed",
+    "EnableSearchViaJacRed": "Rechercher via un serveur agrégateur JacRed",
+    "JacRedHostURL": "URL de l'hôte JacRed",
+    "Test": "Tester"
+  },
   "Torznab": {
     "AddServer": "Ajouter un serveur",
     "APIKey": "Clé API",

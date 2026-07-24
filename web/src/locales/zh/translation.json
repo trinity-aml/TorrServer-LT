@@ -227,6 +227,14 @@
   "TorrentState": "控制",
   "TorrentStatus": "种子状态",
   "TorrentWorking": "活跃",
+  "JacRed": {
+    "APIKeyOptional": "API密钥（可选）",
+    "ConnectionSuccessful": "连接成功",
+    "EnableJacRedSearch": "启用JacRed搜索",
+    "EnableSearchViaJacRed": "通过JacRed聚合服务器搜索",
+    "JacRedHostURL": "JacRed服务器URL",
+    "Test": "测试"
+  },
   "Torznab": {
     "AddServer": "添加服务器",
     "APIKey": "API密钥",

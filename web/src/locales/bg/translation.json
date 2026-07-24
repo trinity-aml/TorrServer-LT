@@ -227,6 +227,14 @@
   "TorrentState": "Състояние на торента",
   "TorrentStatus": "Статус на торента",
   "TorrentWorking": "Активен",
+  "JacRed": {
+    "APIKeyOptional": "API ключ (незадължително)",
+    "ConnectionSuccessful": "Връзката е успешна",
+    "EnableJacRedSearch": "Активирай JacRed търсене",
+    "EnableSearchViaJacRed": "Търсене чрез JacRed агрегатор",
+    "JacRedHostURL": "JacRed Host URL",
+    "Test": "Тест"
+  },
   "Torznab": {
     "AddServer": "Добави сървър",
     "APIKey": "API ключ",

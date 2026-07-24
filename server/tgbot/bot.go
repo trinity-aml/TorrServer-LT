@@ -92,9 +92,10 @@ func Start(token string) error {
 		{Text: "start", Description: "Start bot"},
 		{Text: "list", Description: "List torrents"},
 		{Text: "add", Description: "Add torrent"},
-		{Text: "search", Description: "Search all (RuTor+Torznab)"},
+		{Text: "search", Description: "Search all (RuTor+Torznab+JacRed)"},
 		{Text: "rutor", Description: "Search RuTor"},
 		{Text: "torznab", Description: "Search Torznab"},
+		{Text: "jacred", Description: "Search JacRed"},
 		{Text: "remove", Description: "Remove torrent"},
 		{Text: "status", Description: "Torrent status"},
 		{Text: "link", Description: "Stream link"},
@@ -161,6 +162,7 @@ func Start(token string) error {
 	b.Handle("/search", cmdSearch)
 	b.Handle("/rutor", cmdSearchRutor)
 	b.Handle("/torznab", cmdTorznab)
+	b.Handle("/jacred", cmdJacRed)
 	b.Handle("/preload", cmdPreload)
 	b.Handle("/queue", up.ShowQueue)
 	b.Handle("/set", cmdSet)

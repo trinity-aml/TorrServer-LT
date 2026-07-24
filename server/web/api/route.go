@@ -19,6 +19,7 @@ func SetupRoute(route gin.IRouter) {
 
 	authorized.POST("/settings", settings)
 	authorized.POST("/torznab/test", torznabTest)
+	authorized.POST("/jacred/test", jacredTest)
 
 	authorized.POST("/torrents", torrents)
 
@@ -56,6 +57,12 @@ func SetupRoute(route gin.IRouter) {
 	} else {
 		authorized.GET("/torznab/search/*query", torznabSearch)
 		authorized.GET("/torznab/caps", torznabCaps)
+	}
+
+	if config.SearchWA {
+		route.GET("/jacred/search/*query", jacredSearch)
+	} else {
+		authorized.GET("/jacred/search/*query", jacredSearch)
 	}
 
 	// Add storage settings endpoints

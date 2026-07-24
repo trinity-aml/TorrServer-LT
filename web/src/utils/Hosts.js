@@ -14,6 +14,8 @@ export const playlistTorrHost = () => `${torrserverHost}/stream`
 export const torznabSearchHost = () => `${torrserverHost}/torznab/search`
 export const searchHost = () => `${torrserverHost}/search`
 export const torznabTestHost = () => `${torrserverHost}/torznab/test`
+export const jacredSearchHost = () => `${torrserverHost}/jacred/search`
+export const jacredTestHost = () => `${torrserverHost}/jacred/test`
 export const tmdbSettingsHost = () => `${torrserverHost}/tmdb/settings`
 export const gstSettingsHost = () => `${torrserverHost}/gst/settings`
 export const runtimeStatusHost = () => `${torrserverHost}/runtime/status`

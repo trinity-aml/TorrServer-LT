@@ -63,6 +63,11 @@ type BTSets struct {
 	EnableTorznabSearch bool
 	TorznabUrls         []TorznabConfig
 
+	// JacRed (single self-aggregating server: URL + optional API key)
+	EnableJacRedSearch bool
+	JacRedUrl          string
+	JacRedKey          string
+
 	// TMDB
 	TMDBSettings TMDBConfig
 
