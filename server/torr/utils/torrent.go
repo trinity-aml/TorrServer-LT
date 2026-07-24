@@ -40,6 +40,10 @@ func GetTrackerFromFile() []string {
 	}
 	var ret []string
 	for _, l := range strings.Split(string(buf), "\n") {
+		// Trim before the prefix check: leading spaces and a trailing CR (from
+		// CRLF-saved files) otherwise drop valid trackers or leave a stray \r
+		// inside the announce URL.
+		l = strings.TrimSpace(l)
 		if strings.HasPrefix(l, "udp") || strings.HasPrefix(l, "http") {
 			ret = append(ret, l)
 		}
