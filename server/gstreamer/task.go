@@ -319,7 +319,16 @@ func (t *Task) validateSegmentIndex(index int) error {
 	return nil
 }
 
-const maxSegmentCatchupSeconds = 60
+// maxSegmentCatchupSeconds bounds how far a forward jump is served by
+// transcoding through the intermediate segments (keeping the pipeline running
+// linearly) instead of a flushing seek. Catch-up dodges a seek's keyframe
+// re-decode for a tiny nudge, but every intermediate segment is fully
+// transcoded and thrown away just to advance the pipeline — so past this window
+// a real seek (bounded by pipelineStateTimeout, usually ~1-2s) is far faster,
+// especially when transcoding runs slower than real time. Kept small so a
+// forward drag of more than ~2 segments seeks instead of grinding through tens
+// of seconds of throwaway transcode.
+const maxSegmentCatchupSeconds = 12
 
 func (t *Task) Frozen() {
 	t.mu.Lock()

@@ -937,8 +937,8 @@ func (f *fakePipelineRunner) IsFrozen() bool {
 }
 
 func TestSegmentCatchupCutoffSeconds(t *testing.T) {
-	if maxSegmentCatchupSeconds != 60 {
-		t.Fatalf("maxSegmentCatchupSeconds = %d, want 60", maxSegmentCatchupSeconds)
+	if maxSegmentCatchupSeconds != 12 {
+		t.Fatalf("maxSegmentCatchupSeconds = %d, want 12", maxSegmentCatchupSeconds)
 	}
 }
 
@@ -1062,14 +1062,16 @@ func TestTaskWithSegmentCatchesUpWithinCutoff(t *testing.T) {
 		},
 	}
 
-	if err := task.WithSegment(context.Background(), 10, 0, func(Segment) error { return nil }); err != nil {
+	// diff == maxSegmentCatchupSeconds/SegmentSeconds (12/6 = 2) is the last jump
+	// still served by catch-up rather than a seek.
+	if err := task.WithSegment(context.Background(), 2, 0, func(Segment) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if len(pulled) != 10 || pulled[0] != 1 || pulled[len(pulled)-1] != 10 {
-		t.Fatalf("pulled=%v, want segments 1..10", pulled)
+	if len(pulled) != 2 || pulled[0] != 1 || pulled[len(pulled)-1] != 2 {
+		t.Fatalf("pulled=%v, want segments 1..2", pulled)
 	}
-	if task.LastSentSegment != 10 {
-		t.Fatalf("LastSentSegment=%d, want 10", task.LastSentSegment)
+	if task.LastSentSegment != 2 {
+		t.Fatalf("LastSentSegment=%d, want 2", task.LastSentSegment)
 	}
 }
 
@@ -1093,14 +1095,16 @@ func TestTaskWithSegmentSeeksPastCatchupCutoff(t *testing.T) {
 		},
 	}
 
-	if err := task.WithSegment(context.Background(), 11, 0, func(Segment) error { return nil }); err != nil {
+	// diff == 3 is one past the catch-up window (12/6 = 2), so it seeks straight
+	// to the target instead of transcoding the skipped segments.
+	if err := task.WithSegment(context.Background(), 3, 0, func(Segment) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if len(seekSeconds) != 1 || seekSeconds[0] != 66 {
-		t.Fatalf("seekSeconds=%v, want [66]", seekSeconds)
+	if len(seekSeconds) != 1 || seekSeconds[0] != 18 {
+		t.Fatalf("seekSeconds=%v, want [18]", seekSeconds)
 	}
-	if len(pulled) != 1 || pulled[0] != 11 {
-		t.Fatalf("pulled=%v, want only segment 11 after seek", pulled)
+	if len(pulled) != 1 || pulled[0] != 3 {
+		t.Fatalf("pulled=%v, want only segment 3 after seek", pulled)
 	}
 }
 
