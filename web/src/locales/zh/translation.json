@@ -208,6 +208,9 @@
     "ViewedStorageHint": "存储查看历史记录的位置"
   },
   "Size": "大小",
+  "SpeedTest": "速度测试",
+  "SpeedTestRun": "开始",
+  "SpeedTestError": "测试失败",
   "SpecialThanks": "特别感谢",
   "Speed": "速度",
   "TB": "TB",

@@ -12,6 +12,7 @@ import { isStandaloneApp } from 'utils/Utils'
 import useOnStandaloneAppOutsideClick from 'utils/useOnStandaloneAppOutsideClick'
 
 import LinkComponent from './LinkComponent'
+import SpeedTest from './SpeedTest'
 import { DialogWrapper, HeaderSection, ThanksSection, Section, FooterSection } from './style'
 
 export default function AboutDialog() {
@@ -78,6 +79,8 @@ export default function AboutDialog() {
                 <LinkComponent name={t('ApiDocs')} link='swagger/index.html' />
               </div>
             </Section>
+
+            <SpeedTest />
 
             <Section>
               <span>{t('SpecialThanks')}</span>

@@ -206,6 +206,9 @@
     "ViewedStorageHint": "Виберіть місце збереження історії переглядів серій"
   },
   "Size": "Розмір",
+  "SpeedTest": "Тест швидкості",
+  "SpeedTestRun": "Запустити",
+  "SpeedTestError": "Помилка тесту",
   "SpecialThanks": "Окрема подяка",
   "Speed": "Швидкість",
   "TB": "ТБ",

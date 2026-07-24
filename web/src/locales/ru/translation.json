@@ -236,6 +236,9 @@
     "ViewedStorageHint": "Выберите, где хранить историю просмотренного."
   },
   "Size": "Размер",
+  "SpeedTest": "Тест скорости",
+  "SpeedTestRun": "Запустить",
+  "SpeedTestError": "Ошибка теста",
   "SpecialThanks": "Отдельное спасибо",
   "Speed": "Скорость",
   "TB": "ТБ",

@@ -86,6 +86,42 @@ export const FooterSection = styled.div`
   background: #e8e5eb;
 `
 
+export const SpeedSection = styled.section`
+  padding: 20px;
+
+  > span {
+    font-size: 22px;
+    display: block;
+    margin-bottom: 15px;
+  }
+`
+
+export const SpeedSizeRow = styled.div`
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+`
+
+export const SpeedControlsRow = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+`
+
+export const SpeedResult = styled.div`
+  font-size: 15px;
+  min-height: 24px;
+  font-variant-numeric: tabular-nums;
+
+  b {
+    font-size: 20px;
+    font-weight: 600;
+  }
+`
+
 export const LinkWrapper = styled.a`
   ${({ isLink }) => css`
     display: inline-flex;

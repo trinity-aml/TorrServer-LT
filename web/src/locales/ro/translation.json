@@ -214,6 +214,9 @@
     "ViewedStorageHint": "Alegeți unde să stocați istoricul vizualizat"
   },
   "Size": "Mărime",
+  "SpeedTest": "Test de viteză",
+  "SpeedTestRun": "Pornește",
+  "SpeedTestError": "Test eșuat",
   "SpecialThanks": "Mulțumiri speciale",
   "Speed": "Viteză",
   "Support": "Suport",

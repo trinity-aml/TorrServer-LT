@@ -236,6 +236,9 @@
     "ViewedStorageHint": "Choose where to store viewed history"
   },
   "Size": "Size",
+  "SpeedTest": "Speed Test",
+  "SpeedTestRun": "Run",
+  "SpeedTestError": "Test failed",
   "SpecialThanks": "Special Thanks",
   "Speed": "Speed",
   "TB": "TB",

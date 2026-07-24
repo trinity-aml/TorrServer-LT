@@ -208,6 +208,9 @@
     "ViewedStorageHint": "Choisissez où stocker l'historique des vues"
   },
   "Size": "Taille",
+  "SpeedTest": "Test de vitesse",
+  "SpeedTestRun": "Lancer",
+  "SpeedTestError": "Échec du test",
   "SpecialThanks": "Remerciements spéciaux",
   "Speed": "Vitesse",
   "TB": "To",
