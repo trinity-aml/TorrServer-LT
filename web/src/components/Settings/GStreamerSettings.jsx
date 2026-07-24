@@ -7,7 +7,6 @@ import {
   FormGroup,
   FormHelperText,
   InputLabel,
-  MenuItem,
   Select,
   Switch,
   TextField,
@@ -278,15 +277,17 @@ export default function GStreamerSettings() {
       <FormGroup style={{ marginBottom: 20 }}>
         <InputLabel htmlFor='gstreamer-source'>{t('GStreamer.Source')}</InputLabel>
         <Select
+          native
           id='gstreamer-source'
+          name='gstreamer-source'
           value={gstreamerSettings.Source || 'stream'}
           onChange={e => updateField('Source', e.target.value)}
           variant='outlined'
           margin='dense'
           fullWidth
         >
-          <MenuItem value='stream'>{t('GStreamer.SourceStream')}</MenuItem>
-          <MenuItem value='play'>{t('GStreamer.SourcePlay')}</MenuItem>
+          <option value='stream'>{t('GStreamer.SourceStream')}</option>
+          <option value='play'>{t('GStreamer.SourcePlay')}</option>
         </Select>
         <FormHelperText style={{ marginTop: 8 }}>{t('GStreamer.SourceHint')}</FormHelperText>
       </FormGroup>
@@ -311,23 +312,24 @@ export default function GStreamerSettings() {
           {t('GStreamer.AudioLang')}
         </InputLabel>
         <Select
+          native
           id='gstreamer-audio-lang'
+          name='gstreamer-audio-lang'
           value={gstreamerSettings.AudioLang || ''}
           onChange={e => updateField('AudioLang', e.target.value)}
           disabled={!gstreamerSettings.Proxy}
-          displayEmpty
           variant='outlined'
           margin='dense'
           fullWidth
         >
-          <MenuItem value=''>{t('GStreamer.AudioLangDefault')}</MenuItem>
-          <MenuItem value='ru'>Русский</MenuItem>
-          <MenuItem value='en'>English</MenuItem>
-          <MenuItem value='uk'>Українська</MenuItem>
-          <MenuItem value='bg'>Български</MenuItem>
-          <MenuItem value='zh'>中文</MenuItem>
-          <MenuItem value='fr'>Français</MenuItem>
-          <MenuItem value='ro'>Română</MenuItem>
+          <option value=''>{t('GStreamer.AudioLangDefault')}</option>
+          <option value='ru'>Русский</option>
+          <option value='en'>English</option>
+          <option value='uk'>Українська</option>
+          <option value='bg'>Български</option>
+          <option value='zh'>中文</option>
+          <option value='fr'>Français</option>
+          <option value='ro'>Română</option>
         </Select>
         <FormHelperText style={{ marginTop: 8 }}>{t('GStreamer.AudioLangHint')}</FormHelperText>
       </FormGroup>

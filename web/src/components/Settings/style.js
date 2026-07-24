@@ -261,10 +261,13 @@ export const GstSettingsContent = styled(SecondarySettingsContent)`
     margin-top: 8px;
   }
 
-  .MuiSelect-outlined {
+  .MuiSelect-outlined,
+  .MuiNativeSelect-outlined {
     /* Transparent like the outlined text fields in this panel — the theme
        paints the text, the notched outline draws the border. A hardcoded
-       white here made the select a white box with white text in dark mode. */
+       white here made the select a white box with white text in dark mode.
+       The native variant (GStreamer selects, for Safari) uses its own
+       .MuiNativeSelect-outlined class, so it needs the same rule. */
     background: transparent;
   }
 `
