@@ -94,7 +94,7 @@ export default function SpeedTest() {
             key={mb}
             size='small'
             variant={sizeMb === mb ? 'contained' : 'outlined'}
-            color='primary'
+            color='secondary'
             disabled={running}
             onClick={() => setSizeMb(mb)}
           >
@@ -109,7 +109,7 @@ export default function SpeedTest() {
             {t('Cancel')}
           </Button>
         ) : (
-          <Button size='small' variant='contained' color='primary' onClick={run}>
+          <Button size='small' variant='contained' color='secondary' onClick={run}>
             {t('SpeedTestRun')}
           </Button>
         )}
