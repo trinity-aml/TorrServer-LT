@@ -298,7 +298,22 @@ const VideoPlayer = ({
     setSubtitleTrack(-1)
 
     if (Hls.isSupported()) {
-      hlsPlayer = new Hls()
+      hlsPlayer = new Hls({
+        // A GStreamer seek must flush the pipeline, refetch torrent data at the
+        // new offset and transcode before the first byte of the segment is
+        // ready — on a cold or slow swarm that easily exceeds hls.js's default
+        // fragLoadPolicy.maxTimeToFirstByteMs (10s), which aborts the fetch and
+        // retries, re-triggering the seek and stalling playback. Give slow
+        // segments the same ~30s the server allows its pipeline to warm up.
+        fragLoadPolicy: {
+          default: {
+            maxTimeToFirstByteMs: 30000,
+            maxLoadTimeMs: 120000,
+            timeoutRetry: { maxNumRetry: 4, retryDelayMs: 0, maxRetryDelayMs: 0 },
+            errorRetry: { maxNumRetry: 6, retryDelayMs: 1000, maxRetryDelayMs: 8000 },
+          },
+        },
+      })
       hlsRef.current = hlsPlayer
       // A cold GStreamer pipeline answers /gst/.../master.m3u8 with 502 until
       // the file head is buffered (server-side state-change timeout). This hits

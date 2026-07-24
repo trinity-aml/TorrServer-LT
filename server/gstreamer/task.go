@@ -279,6 +279,7 @@ func (t *Task) seekToSegmentLocked(index int) error {
 		if !t.runner.Seek(float64(cue.StartNS) / 1_000_000_000) {
 			return ErrSegmentNotReady
 		}
+		t.commitSeek(index)
 		return nil
 	}
 	if t.Cue != nil {
@@ -288,7 +289,25 @@ func (t *Task) seekToSegmentLocked(index int) error {
 	if !t.runner.Seek(seconds) {
 		return ErrSegmentNotReady
 	}
+	t.commitSeek(index)
 	return nil
+}
+
+// commitSeek records that the pipeline is now positioned to emit `index` next,
+// so a segment request that is canceled mid-production and then retried takes
+// the sequential fast path in segmentLocked instead of issuing a second
+// flushing seek to the very same position. hls.js aborts a fragment fetch after
+// fragLoadPolicy.maxTimeToFirstByteMs (10s by default) and immediately retries;
+// on a slow seek+download+transcode segment the first byte often misses that
+// window. Without committing the seek, LastSentSegment still points at the
+// pre-seek position, so the retry re-seeks — repeating the seek cost and, since
+// the reader has read forward and the cache LRU-evicted the seek-head piece,
+// forcing a refetch of data already fetched. That double-seek is what made
+// web-player seeks crawl. For index 0 this leaves LastSentSegment at -1, which
+// segmentLocked treats as "no segment sent yet" — correct, since GetSegment(0)
+// needs no seek.
+func (t *Task) commitSeek(index int) {
+	t.LastSentSegment = index - 1
 }
 
 func (t *Task) validateSegmentIndex(index int) error {

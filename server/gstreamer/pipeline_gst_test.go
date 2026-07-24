@@ -1108,6 +1108,59 @@ func TestTaskWithSegmentSeeksPastCatchupCutoff(t *testing.T) {
 	}
 }
 
+func TestTaskRetriedSegmentAfterCancelSkipsReseek(t *testing.T) {
+	var seekCount int
+	var pulled []int
+	firstAttempt := true
+	ctx, cancel := context.WithCancel(context.Background())
+
+	task := &Task{
+		LastSentSegment: 0,
+		Config:          Config{SegmentSeconds: 6}.normalized(),
+	}
+	task.runner = &fakePipelineRunner{
+		seek: func(float64) bool {
+			seekCount++
+			return true
+		},
+		getSegment: func(_ context.Context, index int, _ int) (Segment, error) {
+			if firstAttempt {
+				firstAttempt = false
+				// hls.js aborts a slow fragment fetch after maxTimeToFirstByteMs;
+				// the segment context is canceled mid-production.
+				cancel()
+				return Segment{}, context.Canceled
+			}
+			pulled = append(pulled, index)
+			return Segment{Header: []byte{1}}, nil
+		},
+	}
+
+	// Distant forward jump: seek to segment 10, then the fetch is canceled.
+	if err := task.WithSegment(ctx, 10, 0, func(Segment) error { return nil }); !errors.Is(err, context.Canceled) {
+		t.Fatalf("first attempt error=%v, want context.Canceled", err)
+	}
+	if seekCount != 1 {
+		t.Fatalf("seekCount after first attempt=%d, want 1", seekCount)
+	}
+
+	// The retry of the same segment must take the sequential fast path: the seek
+	// was committed, so it must not flush the pipeline again (which would refetch
+	// the LRU-evicted seek-head piece).
+	if err := task.WithSegment(context.Background(), 10, 0, func(Segment) error { return nil }); err != nil {
+		t.Fatalf("retry error=%v", err)
+	}
+	if seekCount != 1 {
+		t.Fatalf("seekCount after retry=%d, want 1 (no re-seek)", seekCount)
+	}
+	if len(pulled) != 1 || pulled[0] != 10 {
+		t.Fatalf("pulled=%v, want [10]", pulled)
+	}
+	if task.LastSentSegment != 10 {
+		t.Fatalf("LastSentSegment=%d, want 10", task.LastSentSegment)
+	}
+}
+
 func TestTaskIsFrozenConcurrentDispose(t *testing.T) {
 	task := &Task{
 		runner: &fakePipelineRunner{},
