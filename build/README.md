@@ -5,7 +5,11 @@ Linux host — no Docker, no QEMU. Each one builds a static OpenSSL, the WebRTC
 deps (usrsctp/libjuice, via cmake) and libtorrent (plus `boost_system` straight
 from the Boost source tree, via Boost.Build/`b2`) into `_deps/<target>/`, then
 links the Go binary against it through pkg-config. Final binaries land in
-`_out/TorrServer-LT-<target>`.
+`_out/TorrServer-LT-<target>`. On the platforms a GStreamer runtime exists for
+(linux amd64/arm64, windows amd64, macOS amd64/arm64) a second
+`_out/TorrServer-LT-<target>-gst` is also built with `-tags gst` — the same
+binary plus the GStreamer HLS transcoding feature (pure Go; GStreamer is
+`dlopen`'d at runtime, so the deps above are unchanged).
 
 libtorrent's own `Jamfile` emits a correct `libtorrent-rasterbar.pc` from its
 `install` target, so the per-target Cflags/defines/Libs flow straight into cgo

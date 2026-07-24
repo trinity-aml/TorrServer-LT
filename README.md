@@ -2,7 +2,7 @@
 
 > Fork of [YouROK/TorrServer](https://github.com/YouROK/TorrServer) with the BitTorrent core replaced by [libtorrent (arvidn)](https://www.libtorrent.org/).
 >
-> **Status:** feature parity with upstream **MatriX.142.1** (including GStreamer HLS transcoding) on the libtorrent engine — streaming, preload, and seeking (including back into already-evicted regions) are verified on real torrents. The HTTP API, on-disk databases (`config.db`, JSON, `accs.db`, viewed) and the `torrs://` token format remain compatible with upstream. The cache layout under `TorrentsSavePath/<hash>/<pieceID>` is preserved.
+> **Status:** feature parity with upstream **MatriX.142.2** (including GStreamer HLS transcoding) on the libtorrent engine — streaming, preload, and seeking (including back into already-evicted regions) are verified on real torrents. The HTTP API, on-disk databases (`config.db`, JSON, `accs.db`, viewed) and the `torrs://` token format remain compatible with upstream. The cache layout under `TorrentsSavePath/<hash>/<pieceID>` is preserved.
 >
 > **Platforms:**
 > - Linux: `amd64`, `arm64`, `armv7`
@@ -295,12 +295,14 @@ proxy and Torznab search.
 
 A `-gst` build adds a **GStreamer** settings tab (PRO mode; shown only when the
 feature is compiled in) with the transcoding options: which codecs to transcode
-(H264/H265/AV1/VP9 video, AAC bitrate/channels for audio), segment length,
+(H264/H265/AV1/VP9/VP8 video, AAC bitrate/channels for audio), segment length,
 parallel task limit and the GStreamer path/version override. Playback goes
-through `/gst/{hash}/master.m3u8` (HLS); MKV containers with H264/H265/AV1/VP9
-video are supported, audio is transcoded to AAC — for players that can't decode
-AC3/EAC3/DTS. Full detail — runtime installation per OS, configuration fields
-and the API — in the [GStreamer](#gstreamer) section below.
+through `/gst/{hash}/master.m3u8` (HLS); MKV/WebM containers (and AVI when
+`TranscodeAVI` is on) are supported, audio is transcoded to AAC — for players
+that can't decode AC3/EAC3/DTS. It can also expose embedded text subtitles as
+WebVTT, tone-map HDR to SDR, and use a hardware H.264 encoder when available.
+Full detail — runtime installation per OS, configuration fields and the API —
+in the [GStreamer](#gstreamer) section below.
 
 ## Development
 
@@ -512,7 +514,7 @@ Each Torznab indexer needs:
 
 ## GStreamer
 
-GStreamer enables **HLS transcoding** for Matroska/WebM torrents when the client cannot play the original video or audio codec directly (typically audio: AC3/EAC3/DTS → AAC; video H.264/H.265/AV1/VP9 passes through, or is re-encoded when the matching `Transcode*` option is on).
+GStreamer enables **HLS transcoding** for Matroska/WebM torrents (and AVI when `TranscodeAVI` is on) when the client cannot play the original video or audio codec directly (typically audio: AC3/EAC3/DTS → AAC; video H.264/H.265/AV1/VP9/VP8 passes through, or is re-encoded when the matching `Transcode*` option is on). It can also convert embedded text subtitles to segmented WebVTT (`Subtitles`), tone-map HDR video to SDR (`HDRToSDR`), and encode on the GPU with a hardware H.264 encoder, falling back to x264 (`HardwareAcceleration`, `UseGPU`).
 
 ### The `-gst` binary (main requirement)
 
@@ -530,7 +532,7 @@ cd server
 go build -tags gst -o TorrServer-LT-gst ./cmd
 ```
 
-Per-codec behavior is configured on the **GStreamer** settings tab (`TranscodeH264`, `TranscodeH265`, `TranscodeAV1`, `TranscodeVP9`).
+Per-codec behavior is configured on the **GStreamer** settings tab (`TranscodeH264`, `TranscodeH265`, `TranscodeAV1`, `TranscodeVP9`, `TranscodeVP8`, `TranscodeAVI`), along with the subtitle (`Subtitles`), HDR→SDR (`HDRToSDR`) and hardware-encoder (`HardwareAcceleration`, `UseGPU`) toggles.
 
 ### Bundled vs dynamically loaded GStreamer
 
