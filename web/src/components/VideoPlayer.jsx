@@ -93,6 +93,17 @@ const useStyles = makeStyles(theme => ({
   dialogPaper: {
     backgroundColor: '#fff',
     borderRadius: theme.spacing(1),
+    // The desktop player floats as a modeless window: the modal root disables
+    // pointer events so clicks fall through to the page behind, so the Paper
+    // must re-enable them. A strong shadow makes it read as a window.
+    pointerEvents: 'auto',
+    boxShadow: theme.shadows[24],
+  },
+  // Desktop-only: the whole modal root ignores pointer events so clicks in the
+  // empty area around the floating player fall through to the page behind; only
+  // the Paper re-enables them (dialogPaper.pointerEvents = 'auto').
+  modelessRoot: {
+    pointerEvents: 'none',
   },
   header: {
     backgroundColor: '#00a572',
@@ -326,6 +337,9 @@ const VideoPlayer = ({
   const videoRef = useRef(null)
   const hlsRef = useRef(null)
   const onNotSupportedRef = useRef(onNotSupported)
+  // True while the pointer is over the floating player; gates keyboard shortcuts
+  // so the modeless player doesn't hijack Space/Arrows from the page behind.
+  const pointerInsideRef = useRef(false)
   const { t } = useTranslation()
   const [open, setOpen] = useState(initiallyOpen)
   const [videoElement, setVideoElement] = useState(null)
@@ -557,6 +571,9 @@ const VideoPlayer = ({
   const handleKey = useCallback(
     e => {
       if (!open) return
+      // Modeless on desktop: only act while the pointer is over the player, so
+      // Space/Arrows don't hijack typing or scrolling on the page behind.
+      if (!isMobile && !pointerInsideRef.current) return
       switch (e.key) {
         case ' ':
           e.preventDefault()
@@ -574,7 +591,7 @@ const VideoPlayer = ({
           break
       }
     },
-    [open, handlePlayPause, skip],
+    [open, isMobile, handlePlayPause, skip],
   )
   useEffect(() => {
     document.addEventListener('keydown', handleKey)
@@ -600,9 +617,21 @@ const VideoPlayer = ({
         maxWidth='lg'
         fullWidth
         fullScreen={isMobile}
-        classes={{ paper: classes.dialogPaper }}
+        hideBackdrop={!isMobile}
+        disableEnforceFocus={!isMobile}
+        disableAutoFocus={!isMobile}
+        disableScrollLock={!isMobile}
+        classes={isMobile ? { paper: classes.dialogPaper } : { root: classes.modelessRoot, paper: classes.dialogPaper }}
         PaperComponent={DraggablePaper}
-        PaperProps={{ dragDisabled: isMobile }}
+        PaperProps={{
+          dragDisabled: isMobile,
+          onMouseEnter: () => {
+            pointerInsideRef.current = true
+          },
+          onMouseLeave: () => {
+            pointerInsideRef.current = false
+          },
+        }}
       >
         <DialogTitle className={classes.header} disableTypography style={{ cursor: isMobile ? 'default' : 'move' }}>
           <Typography variant='h6' noWrap>
