@@ -19,7 +19,7 @@ LIBTORRENT_TAG=${LIBTORRENT_TAG:-v2.1.0}
 OPENSSL_VERSION=${OPENSSL_VERSION:-3.5.7}
 # First number must stay >= 132: the Android client gates its settings UI on the
 # leading digit run (>131 shows PreloadCache, hides the legacy PreloadBuffer).
-TS_VERSION=${TS_VERSION:-MatriX.142.LT-1.1.7}
+TS_VERSION=${TS_VERSION:-MatriX.142.LT-1.1.8}
 
 # --- paths -----------------------------------------------------------
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

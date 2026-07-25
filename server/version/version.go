@@ -10,4 +10,4 @@ package version
 // feature parity (and is that first digit run), ".LT-1.0.0" marks the fork and
 // carries its own semantic version. Release tags must keep this shape
 // (MatriX.142.LT-X.Y.Z) so the gate stays satisfied.
-var Version = "MatriX.142.LT-1.1.7"
+var Version = "MatriX.142.LT-1.1.8"
