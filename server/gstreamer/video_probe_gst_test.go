@@ -229,3 +229,40 @@ func testPadProbeInfo(probeType uint32, data uintptr) (uintptr, any) {
 	info := &gstPadProbeInfoUnixABI{probeType: probeType, data: data}
 	return uintptr(unsafe.Pointer(info)), info
 }
+
+func TestInstallVideoSeekProbesSkipsStartProbeForExactSeeks(t *testing.T) {
+	previous := gstRuntime
+	t.Cleanup(func() {
+		gstRuntime = previous
+	})
+
+	probes := uintptr(0)
+	api := &gstAPI{}
+	api.gstBinGetByName = func(_ uintptr, name string) uintptr {
+		if name == "mq" {
+			return 5
+		}
+		return 0
+	}
+	api.gstElementGetStaticPad = func(uintptr, string) uintptr { return 6 }
+	api.gstPadAddProbe = func(uintptr, uint32, uintptr, uintptr, uintptr) uintptr {
+		probes++
+		return probes
+	}
+	api.gstPadRemoveProbe = func(uintptr, uintptr) {}
+	api.gstObjectUnref = func(uintptr) {}
+	gstRuntime = api
+
+	runner := &gstRunner{task: &Task{Config: Config{}.normalized()}}
+	t.Cleanup(runner.removeVideoSeekProbes)
+
+	runner.installVideoSeekProbes(1, uint64(12*time.Second), seekPlan{flags: gstSeekFlagFlush | gstSeekFlagKeyUnit | gstSeekFlagSnapAfter})
+	if runner.videoStartProbe == nil {
+		t.Fatal("a snapping seek must discover which keyframe it landed on")
+	}
+
+	runner.installVideoSeekProbes(1, uint64(12*time.Second), seekPlan{flags: gstSeekFlagFlush | gstSeekFlagAccurate, exact: true})
+	if runner.videoStartProbe != nil {
+		t.Fatal("an exact seek must not re-anchor the timeline on the demuxer's landing point")
+	}
+}

@@ -565,7 +565,7 @@ func TestStartPipelineUsesActualQueriedSeekPosition(t *testing.T) {
 			Config: Config{}.normalized(),
 		},
 	}
-	actual, err := runner.startPipeline(12)
+	actual, err := runner.startPipeline(12, runner.planSeek())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -588,7 +588,7 @@ func TestStartPipelineUsesActualQueriedSeekPosition(t *testing.T) {
 	fallbackRunner := &gstRunner{
 		task: &Task{Config: Config{}.normalized()},
 	}
-	actual, err = fallbackRunner.startPipeline(12)
+	actual, err = fallbackRunner.startPipeline(12, fallbackRunner.planSeek())
 	if err != nil {
 		t.Fatalf("startPipeline failed when position query was unavailable: %v", err)
 	}
@@ -623,7 +623,7 @@ func TestReusePipelineUsesQueriedPositionOrRequestedFallback(t *testing.T) {
 				runner.releaseTransientState()
 			}()
 
-			actual, err := runner.reusePipeline(12, false, pipelineStateTimeout)
+			actual, err := runner.reusePipeline(12, runner.planSeek(), pipelineStateTimeout)
 			if err != nil {
 				t.Fatalf("reusePipeline failed: %v", err)
 			}
@@ -646,7 +646,7 @@ func TestReusePipelineContinuesWhenAsyncDoneIsNotObserved(t *testing.T) {
 		runner.releaseTransientState()
 	}()
 
-	actual, err := runner.reusePipeline(12, false, time.Millisecond)
+	actual, err := runner.reusePipeline(12, runner.planSeek(), time.Millisecond)
 	if err != nil {
 		t.Fatalf("reusePipeline failed without ASYNC_DONE: %v", err)
 	}
@@ -669,7 +669,7 @@ func TestReusePipelineRequiresVideoEncoderWhenTranscoding(t *testing.T) {
 		runner.releaseTransientState()
 	}()
 
-	_, err := runner.reusePipeline(12, false, pipelineStateTimeout)
+	_, err := runner.reusePipeline(12, runner.planSeek(), pipelineStateTimeout)
 	if err == nil || !strings.Contains(err.Error(), "video encoder is not available") {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -693,6 +693,8 @@ func TestReusePipelineFailureFreezesAndReleasesPipeline(t *testing.T) {
 	t.Cleanup(func() { videoProbeStates.Delete(registration.token) })
 	runner.videoStartProbe = registration
 
+	// The seek event fails on the reused pipeline and the fake cannot build a
+	// replacement, so the rebuild attempt fails too and the runner freezes.
 	if runner.Seek(12) {
 		t.Fatal("Seek succeeded after the native seek event failed")
 	}
@@ -715,6 +717,172 @@ func TestReusePipelineFailureFreezesAndReleasesPipeline(t *testing.T) {
 		if unrefs[handle] != 1 {
 			t.Fatalf("native handle %d unref count=%d, want 1", handle, unrefs[handle])
 		}
+	}
+}
+
+func TestSeekRebuildsPipelineWhenReuseFails(t *testing.T) {
+	previous := gstRuntime
+	t.Cleanup(func() {
+		gstRuntime = previous
+	})
+
+	seekAttempts := 0
+	seekPending := false
+	unrefs := make(map[uintptr]int)
+	api := &gstAPI{}
+	api.gstParseLaunch = func(string, unsafe.Pointer) uintptr { return 20 }
+	api.gstBinGetByName = func(_ uintptr, name string) uintptr {
+		switch name {
+		case "mux":
+			return 4
+		case "mq":
+			return 5
+		case "out":
+			return 21
+		default:
+			return 0
+		}
+	}
+	api.gstPipelineGetBus = func(uintptr) uintptr { return 22 }
+	api.gstElementSetState = func(_ uintptr, state int32) int32 {
+		if state == gstStatePlaying {
+			// The rebuilt pipeline is running; stop the fake bus so its watcher
+			// does not spin for the rest of the test.
+			api.gstBusTimedPopFiltered = nil
+		}
+		return gstStateChangeSuccess
+	}
+	api.gstElementGetState = func(uintptr, unsafe.Pointer, unsafe.Pointer, uint64) int32 {
+		return gstStateChangeSuccess
+	}
+	api.gstElementGetStaticPad = func(uintptr, string) uintptr { return 6 }
+	api.gstEventNewSeek = func(float64, int32, int32, int32, int64, int32, int64) uintptr { return 7 }
+	api.gstPadSendEvent = func(uintptr, uintptr) int32 {
+		seekAttempts++
+		if seekAttempts == 1 {
+			// The running pipeline refuses the seek, as it does when it is
+			// still prerolling a canceled one.
+			return 0
+		}
+		seekPending = true
+		return 1
+	}
+	api.gstElementQueryPosition = func(_ uintptr, _ int32, position unsafe.Pointer) int32 {
+		*(*int64)(position) = int64(12 * time.Second)
+		return 1
+	}
+	api.gstBusTimedPopFiltered = func(_ uintptr, _ uint64, filter int32) uintptr {
+		if filter == gstMessageAsyncDone && seekPending {
+			seekPending = false
+			return 8
+		}
+		return 0
+	}
+	api.gstPadRemoveProbe = func(uintptr, uintptr) {}
+	api.gstObjectUnref = func(handle uintptr) { unrefs[handle]++ }
+	api.gstMiniObjectUnref = func(uintptr) {}
+	gstRuntime = api
+
+	task := &Task{Config: Config{}.normalized()}
+	runner := &gstRunner{task: task, pipeline: 1, bus: 2, sink: 3}
+	task.runner = runner
+	runner.ensureTransientState()
+	t.Cleanup(func() {
+		runner.stopPipeline()
+		runner.releaseTransientState()
+	})
+
+	if !runner.Seek(12) {
+		t.Fatal("Seek failed although the pipeline could be rebuilt")
+	}
+	if runner.IsFrozen() {
+		t.Fatal("runner froze instead of rebuilding the pipeline")
+	}
+	if seekAttempts < 2 {
+		t.Fatalf("seek attempts=%d, want the rebuilt pipeline to seek again", seekAttempts)
+	}
+	if runner.pipeline != 20 || runner.bus != 22 || runner.sink != 21 {
+		t.Fatalf("rebuilt handles: pipeline=%d bus=%d sink=%d", runner.pipeline, runner.bus, runner.sink)
+	}
+	for _, handle := range []uintptr{1, 2, 3} {
+		if unrefs[handle] != 1 {
+			t.Fatalf("stale native handle %d unref count=%d, want 1", handle, unrefs[handle])
+		}
+	}
+}
+
+func TestPlanSeekMatchesOutputConstraints(t *testing.T) {
+	tests := []struct {
+		name      string
+		cue       *CueTimeline
+		transcode bool
+		wantFlags int32
+		wantExact bool
+	}{
+		{
+			name:      "cue boundaries are keyframes",
+			cue:       &CueTimeline{Segments: []CueSegment{{StartNS: 0, EndNS: uint64(6 * time.Second)}}},
+			wantFlags: gstSeekFlagFlush | gstSeekFlagKeyUnit | gstSeekFlagSnapAfter | gstSeekFlagAccurate,
+		},
+		{
+			name:      "passthrough without cues must land on a source keyframe",
+			wantFlags: gstSeekFlagFlush | gstSeekFlagKeyUnit | gstSeekFlagSnapAfter,
+		},
+		{
+			name:      "re-encoded video lands on the requested position",
+			transcode: true,
+			wantFlags: gstSeekFlagFlush | gstSeekFlagAccurate,
+			wantExact: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conf := Config{}.normalized()
+			conf.TranscodeH264 = tt.transcode
+			runner := &gstRunner{task: &Task{
+				Config: conf,
+				Probe:  ProbeInfo{Tracks: []TrackInfo{{Type: "video", CapsName: "video/x-h264"}}},
+				Cue:    tt.cue,
+			}}
+
+			plan := runner.planSeek()
+			if plan.flags != tt.wantFlags {
+				t.Fatalf("flags=%d, want %d", plan.flags, tt.wantFlags)
+			}
+			if plan.exact != tt.wantExact {
+				t.Fatalf("exact=%t, want %t", plan.exact, tt.wantExact)
+			}
+		})
+	}
+}
+
+func TestResolveSeekPositionAnchorsExactSeeksToTheRequest(t *testing.T) {
+	runner := &gstRunner{task: &Task{Config: Config{}.normalized()}}
+	exact := seekPlan{flags: gstSeekFlagFlush | gstSeekFlagAccurate, exact: true}
+	snapping := seekPlan{flags: gstSeekFlagFlush | gstSeekFlagKeyUnit | gstSeekFlagSnapAfter}
+
+	tests := []struct {
+		name      string
+		plan      seekPlan
+		requested float64
+		reported  float64
+		want      float64
+	}{
+		// The demuxer replays the keyframe before the target; the decoder still
+		// clips the output to the requested position.
+		{name: "exact seek behind the request", plan: exact, requested: 648, reported: 641.25, want: 648},
+		{name: "exact seek within a frame", plan: exact, requested: 648, reported: 648.042, want: 648},
+		{name: "exact seek not honored", plan: exact, requested: 648, reported: 654.75, want: 654.75},
+		{name: "snapping seek keeps the keyframe", plan: snapping, requested: 648, reported: 654.75, want: 654.75},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := runner.resolveSeekPosition(tt.requested, tt.reported, tt.plan); got != tt.want {
+				t.Fatalf("resolveSeekPosition=%v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -776,6 +944,10 @@ func newReusePipelineTestRunner(t *testing.T, queryResult int32, queryPosition i
 		return 0
 	}
 	api.gstPadRemoveProbe = func(uintptr, uintptr) {}
+	// A seek that cannot reuse the running pipeline rebuilds it; this fake owns
+	// no pipeline description, so the rebuild fails and callers fall through to
+	// the freeze path they are asserting on.
+	api.gstParseLaunch = func(string, unsafe.Pointer) uintptr { return 0 }
 	api.gstObjectUnref = func(handle uintptr) {
 		unrefs[handle]++
 	}

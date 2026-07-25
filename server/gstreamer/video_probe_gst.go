@@ -115,15 +115,23 @@ var (
 	videoClipProbeCallback  = purego.NewCallback(videoSegmentClipPadProbe)
 )
 
-func (r *gstRunner) installVideoSeekProbes(pipeline uintptr, requestedNS uint64, accurate bool) {
+func (r *gstRunner) installVideoSeekProbes(pipeline uintptr, requestedNS uint64, plan seekPlan) {
 	r.removeVideoSeekProbes()
 	if gstRuntime == nil || pipeline == 0 || gstRuntime.gstPadAddProbe == nil || gstRuntime.gstPadRemoveProbe == nil {
 		return
 	}
 
-	r.installVideoStartProbe(pipeline, requestedNS)
+	// An exact seek needs no landing-point discovery: the decoder clips to
+	// segment.start, so the muxed output begins at the requested position. The
+	// probe watches the demuxer side, where an accurate seek legitimately
+	// replays the preceding keyframe and everything up to the target — latching
+	// onto one of those buffers would anchor the segment before its own
+	// content.
+	if !plan.exact {
+		r.installVideoStartProbe(pipeline, requestedNS)
+	}
 	clipStart := uint64(gstClockTimeNone)
-	if accurate {
+	if plan.accurate() {
 		clipStart = requestedNS
 	}
 	r.installVideoSegmentClipProbe(pipeline, clipStart)

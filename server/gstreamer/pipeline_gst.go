@@ -707,22 +707,99 @@ func videoIsTranscoded(conf Config, probe ProbeInfo) bool {
 	}
 }
 
+// seekPlan captures how a seek to a playlist position is issued and how the
+// landing point maps back onto the timeline the playlist advertises.
+type seekPlan struct {
+	flags int32
+	// exact marks a seek that lands on the requested position instead of the
+	// nearest source keyframe.
+	exact bool
+}
+
+func (p seekPlan) accurate() bool { return p.flags&gstSeekFlagAccurate != 0 }
+
+// planSeek picks the seek flavor for this task.
+//
+// Passthrough (remux) output has to start on a source keyframe: the muxer
+// forwards the original coded frames, so a segment that does not begin with an
+// IDR is undecodable for the client. Those tasks snap with KEY_UNIT|SNAP_AFTER,
+// and when a Matroska cue timeline is available every playlist boundary already
+// IS a keyframe, so the snap is a no-op that ACCURATE keeps honest.
+//
+// Re-encoded output carries no such constraint: the decoder drops everything
+// before segment.start and the encoder opens a fresh GOP at the seek point, so
+// the pipeline can land anywhere. Without a cue timeline those tasks advertise
+// fixed SegmentSeconds boundaries while the source keyframes sit wherever the
+// original encoder put them, so snapping answered a request for segment N with
+// the keyframe that follows it — up to a whole GOP (~7s measured) past the
+// position the client asked for.
+func (r *gstRunner) planSeek() seekPlan {
+	if r.task.Cue == nil && videoIsTranscoded(r.task.Config, r.task.Probe) {
+		return seekPlan{flags: gstSeekFlagFlush | gstSeekFlagAccurate, exact: true}
+	}
+	flags := gstSeekFlagFlush | gstSeekFlagKeyUnit | gstSeekFlagSnapAfter
+	if r.task.Cue != nil {
+		flags |= gstSeekFlagAccurate
+	}
+	return seekPlan{flags: flags}
+}
+
+// exactSeekDriftSeconds is how far past the request an exact seek may report and
+// still count as honored. GST_SEEK_FLAG_ACCURATE lands within a frame, while a
+// demuxer that ignored it snaps to the next keyframe — whole seconds away — so
+// nothing realistic sits in between.
+const exactSeekDriftSeconds = 0.5
+
+// resolveSeekPosition maps the position the pipeline reports after a seek onto
+// the timeline the client asked for; the result anchors the segment's tfdt.
+//
+// An exact seek clips everything before segment.start inside the decoder, so
+// the muxed output starts at the requested position even though the demuxer had
+// to push the preceding keyframe and the frames between it and the target
+// first. A reported position below the request is that upstream artifact rather
+// than the content start, and anchoring there would date the segment too early.
+// Only a landing point clearly past the request means the accurate seek was not
+// honored — then the reported position is the truth.
+func (r *gstRunner) resolveSeekPosition(requested float64, reported float64, plan seekPlan) float64 {
+	if !plan.exact {
+		return reported
+	}
+	if reported > requested+exactSeekDriftSeconds {
+		gstTaskDebugf(r.task, "exact seek not honored requested=%.3fs reported=%.3fs", requested, reported)
+		return reported
+	}
+	return requested
+}
+
 func (r *gstRunner) Seek(seconds float64) bool {
 	r.ensureTransientState()
 	r.discardReadySegment()
 	r.resetSubtitleProgress(seconds)
 	wasFrozen := r.IsFrozen()
 	reuse := r.pipeline != 0
-	accurate := r.task.Cue != nil
-	gstTaskDebugf(r.task, "seek requested=%.3fs reuse=%t accurate=%t", seconds, reuse, accurate)
+	plan := r.planSeek()
+	gstTaskDebugf(r.task, "seek requested=%.3fs reuse=%t accurate=%t exact=%t", seconds, reuse, plan.accurate(), plan.exact)
 
 	var actualSeconds float64
 	var err error
 	if reuse {
-		actualSeconds, err = r.reusePipeline(seconds, accurate, pipelineStateTimeout)
-	} else {
+		actualSeconds, err = r.reusePipeline(seconds, plan, pipelineStateTimeout)
+		if err != nil {
+			// Reuse misses the PAUSED deadline when the pipeline is still
+			// prerolling the previous seek — a canceled request leaves a heavy
+			// transcode pipeline waiting on torrent data, and the next drag
+			// arrives before it settles. Rebuilding costs about a second;
+			// freezing costs the caller its segment (a 502) and the client its
+			// playback, so rebuild and only freeze if that fails too.
+			gstTaskDebugf(r.task, "seek requested=%.3fs cannot reuse pipeline (%v); rebuilding", seconds, err)
+			r.stopPipeline()
+			r.discardReadySegment()
+			reuse = false
+		}
+	}
+	if !reuse {
 		r.reader.SeekReset(seconds)
-		actualSeconds, err = r.startPipeline(seconds)
+		actualSeconds, err = r.startPipeline(seconds, plan)
 	}
 	if err != nil {
 		gstTaskErrorf(r.task, "seek requested=%.3fs failed: %v", seconds, err)
@@ -743,7 +820,7 @@ func (r *gstRunner) Seek(seconds float64) bool {
 	return true
 }
 
-func (r *gstRunner) reusePipeline(seconds float64, accurate bool, waitTimeout time.Duration) (float64, error) {
+func (r *gstRunner) reusePipeline(seconds float64, plan seekPlan, waitTimeout time.Duration) (float64, error) {
 	if r.pipeline == 0 || r.bus == 0 || r.sink == 0 {
 		return 0, errors.New("pipeline cannot be reused")
 	}
@@ -786,20 +863,16 @@ func (r *gstRunner) reusePipeline(seconds float64, accurate bool, waitTimeout ti
 	r.positionSeekSeconds = seconds
 	r.setPosition(seconds)
 
-	flags := gstSeekFlagFlush | gstSeekFlagKeyUnit | gstSeekFlagSnapAfter
-	if accurate {
-		flags |= gstSeekFlagAccurate
-	}
 	seekNS := int64(math.Round(seconds * 1_000_000_000))
 	if seekNS < 0 {
 		return 0, errors.New("gstreamer seek position is negative")
 	}
-	r.installVideoSeekProbes(r.pipeline, uint64(seekNS), accurate)
+	r.installVideoSeekProbes(r.pipeline, uint64(seekNS), plan)
 	if err := gstRuntime.popBusError(r.bus, 0); err != nil {
 		return 0, err
 	}
 	gstRuntime.drainBusMessages(r.bus, gstMessageAsyncDone|gstMessageEOS)
-	if err := sendVideoSeekEvent(r.pipeline, flags, seekNS); err != nil {
+	if err := sendVideoSeekEvent(r.pipeline, plan.flags, seekNS); err != nil {
 		return 0, fmt.Errorf("gstreamer seek failed while reusing pipeline: %w", err)
 	}
 	asyncDone, err := gstRuntime.waitForSeekDone(r.bus, waitTimeout)
@@ -818,7 +891,7 @@ func (r *gstRunner) reusePipeline(seconds float64, accurate bool, waitTimeout ti
 		return 0, fmt.Errorf("gstreamer seek state=%d while reusing pipeline", waitResult)
 	}
 
-	actualSeconds := r.querySeekPosition(r.pipeline, seconds)
+	actualSeconds := r.resolveSeekPosition(seconds, r.querySeekPosition(r.pipeline, seconds), plan)
 	if err := r.setPipelineState(r.pipeline, r.bus, gstStatePlaying); err != nil {
 		return 0, fmt.Errorf("resume pipeline after seek: %w", err)
 	}
@@ -874,7 +947,7 @@ func (r *gstRunner) EnsureInit(ctx context.Context, audio int, startIndex int) e
 			r.positionSeekSeconds = startSeconds
 			r.setPosition(startSeconds)
 		}
-		actualSeconds, err := r.startPipeline(startSeconds)
+		actualSeconds, err := r.startPipeline(startSeconds, r.planSeek())
 		if err != nil {
 			r.freezeAtPosition(startSeconds)
 			return err
@@ -944,7 +1017,7 @@ func (r *gstRunner) GetSegment(ctx context.Context, index int, audio int) (Segme
 			r.positionSeekSeconds = startSeconds
 			r.setPosition(startSeconds)
 		}
-		actualSeconds, err := r.startPipeline(startSeconds)
+		actualSeconds, err := r.startPipeline(startSeconds, r.planSeek())
 		if err != nil {
 			r.freezeAtPosition(startSeconds)
 			return Segment{}, err
@@ -1298,7 +1371,7 @@ func (r *gstRunner) freezeAtPosition(seconds float64) {
 	}
 }
 
-func (r *gstRunner) startPipeline(seconds float64) (float64, error) {
+func (r *gstRunner) startPipeline(seconds float64, plan seekPlan) (float64, error) {
 	r.ensureTransientState()
 	gstTaskDebugf(r.task, "pipeline start requested=%.3fs audio=%d", seconds, r.audioIndex)
 	pipeline, err := gstRuntime.parseLaunch(r.createPipelineArgs())
@@ -1345,10 +1418,6 @@ func (r *gstRunner) startPipeline(seconds float64) (float64, error) {
 			return 0, err
 		}
 
-		flags := gstSeekFlagFlush | gstSeekFlagKeyUnit | gstSeekFlagSnapAfter
-		if r.task.Cue != nil {
-			flags |= gstSeekFlagAccurate
-		}
 		if err := gstRuntime.popBusError(bus, 0); err != nil {
 			cleanup()
 			return 0, err
@@ -1359,8 +1428,8 @@ func (r *gstRunner) startPipeline(seconds float64) (float64, error) {
 			cleanup()
 			return 0, errors.New("gstreamer seek position is negative")
 		}
-		r.installVideoSeekProbes(pipeline, uint64(seekNS), r.task.Cue != nil)
-		if err := sendVideoSeekEvent(pipeline, flags, seekNS); err != nil {
+		r.installVideoSeekProbes(pipeline, uint64(seekNS), plan)
+		if err := sendVideoSeekEvent(pipeline, plan.flags, seekNS); err != nil {
 			cleanup()
 			return 0, fmt.Errorf("gstreamer seek failed: %w", err)
 		}
@@ -1395,7 +1464,7 @@ func (r *gstRunner) startPipeline(seconds float64) (float64, error) {
 			return 0, fmt.Errorf("unexpected GstStateChangeReturn=%d after seek", waitResult)
 		}
 
-		actualStartSeconds = r.querySeekPosition(pipeline, seconds)
+		actualStartSeconds = r.resolveSeekPosition(seconds, r.querySeekPosition(pipeline, seconds), plan)
 	}
 
 	if err := r.setPipelineState(pipeline, bus, gstStatePlaying); err != nil {
