@@ -326,7 +326,7 @@ in the [GStreamer](#gstreamer) section below.
 
 ## Development
 
-This fork links **libtorrent 2.1.0 (arvidn)** into the Go server through a CGo
+This fork links **libtorrent 2.1.2 (arvidn)** into the Go server through a CGo
 shim (`server/lt`). Unlike upstream's pure-Go engine, every build is therefore
 **CGo + C++** and needs a libtorrent/Boost toolchain. One shim feature — the
 per-piece `we_dont_have` the streaming cache uses to re-download evicted regions
@@ -402,7 +402,7 @@ WebTorrent (`wss://` trackers, browser peers). `cmake` is required on the build
 host for the WebRTC deps. Everything links statically — the only dynamic deps
 in the final binary are libc/libstdc++/libgcc (Windows links those static
 too). Versions are pinned in `build/_common.sh` (Boost 1.85.0, libtorrent
-v2.1.0, OpenSSL 3.5.7) and overridable, e.g.
+v2.1.2, OpenSSL 3.5.9) and overridable, e.g.
 `LIBTORRENT_TAG=v2.0.13 build/linux-arm64.sh`. Full detail and the per-target
 prerequisites table: [`build/README.md`](build/README.md).
 

@@ -12,7 +12,7 @@
 # Stage 1 milestone: only proves the toolchain works end-to-end (lt.Version()).
 # Real wiring of session/torrent/storage lands in later milestones.
 
-ARG LT_TAG=v2.1.0
+ARG LT_TAG=v2.1.2
 ARG GO_VERSION=1.25
 ARG ALPINE_VERSION=3.20
 

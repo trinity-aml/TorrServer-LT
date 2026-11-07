@@ -22,7 +22,7 @@ them itself and patches that Jamfile to consume the prebuilt archives.
 
 ```
 build/
-  _common.sh         paths + pinned versions (Boost 1.85.0, libtorrent v2.1.0, OpenSSL 3.5.7)
+  _common.sh         paths + pinned versions (Boost 1.85.0, libtorrent v2.1.2, OpenSSL 3.5.9)
   _fetch_sources.sh  download Boost + OpenSSL + clone libtorrent into _src/  (idempotent)
   _deps.sh           shared engine: openssl + webrtc deps + b2 install libtorrent → go_build
   _osxcross.sh       locate OSXCross wrappers/SDK (darwin targets)
