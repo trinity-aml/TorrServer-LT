@@ -89,7 +89,7 @@ func AddTorrent(spec *TorrentSpec, title, poster, data, category string) (*Torre
 		if title == "" && dbt != nil {
 			t.Title = dbt.Title
 		}
-		if t.Title == "" && t.lh != nil {
+		if t.Title == "" && t.handle() != nil {
 			t.Title = t.Name()
 		}
 	}
@@ -192,14 +192,14 @@ func SetTorrent(hashHex, title, poster, category, data string) *Torrent {
 		tor = GetTorrent(hashHex)
 		if tor != nil {
 			tor.GotInfo()
-			if tor.lh != nil {
+			if tor.handle() != nil {
 				title = tor.Name()
 			}
 		}
 	}
 
 	if tor != nil {
-		if title == "" && tor.lh != nil {
+		if title == "" && tor.handle() != nil {
 			title = tor.Name()
 		}
 		tor.Title = title
@@ -360,8 +360,8 @@ func SetDefSettings() {
 func dropAllTorrent() {
 	for _, t := range bts.ListTorrents() {
 		t.markClosed()
-		if t.lh != nil {
-			_ = t.lh.Remove(false)
+		if t.handle() != nil {
+			_ = t.handle().Remove(false)
 		}
 	}
 }

@@ -46,26 +46,37 @@ func settings(c *gin.Context) {
 		c.JSON(200, sets.BTsets())
 		return
 	} else if req.Action == "set" {
+		if req.Sets == nil {
+			abortWithJSONError(c, http.StatusBadRequest, errors.New("sets is empty"))
+			return
+		}
 		torr.SetSettings(req.Sets)
-		dlna.Stop()
-		if req.Sets.EnableDLNA {
-			dlna.Start()
-		}
-		bonjour.Stop()
-		if req.Sets.EnableBonjour {
-			bonjour.Start()
-		}
-		rutor.Stop()
-		rutor.Start()
+		restartServices()
 		c.Status(200)
 		return
 	} else if req.Action == "def" {
 		torr.SetDefSettings()
-		dlna.Stop()
-		bonjour.Stop()
-		rutor.Stop()
+		// The defaults differ from what was running (Bonjour is on by default),
+		// so the services follow the settings now in effect instead of just
+		// being stopped until the next restart.
+		restartServices()
 		c.Status(200)
 		return
 	}
 	abortWithJSONError(c, http.StatusBadRequest, errors.New("action is empty"))
+}
+
+// restartServices applies the settings now in effect to DLNA, Bonjour and the
+// rutor search.
+func restartServices() {
+	dlna.Stop()
+	if sets.BTsets() != nil && sets.BTsets().EnableDLNA {
+		dlna.Start()
+	}
+	bonjour.Stop()
+	if sets.BTsets() != nil && sets.BTsets().EnableBonjour {
+		bonjour.Start()
+	}
+	rutor.Stop()
+	rutor.Start()
 }

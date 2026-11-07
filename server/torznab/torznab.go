@@ -14,11 +14,25 @@ import (
 	"server/log"
 	"server/rutor/models"
 	"server/settings"
+	"server/version"
 )
 
 const httpTimeout = 30 * time.Second
 
 var httpClient = &http.Client{Timeout: httpTimeout}
+
+// userAgent is sent with every request: some indexers sit behind a WAF that
+// answers 403 to a client without one.
+var userAgent = "TorrServer-Torznab/" + version.Version
+
+func newRequest(ctx context.Context, url string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", userAgent)
+	return req, nil
+}
 
 type TorznabAttribute struct {
 	Name  string `xml:"name,attr"`
@@ -192,7 +206,7 @@ func searchOne(ctx context.Context, host, key, query, label, cat string, offset,
 	}
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	req, err := newRequest(ctx, u.String())
 	if err != nil {
 		log.TLogln("Error creating Torznab request:", err)
 		return nil
@@ -299,7 +313,7 @@ func FetchCaps(ctx context.Context, host, key string) (*Caps, error) {
 	q.Set("t", "caps")
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	req, err := newRequest(ctx, u.String())
 	if err != nil {
 		return nil, err
 	}
@@ -383,7 +397,7 @@ func formatSize(bytes int64) string {
 		div *= unit
 		exp++
 	}
-	return fmt.Sprintf("%.1f %cCiB", float64(bytes)/float64(div), "KMGTPE"[exp])
+	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
 func extractHash(magnet string) string {

@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"net/url"
 
 	"github.com/gin-gonic/gin"
 
@@ -29,7 +28,7 @@ func jacredSearch(c *gin.Context) {
 		return
 	}
 	query := c.Query("query")
-	query, _ = url.QueryUnescape(query)
+	query = unescapeQuery(query)
 	list := jacred.Search(c.Request.Context(), query)
 	if list == nil {
 		list = []*models.TorrentDetails{}

@@ -1,3 +1,9 @@
+// Disable Multipath TCP: the Linux kernel bug behind CVE-2026-98432 is in the
+// IPv4 TCP stack, but as of 2026-11 remote code execution is only confirmed
+// through the MPTCP path. Go 1.24+ enables MPTCP for listeners by default,
+// and TorrServer gains nothing from it.
+//go:debug multipathtcp=0
+
 package main
 
 import (
