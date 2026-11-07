@@ -44,10 +44,32 @@ export const shouldUseGStreamerPlayer = (path, runtime) => {
   }
 }
 
-export const gstreamerMasterUrl = (hash, fileID, audio = 0) =>
-  `${getTorrServerHost()}/gst/${encodeURIComponent(hash)}/master.m3u8?index=${encodeURIComponent(
+// A gst task is one pipeline with one playback position, so two players on the
+// same torrent would drag it back and forth and time each other's segments out.
+// Each browser tab therefore asks for its own session; the server gives it a
+// pipeline of its own and builds the playlist URLs around that id.
+const SESSION_STORAGE_KEY = 'gstSessionId'
+
+export const gstreamerSessionId = () => {
+  try {
+    let id = sessionStorage.getItem(SESSION_STORAGE_KEY)
+    if (!id) {
+      id = Math.random().toString(36).slice(2, 12)
+      sessionStorage.setItem(SESSION_STORAGE_KEY, id)
+    }
+    return id
+  } catch {
+    // private mode or blocked storage: one shared pipeline, as before
+    return ''
+  }
+}
+
+export const gstreamerMasterUrl = (hash, fileID, audio = 0) => {
+  const sid = gstreamerSessionId()
+  return `${getTorrServerHost()}/gst/${encodeURIComponent(hash)}/master.m3u8?index=${encodeURIComponent(
     fileID,
-  )}&audio=${encodeURIComponent(audio)}`
+  )}&audio=${encodeURIComponent(audio)}${sid ? `&sid=${encodeURIComponent(sid)}` : ''}`
+}
 
 export const gstreamerProbeUrl = (hash, fileID) =>
   `${getTorrServerHost()}/gst/${encodeURIComponent(hash)}/probe?index=${encodeURIComponent(fileID)}`
