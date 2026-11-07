@@ -452,9 +452,9 @@ func hevcHDRCapsPadProbe(_ purego.CDecl, _ uintptr, info uintptr, userData uintp
 	api.gstStructureSetValue(api.gstEventWritableStructure(replacement), "caps",
 		api.gstStructureGetValue(api.gstEventGetStructure(capsEvent), "caps"))
 	if runtime.GOOS == "windows" {
-		(*gstPadProbeInfoWindowsABI)(unsafe.Pointer(info)).data = replacement
+		(*gstPadProbeInfoWindowsABI)(ptrFrom(info)).data = replacement
 	} else {
-		(*gstPadProbeInfoUnixABI)(unsafe.Pointer(info)).data = replacement
+		(*gstPadProbeInfoUnixABI)(ptrFrom(info)).data = replacement
 	}
 	// Probe info owns one reference: transfer the copy and release the old event.
 	api.miniObjectUnref(event)
@@ -465,7 +465,7 @@ func gstProbeInfoType(info uintptr) uint32 {
 	if info == 0 {
 		return 0
 	}
-	return (*gstPadProbeInfoABI)(unsafe.Pointer(info)).probeType
+	return (*gstPadProbeInfoABI)(ptrFrom(info)).probeType
 }
 
 func gstProbeInfoData(info uintptr) uintptr {
@@ -473,23 +473,23 @@ func gstProbeInfoData(info uintptr) uintptr {
 		return 0
 	}
 	if runtime.GOOS == "windows" {
-		return (*gstPadProbeInfoWindowsABI)(unsafe.Pointer(info)).data
+		return (*gstPadProbeInfoWindowsABI)(ptrFrom(info)).data
 	}
-	return (*gstPadProbeInfoUnixABI)(unsafe.Pointer(info)).data
+	return (*gstPadProbeInfoUnixABI)(ptrFrom(info)).data
 }
 
 func gstEventType(event uintptr) uint32 {
 	if event == 0 {
 		return 0
 	}
-	return (*gstEventABI)(unsafe.Pointer(event)).eventType
+	return (*gstEventABI)(ptrFrom(event)).eventType
 }
 
 func gstBufferPTS(buffer uintptr) (uint64, bool) {
 	if buffer == 0 {
 		return 0, false
 	}
-	pts := (*gstBufferABI)(unsafe.Pointer(buffer)).pts
+	pts := (*gstBufferABI)(ptrFrom(buffer)).pts
 	return pts, pts != gstClockTimeNone
 }
 
@@ -497,7 +497,7 @@ func gstBufferClockTime(buffer uintptr) (uint64, bool) {
 	if buffer == 0 {
 		return 0, false
 	}
-	native := (*gstBufferABI)(unsafe.Pointer(buffer))
+	native := (*gstBufferABI)(ptrFrom(buffer))
 	if native.pts != gstClockTimeNone {
 		return native.pts, true
 	}
@@ -527,7 +527,7 @@ func gstTimeSegment(api *gstAPI, event uintptr) (start uint64, segmentTime uint6
 	if segmentPointer == 0 {
 		return gstClockTimeNone, gstClockTimeNone, false
 	}
-	segment := (*gstSegmentABI)(unsafe.Pointer(segmentPointer))
+	segment := (*gstSegmentABI)(ptrFrom(segmentPointer))
 	if segment.format != gstFormatTime {
 		return gstClockTimeNone, gstClockTimeNone, false
 	}

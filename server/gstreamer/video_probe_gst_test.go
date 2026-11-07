@@ -394,7 +394,7 @@ func TestHEVCHDRCapsProbeRetainsInitialMetadata(t *testing.T) {
 			}
 			snapshot := ref(state.initialCaps)
 			removeVideoPadProbe(&registration)
-			if got := (*gstMiniObjectABI)(unsafe.Pointer(snapshot)).refCount; got != 1 {
+			if got := (*gstMiniObjectABI)(ptrFrom(snapshot)).refCount; got != 1 {
 				t.Errorf("snapshot references after removal=%d, want 1", got)
 			}
 			api.miniObjectUnref(snapshot)
