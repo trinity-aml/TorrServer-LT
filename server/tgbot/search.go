@@ -37,7 +37,7 @@ func cmdSearch(c tele.Context) error {
 			sources = append(sources, "RuTor")
 		}
 		if sets.BTsets() != nil && sets.BTsets().EnableTorznabSearch {
-			list = append(list, torznab.Search(context.Background(), query, -1, "5000,2000", 0, 100)...)
+			list = append(list, torznab.Search(context.Background(), query, -1, nil, 0, 100)...)
 			sources = append(sources, "Torznab")
 		}
 		if sets.BTsets() != nil && sets.BTsets().EnableJacRedSearch {
@@ -94,7 +94,7 @@ func cmdTorznab(c tele.Context) error {
 		return err
 	}
 	go func() {
-		list := torznab.Search(context.Background(), query, index, "5000,2000", 0, 100)
+		list := torznab.Search(context.Background(), query, index, nil, 0, 100)
 		sendSearchResultsAsync(c.Bot(), c.Sender(), statusMsg, uid, query, list, "Torznab")
 	}()
 	return nil

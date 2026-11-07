@@ -405,6 +405,16 @@ definitions:
         description: Disk
         type: boolean
     type: object
+  settings.CategoryType:
+    enum:
+    - default
+    - manual
+    - all
+    type: string
+    x-enum-varnames:
+    - CategoryDefault
+    - CategoryManual
+    - CategoryAll
   settings.TMDBConfig:
     properties:
       apikey:
@@ -422,6 +432,13 @@ definitions:
     type: object
   settings.TorznabConfig:
     properties:
+      catType:
+        allOf:
+        - $ref: '#/definitions/settings.CategoryType'
+        description: default (empty) | manual | all
+      categories:
+        description: comma-separated Torznab category ids, used when CatType is manual
+        type: string
       host:
         type: string
       key:
@@ -1837,7 +1854,8 @@ paths:
         in: query
         name: index
         type: string
-      - description: Torznab categories, comma-separated (default 5000,2000 = TV+Movies)
+      - description: Torznab categories, comma-separated; omit to use each indexer's
+          configured categories, pass empty to search all
         in: query
         name: cat
         type: string

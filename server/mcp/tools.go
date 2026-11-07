@@ -18,9 +18,6 @@ import (
 	"server/version"
 )
 
-// torznabDefaultCats mirrors the default of GET /torznab/search.
-const torznabDefaultCats = "5000,2000"
-
 type emptyInput struct{}
 
 type torrentSummary struct {
@@ -588,9 +585,10 @@ func searchTorrents(ctx context.Context, req *mcpsdk.CallToolRequest, in searchT
 	rutorOn := sets != nil && sets.EnableRutorSearch
 	torznabOn := sets != nil && sets.EnableTorznabSearch
 	jacredOn := sets != nil && sets.EnableJacRedSearch
-	// Same default categories as GET /torznab/search: movies + TV.
+	// Categories come from each indexer's own configuration, as they do for
+	// GET /torznab/search without a cat parameter.
 	torznabSearch := func() []*models.TorrentDetails {
-		return torznab.Search(ctx, query, -1, torznabDefaultCats, 0, 0)
+		return torznab.Search(ctx, query, -1, nil, 0, 0)
 	}
 	var list []*models.TorrentDetails
 	switch source {

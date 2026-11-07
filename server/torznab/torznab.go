@@ -124,7 +124,11 @@ func normalizeHost(host string) (*url.URL, error) {
 	return u, nil
 }
 
-func Search(ctx context.Context, query string, index int, cat string, offset, limit int) []*models.TorrentDetails {
+// Search runs a query against one configured indexer (index >= 0) or all of
+// them (index < 0). cat pins the Torznab categories for this one search: nil
+// means "whatever each indexer is configured for", and a non-nil empty string
+// means "no categories at all".
+func Search(ctx context.Context, query string, index int, cat *string, offset, limit int) []*models.TorrentDetails {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -141,7 +145,7 @@ func Search(ctx context.Context, query string, index int, cat string, offset, li
 	if index >= 0 && index < len(settings.BTsets().TorznabUrls) {
 		config := settings.BTsets().TorznabUrls[index]
 		if config.Host != "" && config.Key != "" {
-			return searchOne(ctx, config.Host, config.Key, query, indexerLabel(config), cat, searchOffset, limit)
+			return searchOne(ctx, config.Host, config.Key, query, indexerLabel(config), searchCategories(config, cat), searchOffset, limit)
 		}
 		return nil
 	}
@@ -150,7 +154,7 @@ func Search(ctx context.Context, query string, index int, cat string, offset, li
 		if config.Host == "" || config.Key == "" {
 			continue
 		}
-		results := searchOne(ctx, config.Host, config.Key, query, indexerLabel(config), cat, searchOffset, limit)
+		results := searchOne(ctx, config.Host, config.Key, query, indexerLabel(config), searchCategories(config, cat), searchOffset, limit)
 		if results != nil {
 			allResults = append(allResults, results...)
 		}
@@ -169,6 +173,15 @@ func itemTracker(item TorznabItem, label string) string {
 		return name
 	}
 	return label
+}
+
+// searchCategories resolves the categories one search sends to one indexer:
+// the caller's override when it gave one, the indexer's own setting otherwise.
+func searchCategories(config settings.TorznabConfig, override *string) string {
+	if override != nil {
+		return strings.TrimSpace(*override)
+	}
+	return config.SearchCategories()
 }
 
 // indexerLabel picks a short, human-readable source name for a configured indexer — the

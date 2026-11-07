@@ -106,7 +106,7 @@ var msgRU = map[string]string{
 	"settings_input_reply":         "Ответьте на это сообщение новым значением",
 	"settings_input_done":          "✅ %s: %s",
 	"settings_input_error":         "❌ Ошибка: %s",
-	"settings_input_torznab_usage": "Формат: URL или URL|Key или URL|Key|Name",
+	"settings_input_torznab_usage": "Формат: URL или URL|Key или URL|Key|Name или URL|Key|Name|Категории|default/manual/all",
 	"settings_input_torznab_added": "✅ Torznab добавлен: %s",
 	"settings_set_friendlyname":    "FriendlyName (DLNA)",
 	"settings_set_path":            "TorrentsSavePath",

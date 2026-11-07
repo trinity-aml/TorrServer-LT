@@ -4,7 +4,12 @@ import {
   FormControlLabel,
   FormGroup,
   FormHelperText,
+  FormControl,
+  MenuItem,
+  InputLabel,
   Switch,
+  Select,
+  Chip,
   TextField,
   Button,
   List,
@@ -21,12 +26,14 @@ import { torznabTestHost, jacredTestHost } from 'utils/Hosts'
 
 import { SecondarySettingsContent, SettingSectionLabel } from './style'
 
-export default function TorznabSettings({ settings, inputForm, updateSettings }) {
+export default function TorznabSettings({ settings, inputForm, updateSettings, isProMode }) {
   const { t } = useTranslation()
   const { EnableRutorSearch, EnableTorznabSearch, TorznabUrls, EnableJacRedSearch, JacRedUrl, JacRedKey } =
     settings || {}
   const [newHost, setNewHost] = useState('')
   const [newKey, setNewKey] = useState('')
+  const [newCategories, setNewCategories] = useState('')
+  const [catType, setCategoryType] = useState('default')
   const [newName, setNewName] = useState('')
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState(null)
@@ -36,10 +43,23 @@ export default function TorznabSettings({ settings, inputForm, updateSettings })
   const handleAdd = () => {
     if (newHost && newKey) {
       const currentUrls = TorznabUrls || []
-      updateSettings({ TorznabUrls: [...currentUrls, { Host: newHost, Key: newKey, Name: newName }] })
+      updateSettings({
+        TorznabUrls: [
+          ...currentUrls,
+          {
+            Host: newHost,
+            Key: newKey,
+            Name: newName,
+            Categories: newCategories,
+            CatType: catType,
+          },
+        ],
+      })
       setNewHost('')
       setNewKey('')
       setNewName('')
+      setNewCategories('')
+      setCategoryType('default')
     }
   }
 
@@ -134,6 +154,19 @@ export default function TorznabSettings({ settings, inputForm, updateSettings })
                         {url.Host}
                       </Typography>
                     )}
+                    <span style={{ display: 'block', margin: '4px 0' }}>
+                      {`${t('Category')}: `}
+                      {url.CatType === 'manual' ? (
+                        <Chip size='small' label={url.Categories || t('Torznab.LabelAll')} />
+                      ) : url.CatType === 'all' ? (
+                        <Chip size='small' label={t('Torznab.LabelAll')} />
+                      ) : (
+                        <>
+                          <Chip size='small' label={t('Torznab.LabelDefault')} />{' '}
+                          <Chip size='small' label='5000,2000' />
+                        </>
+                      )}
+                    </span>
                     {`Key: ${url.Key.substring(0, 5)}...`}
                   </>
                 }
@@ -170,11 +203,12 @@ export default function TorznabSettings({ settings, inputForm, updateSettings })
             label={t('Torznab.TorznabHostURL')}
             value={newHost}
             onChange={e => setNewHost(e.target.value)}
-            placeholder='http://localhost:9117'
+            placeholder='http://localhost:9117/torznab/api'
             variant='outlined'
             size='small'
             fullWidth
           />
+          <FormHelperText margin='none'>{t('Torznab.TorznabHostURLHint')}</FormHelperText>
           <TextField
             label={t('Torznab.APIKey')}
             value={newKey}
@@ -183,6 +217,38 @@ export default function TorznabSettings({ settings, inputForm, updateSettings })
             size='small'
             fullWidth
           />
+          {isProMode && (
+            <>
+              <FormControl variant='outlined' size='small' fullWidth>
+                <InputLabel id='category-type-select-label'>{t('Torznab.SelectCategoryType')}</InputLabel>
+                <Select
+                  labelId='category-type-select-label'
+                  id='category-type-select'
+                  value={catType}
+                  onChange={e => setCategoryType(e.target.value)}
+                  label={t('Torznab.SelectCategoryType')}
+                >
+                  <MenuItem value='default'>{t('Torznab.LabelDefault')}</MenuItem>
+                  <MenuItem value='manual'>{t('Torznab.LabelManual')}</MenuItem>
+                  <MenuItem value='all'>{t('Torznab.LabelAll')}</MenuItem>
+                </Select>
+              </FormControl>
+
+              {catType === 'manual' && (
+                <TextField
+                  label={t('Torznab.Category')}
+                  value={newCategories}
+                  onChange={e => setNewCategories(e.target.value)}
+                  placeholder='5000,2000'
+                  variant='outlined'
+                  size='small'
+                  fullWidth
+                  style={{ marginTop: '10px' }}
+                />
+              )}
+            </>
+          )}
+
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 10 }}>
             <Button
               variant='outlined'

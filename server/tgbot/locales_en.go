@@ -106,7 +106,7 @@ var msgEN = map[string]string{
 	"settings_input_reply":         "Reply to this message with new value",
 	"settings_input_done":          "✅ %s: %s",
 	"settings_input_error":         "❌ Error: %s",
-	"settings_input_torznab_usage": "Format: URL or URL|Key or URL|Key|Name",
+	"settings_input_torznab_usage": "Format: URL or URL|Key or URL|Key|Name or URL|Key|Name|Categories|default/manual/all",
 	"settings_input_torznab_added": "✅ Torznab added: %s",
 	"settings_set_friendlyname":    "FriendlyName (DLNA)",
 	"settings_set_path":            "TorrentsSavePath",

@@ -273,12 +273,16 @@
     "Test": "Тест"
   },
   "Torznab": {
-    "AddServer": "Добавить сервер",
     "APIKey": "API-ключ",
+    "AddServer": "Добавить сервер",
+    "Category": "Список категорий для поиска",
     "ConnectionSuccessful": "Подключение успешно",
     "EnableSearchViaTorznab": "Включить поиск через Torznab-индексаторы (например, Jackett, Prowlarr)",
     "EnableTorznabSearch": "Включить поиск Torznab",
     "FailedToAddTorrent": "Не удалось добавить торрент",
+    "LabelAll": "Все",
+    "LabelDefault": "По умолчанию",
+    "LabelManual": "Вручную",
     "NameOptional": "Название (необязательно)",
     "NoLinkFound": "Ссылка не найдена",
     "NoResultsFound": "Результатов не найдено",
@@ -286,6 +290,7 @@
     "SearchMoviesShows": "Поиск торрентов фильмов и сериалов…",
     "SearchTorrents": "Поиск торрентов",
     "SearchTorznab": "Поиск через Torznab",
+    "SelectCategoryType": "Список категорий для поиска",
     "SortAscending": "По возрастанию",
     "SortBy": "Сортировать по",
     "SortByNone": "Без сортировки",
@@ -295,7 +300,8 @@
     "SortDescending": "По убыванию",
     "Test": "Тест",
     "TorrentAddedSuccessfully": "Торрент успешно добавлен",
-    "TorznabHostURL": "URL хоста Torznab"
+    "TorznabHostURL": "URL хоста Torznab",
+    "TorznabHostURLHint": "Базовый URL Torznab. Завершающий /api необязателен — TorrServer добавит его сам, если его нет."
   },
   "TMDB": {
     "Settings": "TMDB",

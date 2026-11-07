@@ -56,7 +56,7 @@ func handleInlineQuery(c tele.Context) error {
 			list = append(list, rutor.Search(query)...)
 		}
 		if sets.BTsets().EnableTorznabSearch {
-			list = append(list, torznab.Search(context.Background(), query, -1, "5000,2000", 0, 100)...)
+			list = append(list, torznab.Search(context.Background(), query, -1, nil, 0, 100)...)
 		}
 		for _, item := range list {
 			if id >= inlineMaxResults {

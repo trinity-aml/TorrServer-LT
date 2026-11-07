@@ -801,31 +801,38 @@ Configure it in the web UI: **Settings → Torznab**.
 
 Each Torznab indexer needs:
 
-- **Host URL**: full URL to the Torznab API endpoint.
-  - Jackett example:
+- **Host URL**: Torznab base URL. TorrServer always calls the `/api` endpoint and accepts the host with or without a trailing `/api` or `/api/` (it will not be doubled).
+  - Jackett example (either form works):
 
   ```shell
   http://192.168.1.10:9117/api/v2.0/indexers/all/results/torznab/
+  http://192.168.1.10:9117/api/v2.0/indexers/all/results/torznab/api
   ```
 
   - Prowlarr example:
-  
+
   ```shell
   http://localhost:9696/1
   ```
-  
-  - Make sure to include the correct trailing slash (`/`) in your indexer's URL,
-  as required by your Torznab provider. TorrServer will try to properly format the path,
-  but matching your indexer's expected format is best to avoid connection issues.
-  
+
+  - Other indexers often document the full endpoint with `/api` (e.g. `http://127.0.0.1:9117/torznab/api`). You can paste that as-is.
+
 - **API Key**: the key from your Torznab indexer manager.
+- **Categories** (PRO mode): which Torznab categories this indexer is searched with.
+  - **Default** — movies and TV (`5000,2000`). This is also what indexers added before the setting existed use.
+  - **Manual** — the comma-separated list you enter (e.g. `5000,2000,3000`); an empty list searches everything.
+  - **All** — no category is sent, the indexer decides.
+
+  A search request may still override this: `GET /torznab/search?cat=...` searches those
+  categories, `cat=` (empty) searches all of them, and omitting `cat` uses each indexer's
+  own setting (the Telegram bot and the MCP server always do the latter).
 
 ### Enabling Torznab search
 
 1. Open **Settings**.
 2. Open the **Torznab** tab.
 3. Turn on **Enable Torznab Search**.
-4. Enter **Host URL** and **API Key**, then **Add Server** for each indexer.
+4. Enter **Host URL** and **API Key** (and, in PRO mode, pick the **Categories**), then **Add Server** for each indexer.
 5. **Save** settings.
 
 ## GStreamer

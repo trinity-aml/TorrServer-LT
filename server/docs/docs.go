@@ -1665,7 +1665,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Torznab categories, comma-separated (default 5000,2000 = TV+Movies)",
+                        "description": "Torznab categories, comma-separated; omit to use each indexer's configured categories, pass empty to search all",
                         "name": "cat",
                         "in": "query"
                     },
@@ -2412,6 +2412,19 @@ const docTemplate = `{
                 }
             }
         },
+        "settings.CategoryType": {
+            "type": "string",
+            "enum": [
+                "default",
+                "manual",
+                "all"
+            ],
+            "x-enum-varnames": [
+                "CategoryDefault",
+                "CategoryManual",
+                "CategoryAll"
+            ]
+        },
         "settings.TMDBConfig": {
             "type": "object",
             "properties": {
@@ -2436,6 +2449,18 @@ const docTemplate = `{
         "settings.TorznabConfig": {
             "type": "object",
             "properties": {
+                "catType": {
+                    "description": "default (empty) | manual | all",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/settings.CategoryType"
+                        }
+                    ]
+                },
+                "categories": {
+                    "description": "comma-separated Torznab category ids, used when CatType is manual",
+                    "type": "string"
+                },
                 "host": {
                     "type": "string"
                 },

@@ -12,10 +12,39 @@ import (
 	"server/log"
 )
 
+// CategoryType says how an indexer's Categories field is meant to be read.
+type CategoryType string
+
+const (
+	// CategoryDefault searches movies and TV (Torznab 2000,5000). It is also
+	// what an empty CatType means, so configs saved before this setting
+	// existed keep the categories they were searched with.
+	CategoryDefault CategoryType = "default"
+	// CategoryManual searches exactly the Categories list.
+	CategoryManual CategoryType = "manual"
+	// CategoryAll sends no category at all and lets the indexer decide.
+	CategoryAll CategoryType = "all"
+)
+
 type TorznabConfig struct {
-	Host string
-	Key  string
-	Name string
+	Host       string
+	Key        string
+	Name       string
+	Categories string       // comma-separated Torznab category ids, used when CatType is manual
+	CatType    CategoryType // default (empty) | manual | all
+}
+
+// SearchCategories returns the cat value to send for this indexer, or an empty
+// string to send none.
+func (c TorznabConfig) SearchCategories() string {
+	switch c.CatType {
+	case CategoryAll:
+		return ""
+	case CategoryManual:
+		return strings.TrimSpace(c.Categories)
+	default:
+		return "5000,2000" // Movies, TV
+	}
 }
 
 type TMDBConfig struct {

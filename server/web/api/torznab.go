@@ -20,7 +20,7 @@ import (
 //
 //	@Param			query	query	string	true	"Torznab query"
 //	@Param			index	query	string	false	"Indexer index (-1 = all configured)"
-//	@Param			cat		query	string	false	"Torznab categories, comma-separated (default 5000,2000 = TV+Movies)"
+//	@Param			cat		query	string	false	"Torznab categories, comma-separated; omit to use each indexer's configured categories, pass empty to search all"
 //	@Param			offset	query	string	false	"Result offset for pagination"
 //	@Param			limit	query	string	false	"Max results (default 100, capped at 250)"
 //
@@ -39,9 +39,13 @@ func torznabSearch(c *gin.Context) {
 		index = i
 	}
 
-	// Default to TV+Movies so existing clients keep video-only results; pass an
-	// explicit (possibly empty) cat to widen or narrow the search.
-	cat := c.DefaultQuery("cat", "5000,2000")
+	// Without a cat parameter every indexer searches the categories it is
+	// configured for (movies + TV unless changed). A cat parameter overrides
+	// that for this one search, and an empty one searches all categories.
+	var cat *string
+	if value, ok := c.GetQuery("cat"); ok {
+		cat = &value
+	}
 	offset := 0
 	if o, err := strconv.Atoi(c.DefaultQuery("offset", "0")); err == nil && o > 0 {
 		offset = o

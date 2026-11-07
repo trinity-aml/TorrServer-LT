@@ -273,12 +273,16 @@
     "Test": "Test"
   },
   "Torznab": {
-    "AddServer": "Add Server",
     "APIKey": "API Key",
+    "AddServer": "Add Server",
+    "Category": "Categories to search",
     "ConnectionSuccessful": "Connection successful",
     "EnableSearchViaTorznab": "Enable search via Torznab indexers (e.g. Jackett, Prowlarr)",
     "EnableTorznabSearch": "Enable Torznab Search",
     "FailedToAddTorrent": "Failed to add torrent",
+    "LabelAll": "All",
+    "LabelDefault": "Default",
+    "LabelManual": "Manual",
     "NameOptional": "Name (Optional)",
     "NoLinkFound": "No link found",
     "NoResultsFound": "No results",
@@ -286,6 +290,7 @@
     "SearchMoviesShows": "Search movies, shows...",
     "SearchTorrents": "Search Torrents",
     "SearchTorznab": "Search Torznab",
+    "SelectCategoryType": "Categories to search",
     "SortAscending": "Sort Ascending",
     "SortBy": "Sort By",
     "SortByNone": "None",
@@ -295,7 +300,8 @@
     "SortDescending": "Sort Descending",
     "Test": "Test",
     "TorrentAddedSuccessfully": "Torrent added successfully",
-    "TorznabHostURL": "Torznab Host URL"
+    "TorznabHostURL": "Torznab Host URL",
+    "TorznabHostURLHint": "Torznab base URL. A trailing /api is optional — TorrServer adds it if missing."
   },
   "TMDB": {
     "Settings": "TMDB",

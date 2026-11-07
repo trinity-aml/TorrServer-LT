@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"server/settings"
 )
 
 func TestNormalizeHost(t *testing.T) {
@@ -113,5 +115,75 @@ func TestSearchOneFormatsSizeInBinaryUnits(t *testing.T) {
 	}
 	if results[1].Size != "512 B" {
 		t.Errorf("size = %q, want %q", results[1].Size, "512 B")
+	}
+}
+
+func TestSearchCategoriesResolution(t *testing.T) {
+	manual := "1000,8000"
+	empty := ""
+	tests := []struct {
+		name     string
+		config   settings.TorznabConfig
+		override *string
+		want     string
+	}{
+		{name: "unset config searches movies and tv", want: "5000,2000"},
+		{
+			name:   "explicit default searches movies and tv",
+			config: settings.TorznabConfig{CatType: settings.CategoryDefault},
+			want:   "5000,2000",
+		},
+		{
+			name:   "all sends no categories",
+			config: settings.TorznabConfig{CatType: settings.CategoryAll, Categories: "1000"},
+			want:   "",
+		},
+		{
+			name:   "manual sends the configured list",
+			config: settings.TorznabConfig{CatType: settings.CategoryManual, Categories: " 1000,8000 "},
+			want:   "1000,8000",
+		},
+		{
+			name:   "manual without a list sends nothing",
+			config: settings.TorznabConfig{CatType: settings.CategoryManual},
+			want:   "",
+		},
+		{
+			name:     "request override wins over the config",
+			config:   settings.TorznabConfig{CatType: settings.CategoryManual, Categories: "1000"},
+			override: &manual,
+			want:     "1000,8000",
+		},
+		{
+			name:     "empty override searches all categories",
+			config:   settings.TorznabConfig{CatType: settings.CategoryDefault},
+			override: &empty,
+			want:     "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := searchCategories(tc.config, tc.override); got != tc.want {
+				t.Errorf("searchCategories() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSearchOneSendsTheResolvedCategories(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.Query()["cat"]
+		_, _ = w.Write([]byte(`<rss><channel></channel></rss>`))
+	}))
+	defer srv.Close()
+
+	searchOne(context.Background(), srv.URL, "key", "q", "label", "5000,2000", 0, 0)
+	if len(got) != 1 || got[0] != "5000,2000" {
+		t.Errorf("cat sent = %v, want [5000,2000]", got)
+	}
+	searchOne(context.Background(), srv.URL, "key", "q", "label", "", 0, 0)
+	if len(got) != 0 {
+		t.Errorf("cat sent = %v, want none", got)
 	}
 }
