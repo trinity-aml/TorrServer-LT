@@ -680,6 +680,21 @@ location / {
 }
 ```
 
+## External subtitles
+
+TorrServer can find subtitle files that lie next to a video inside a torrent and serve them to clients, converted to WebVTT or in their original format. It works in all builds and needs no external tools.
+
+```
+GET /subs/{hash}/{id}                  list subtitle tracks for the video file {id}
+GET /subs/{hash}/{id}?track={index}    return one subtitle file (WebVTT by default)
+```
+
+Query parameters for `track`: `format` (`vtt` or `original`) and `encoding` (`utf8` or `windows-1251`).
+
+With a `-gst` build the tracks are also listed in the HLS master playlist, so the built-in player offers them without any extra request.
+
+See [server/subs/README.md](server/subs/README.md) for the supported formats and encodings, and for the file layouts inside a torrent that are recognized.
+
 ## Web Application Firewall (WAF)
 
 TorrServer includes an HTTP access WAF that filters clients by IP address and by the `Referer` and `Origin` request headers. Configure it from **Settings → WAF** or through the authenticated `/waf` API.

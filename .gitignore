@@ -45,3 +45,5 @@ toolchains/
 # rutor search DB — a ~52 MB runtime download (rutor.go fetches it from the
 # mirror), not a source/fixture. Used by the manual full-parse rutor tests.
 rutor.ls
+config.db
+settings.json
