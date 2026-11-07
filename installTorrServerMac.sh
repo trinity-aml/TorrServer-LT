@@ -258,7 +258,7 @@ getBinaryName() {
 }
 
 getVersionTag() {
-  # A full release tag (MatriX.146.LT-1.0.0, or legacy MatriX.LT-001) is used
+  # A full release tag (MatriX.150.LT-1.0.0, or legacy MatriX.LT-001) is used
   # as-is; a bare number keeps the legacy zero-padded form MatriX.LT-NNN so old
   # "--version 2" selectors still resolve.
   local version="$1"

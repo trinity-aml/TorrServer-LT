@@ -9,5 +9,5 @@ package version
 // so the client unlocks the modern controls; "146" tracks upstream MatriX
 // feature parity (and is that first digit run), ".LT-1.0.0" marks the fork and
 // carries its own semantic version. Release tags must keep this shape
-// (MatriX.146.LT-X.Y.Z) so the gate stays satisfied.
-var Version = "MatriX.146.LT-1.2.2"
+// (MatriX.150.LT-X.Y.Z) so the gate stays satisfied.
+var Version = "MatriX.150.LT-1.2.3"

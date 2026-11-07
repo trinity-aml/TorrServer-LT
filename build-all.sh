@@ -13,7 +13,7 @@
 # Usage:
 #   ./build-all.sh                          # everything the host can build
 #   TARGETS="linux-arm64" ./build-all.sh    # a subset
-#   TS_VERSION=MatriX.146.LT-1.2.2 ./build-all.sh # stamp a release version
+#   TS_VERSION=MatriX.150.LT-1.2.3 ./build-all.sh # stamp a release version
 #   SKIP_WEB=1 SKIP_DOCS=1 ./build-all.sh   # binaries only
 #
 # Binaries land in _out/TorrServer-LT-<target>. The web bundle and swagger

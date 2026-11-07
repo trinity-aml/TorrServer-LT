@@ -385,7 +385,7 @@ getBinaryName() {
 }
 
 getVersionTag() {
-  # A full release tag (MatriX.146.LT-1.0.0, or legacy MatriX.LT-001) is used
+  # A full release tag (MatriX.150.LT-1.0.0, or legacy MatriX.LT-001) is used
   # as-is; a bare number keeps the legacy zero-padded form MatriX.LT-NNN so old
   # "--version 2" selectors still resolve.
   local version="$1"
@@ -709,7 +709,7 @@ checkGlibcCompatibility() {
   local version_number
 
   # Every LT build requires the glibc floor, so any tag carrying the "LT" fork
-  # marker (MatriX.LT-001 or MatriX.146.LT-1.0.0) qualifies regardless of the
+  # marker (MatriX.LT-001 or MatriX.150.LT-1.0.0) qualifies regardless of the
   # trailing version shape. A bare number is the legacy numeric selector.
   if [[ "$target_version" == *LT* ]]; then
     version_number=$MIN_VERSION_REQUIRING_GLIBC
