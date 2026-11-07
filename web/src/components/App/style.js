@@ -27,9 +27,13 @@ export const AppWrapper = styled.div`
     }
 
     ${standaloneMedia(css`
+      --pwa-header-height: 60px;
       grid-template-columns: 0 1fr;
-      grid-template-rows: ${pwaFooterHeight}px 1fr ${pwaFooterHeight}px;
-      height: 100vh;
+      grid-template-rows: var(--pwa-header-height) minmax(0, 1fr) ${pwaFooterHeight}px;
+
+      @media (max-width: 700px) {
+        --pwa-header-height: 42px;
+      }
     `)}
   `}
 `
@@ -39,7 +43,6 @@ export const CenteredGrid = styled.div`
   place-items: center;
 
   ${standaloneMedia(css`
-    height: 100vh;
     width: 100vw;
   `)}
 `
@@ -59,11 +62,9 @@ export const AppHeader = styled.div`
 
     ${standaloneMedia(css`
       grid-template-columns: max-content 1fr;
-      align-items: end;
-      padding: 7px 16px;
       position: fixed;
       width: 100%;
-      height: ${pwaFooterHeight}px;
+      height: var(--pwa-header-height);
     `)}
   `}
 `
@@ -136,8 +137,8 @@ export const TorrentListWrapper = styled.div`
   }
 
   ${standaloneMedia(css`
-    height: calc(100vh - ${pwaFooterHeight}px);
-    padding-bottom: 105px;
+    min-height: 0;
+    padding-bottom: 15px;
   `)}
 `
 
