@@ -9,6 +9,7 @@ package torr
 
 import (
 	"bytes"
+	"encoding/base32"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -40,6 +41,18 @@ func (h Hash) IsZero() bool {
 func (h Hash) MarshalText() ([]byte, error) { return []byte(h.HexString()), nil }
 
 func (h *Hash) UnmarshalText(b []byte) error {
+	// A 32-character base32 btih is a legal info hash too: libtorrent accepts it
+	// from magnet links, so a torrent added that way must also be found by that
+	// spelling through the API.
+	if len(b) == 32 {
+		var dec [20]byte
+		n, err := base32.StdEncoding.Decode(dec[:], bytes.ToUpper(b))
+		if err != nil || n != len(dec) {
+			return fmt.Errorf("torr.Hash: bad base32: %w", err)
+		}
+		copy(h[:], dec[:])
+		return nil
+	}
 	if len(b) != 40 {
 		return fmt.Errorf("torr.Hash: bad hex length %d (want 40)", len(b))
 	}

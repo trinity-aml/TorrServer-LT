@@ -84,6 +84,9 @@ func Start() {
 	corsCfg.AllowMethods = []string{"GET", "POST", "PUT", "PATCH", "HEAD", "OPTIONS", "DELETE"}
 	corsCfg.AllowHeaders = []string{
 		"Origin", "Content-Length", "Content-Type", "X-Requested-With", "Accept", "Authorization",
+		// Range: a cross-origin player asks for it in the preflight before any
+		// ranged request, and without it the browser blocks the request
+		"Range",
 		// MCP Streamable HTTP (browser-based agents)
 		"Mcp-Protocol-Version", "Mcp-Session-Id", "Last-Event-ID", "Mcp-Method", "Mcp-Name",
 	}
