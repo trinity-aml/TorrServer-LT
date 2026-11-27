@@ -361,7 +361,9 @@
     "UseVLCDesktopHintPrefix": "Pe PC este necesar",
     "UseVLCHint": "Adăugați butonul VLC player la lista de conținut torrent",
     "ViewedHistoryStorage": "Istoricul vizualizărilor stocate:",
-    "ViewedStorageHint": "Alegeți unde să stocați istoricul vizualizat"
+    "ViewedStorageHint": "Alegeți unde să stocați istoricul vizualizat",
+    "TrackTimecode": "Urmărire timecode",
+    "TrackTimecodeHint": "Salvați poziția de redare (timecode) în istoricul vizionărilor pentru reluarea redării în clienți precum Lampa"
   },
   "ShowRawStat": "Arată /stat brut",
   "Size": "Mărime",
@@ -478,5 +480,12 @@
     "WhitelistHint": "Lasă gol pentru dezactivare. Exemplu: local:127.0.0.1 sau 10.0.0.0/8"
   },
   "bps": "bps",
-  "kbps": "kbps"
+  "kbps": "kbps",
+  "CollapseAll": "Restrânge tot",
+  "CopyName": "Copiază numele",
+  "CopyPath": "Copiază calea",
+  "ExpandAll": "Extinde tot",
+  "AllFiles": "Toate fișierele",
+  "Loading": "Se încarcă",
+  "Error": "Eroare"
 }

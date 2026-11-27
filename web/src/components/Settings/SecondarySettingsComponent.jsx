@@ -72,6 +72,7 @@ export default function SecondarySettingsComponent({ settings, inputForm, update
     DHTConnectionsLimit,
     PeersListenPort,
     ShowFSActiveTorr,
+    TrackTimecode,
   } = settings || {}
 
   // Use useMemo to compute basePath once
@@ -446,6 +447,17 @@ export default function SecondarySettingsComponent({ settings, inputForm, update
             <MenuItem value='json'>{t('SettingsDialog.JsonFile')} (viewed.json)</MenuItem>
           </Select>
           <FormHelperText style={{ marginTop: '8px' }}>{t('SettingsDialog.ViewedStorageHint')}</FormHelperText>
+        </FormGroup>
+
+        <FormGroup style={{ marginTop: '16px' }}>
+          <FormControlLabel
+            control={
+              <Switch checked={Boolean(TrackTimecode)} onChange={inputForm} id='TrackTimecode' color='secondary' />
+            }
+            label={t('SettingsDialog.TrackTimecode')}
+            labelPlacement='start'
+          />
+          <FormHelperText margin='none'>{t('SettingsDialog.TrackTimecodeHint')}</FormHelperText>
         </FormGroup>
 
         <Box mt={2} mb={2}>

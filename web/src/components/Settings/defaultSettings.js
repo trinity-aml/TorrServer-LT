@@ -51,5 +51,6 @@ wss://tracker.openwebtorrent.com`,
   SslCert: '',
   SslKey: '',
   ShowFSActiveTorr: true,
+  TrackTimecode: false,
   StoreSettingsInJson: true,
 }

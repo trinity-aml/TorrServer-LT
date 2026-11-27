@@ -242,7 +242,9 @@
     "DefaultTrackers": "Default trackers",
     "DefaultTrackersHint": "Local announce URLs, one per line. Used alone when all remote fetches fail, or merged after a successful remote fetch.",
     "ShowQuickVLCButton": "Show VLC button on torrent cards",
-    "ShowQuickVLCButtonHint": "Optional shortcut for single-video torrents. VLC must also be enabled."
+    "ShowQuickVLCButtonHint": "Optional shortcut for single-video torrents. VLC must also be enabled.",
+    "TrackTimecode": "Track playback timecode",
+    "TrackTimecodeHint": "Store playback position (timecode) in viewed data for resuming playback in clients like Lampa"
   },
   "Size": "Size",
   "SpeedTest": "Speed Test",
@@ -471,5 +473,12 @@
     "KeyPathExample": "e.g. /etc/letsencrypt/live/example.com/privkey.pem",
     "CertFileInUse": "Certificate file",
     "KeyFileInUse": "Key file"
-  }
+  },
+  "CollapseAll": "Collapse all",
+  "CopyName": "Copy name",
+  "CopyPath": "Copy path",
+  "ExpandAll": "Expand all",
+  "AllFiles": "All files",
+  "Loading": "Loading",
+  "Error": "Error"
 }

@@ -355,7 +355,9 @@
     "UseVLCDesktopHintPrefix": "Sur PC nécessite",
     "UseVLCHint": "Ajouter un bouton de lecteur VLC à la liste de contenu du torrent",
     "ViewedHistoryStorage": "Stockage de l'historique des vues :",
-    "ViewedStorageHint": "Choisissez où stocker l'historique des vues"
+    "ViewedStorageHint": "Choisissez où stocker l'historique des vues",
+    "TrackTimecode": "Suivre le timecode",
+    "TrackTimecodeHint": "Enregistrer la position de lecture (timecode) dans l'historique pour reprendre la lecture dans des clients comme Lampa"
   },
   "ShowRawStat": "Afficher le /stat brut",
   "Size": "Taille",
@@ -471,5 +473,12 @@
     "WhitelistHint": "Laisser vide pour désactiver. Exemple : local:127.0.0.1 ou 10.0.0.0/8"
   },
   "bps": "bit/s",
-  "kbps": "kbit/s"
+  "kbps": "kbit/s",
+  "CollapseAll": "Tout réduire",
+  "CopyName": "Copier le nom",
+  "CopyPath": "Copier le chemin",
+  "ExpandAll": "Tout développer",
+  "AllFiles": "Tous les fichiers",
+  "Loading": "Chargement",
+  "Error": "Erreur"
 }
