@@ -48,6 +48,9 @@ isAuthPass=""
 # Constants
 readonly REPO_URL="https://github.com/trinity-aml/TorrServer-LT"
 readonly REPO_API_URL="https://api.github.com/repos/trinity-aml/TorrServer-LT"
+# Cap on a release API body we read into memory, so a wrong URL answering with
+# something huge cannot fill it.
+readonly API_MAX_BYTES=$((2 * 1024 * 1024))
 readonly VERSION_PREFIX="MatriX.LT"
 readonly BINARY_NAME_PREFIX="TorrServer-LT-linux"
 # All TorrServer-LT builds link libtorrent (C++) against the build host's
@@ -583,11 +586,54 @@ systemctlCmd() {
 #     VERSION MANAGEMENT
 #############################################
 
+# The release API is limited to 60 unauthenticated requests per hour per
+# address, which a CGNAT provider, an office NAT or a CI runner can exhaust
+# without the user ever touching it. The public release pages are not on that
+# budget, so they serve as a fallback: /releases/latest redirects to the newest
+# tag, and /releases/tag/<tag> answers 200 only for a tag that exists.
+latestTagFromWeb() {
+  local effective
+  if ! effective=$(curl -s -o /dev/null -w '%{url_effective}' -L --connect-timeout 10 --max-time 30 \
+    "${REPO_URL}/releases/latest" 2>/dev/null); then
+    echo ""
+    return 0
+  fi
+  case "$effective" in
+    */releases/tag/*) printf '%s\n' "${effective##*/releases/tag/}" ;;
+    *) echo "" ;;
+  esac
+}
+
+releaseTagExistsOnWeb() {
+  local tag_name="$1"
+  local code
+  if ! code=$(curl -s -o /dev/null -w '%{http_code}' -L --connect-timeout 10 --max-time 30 \
+    "${REPO_URL}/releases/tag/$tag_name" 2>/dev/null); then
+    return 1
+  fi
+  [[ "$code" == "200" ]]
+}
+
 getLatestRelease() {
-  curl -s "${REPO_API_URL}/releases/latest" |
-  grep -iE '"tag_name":|"version":' |
-  sed -E 's/.*"([^"]+)".*/\1/' |
-  head -n1
+  # Under `set -e` with pipefail this pipeline took the whole installer down
+  # without printing anything whenever the API answered with something that
+  # holds no tag_name — an outage, or the 403 the rate limiter returns from
+  # shared addresses — because grep then exits 1. Failures return empty now
+  # and the caller reports them.
+  local LC_ALL=C
+  local body tag
+  if ! body=$(curl -s --connect-timeout 10 --max-time 30 "${REPO_API_URL}/releases/latest" |
+    head -c "$((API_MAX_BYTES + 1))" | tr '\000\n' '  '); then
+    body=""
+  fi
+  if ((${#body} > API_MAX_BYTES)); then
+    body=""
+  fi
+  tag=$(grep -oiE '"(tag_name|version)": *"[^"]+"' <<< "$body" | head -n1 | sed -E 's/.*"([^"]+)"$/\1/') || tag=""
+  if [[ -z "$tag" ]]; then
+    tag=$(latestTagFromWeb)
+  fi
+  echo "$tag"
 }
 
 getSpecificRelease() {
@@ -598,14 +644,15 @@ getSpecificRelease() {
   # curl failure here exits the script without a word. Cap the body too, so a
   # wrong URL answering with something huge cannot be read into memory.
   local LC_ALL=C
-  local response max_bytes=$((2 * 1024 * 1024))
+  local response
   if ! response=$(curl -s --connect-timeout 10 --max-time 30 "${REPO_API_URL}/releases/tags/$tag_name" |
-    head -c "$((max_bytes + 1))" | tr '\000\n' '  '); then
-    echo ""
-    return 0
+    head -c "$((API_MAX_BYTES + 1))" | tr '\000\n' '  '); then
+    response=""
   fi
 
-  if ((${#response} <= max_bytes)) && grep -q '"tag_name"' <<< "$response"; then
+  if ((${#response} <= API_MAX_BYTES)) && grep -q '"tag_name"' <<< "$response"; then
+    echo "$tag_name"
+  elif releaseTagExistsOnWeb "$tag_name"; then
     echo "$tag_name"
   else
     echo ""
@@ -617,9 +664,12 @@ getTargetVersion() {
   local target_release
   target_release=$(getSpecificRelease "$specificVersion")
     if [[ -z "$target_release" ]]; then
-      echo " - $(colorize red "$(msg version_not_found "$specificVersion")")"
-      echo " - $(msg check_versions)"
-      exit 1
+      # Callers capture this function's stdout as the version itself, so the
+      # messages go to stderr; a bare exit here would also kill them through
+      # the command substitution without showing anything.
+      echo " - $(colorize red "$(msg version_not_found "$specificVersion")")" >&2
+      echo " - $(msg check_versions)" >&2
+      return 1
     fi
     echo "$target_release"
   else
@@ -1064,7 +1114,7 @@ checkInstalledVersion() {
   local binName
   binName=$(getBinaryName)
   local target_version
-  target_version=$(getTargetVersion)
+  target_version=$(getTargetVersion) || target_version=""
   local installed_version
   installed_version="$("$dirInstall/$binName" --version 2>/dev/null | awk '{print $2}')"
 
@@ -1564,7 +1614,11 @@ installTorrServer() {
 
   # Get target version and check glibc compatibility
   local target_version
-  target_version=$(getTargetVersion)
+  target_version=$(getTargetVersion) || target_version=""
+  if [[ -z "$target_version" ]]; then
+    echo " - $(msg no_version_info)" >&2
+    exit 1
+  fi
   if [[ $SILENT_MODE -eq 0 ]]; then
     echo " - $(msg target_version) $target_version"
   fi
@@ -1762,7 +1816,11 @@ updateTorrServerVersion() {
 
 UpdateVersion() {
   local target_version
-  target_version=$(getTargetVersion)
+  target_version=$(getTargetVersion) || target_version=""
+  if [[ -z "$target_version" ]]; then
+    echo " - $(msg no_version_info)" >&2
+    exit 1
+  fi
   updateTorrServerVersion "$target_version" "update_cancelled" 1
 }
 
